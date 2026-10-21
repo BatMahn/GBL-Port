@@ -20,11 +20,32 @@
 #include <sys/wait.h>
 #endif
 
+#ifndef MW2_NO_MIDI
 #include "gusmid.h"
+#endif
 #include "lance.h"
 #include "mek.h"
 #include "shp.h"
+#ifndef MW2_NO_MIDI
 #include "mt32mid.h"
+#else
+/* MW2_NO_MIDI (the gbl build: Ghost Bear's Legacy's shell plays no menu music - docs/gbl/A_frame.md 1.5): the MIDI
+ * players are not linked; these stand-ins open nothing, so g_bank / g_mt32 stay NULL and every music path is idle */
+typedef struct gus_bank_s gus_bank;
+typedef struct gus_song_s gus_song;
+typedef struct mt32_synth_s mt32_synth;
+typedef struct mt32_song_s mt32_song;
+static gus_bank *gus_bank_open(const char *dir, int kb) { (void)dir; (void)kb; return NULL; }
+static void gus_bank_close(gus_bank *b) { (void)b; }
+static gus_song *gus_song_open(gus_bank *b, const uint8_t *x, size_t n, int r) { (void)b; (void)x; (void)n; (void)r; return NULL; }
+static void gus_song_close(gus_song *s) { (void)s; }
+static int gus_song_render(gus_song *s, float *o, int f) { (void)s; (void)o; (void)f; return 0; }
+static mt32_synth *mt32_open(const char *d, int r) { (void)d; (void)r; return NULL; }
+static void mt32_close(mt32_synth *s) { (void)s; }
+static mt32_song *mt32_song_open(mt32_synth *y, const uint8_t *x, size_t n) { (void)y; (void)x; (void)n; return NULL; }
+static void mt32_song_close(mt32_song *s) { (void)s; }
+static int mt32_song_render(mt32_song *s, float *o, int f) { (void)s; (void)o; (void)f; return 0; }
+#endif
 #include "bwd.h"
 #include "cockpitcfg.h"
 #include "portcfg.h"
@@ -34,6 +55,7 @@
 #include "sfx.h"
 #include "shelldb.h"
 #include "smk.h"
+#include "vidfx.h"
 
 #define W 640
 #define H 480
@@ -631,15 +653,74 @@ static void shell_sound_stop(int index) { if (index > 0 && index <= 160 && g_sfx
 /* the Mech Lab's chassis voices, in the lab's chassis order (0x8367c + 0x10; -1 none) */
 static const int LAB_VOICE[18] = {0x55, 0x59, 0x58, 0x5c, 0x5e, 0x5a, 0x57, 0x5d, 0x5f, 0x60, 0x56, 0x61, 0x5b, 0x62, 0x53, 0x54, -1, 0x63};
 
-/* ---- full-screen cinematic (320x200 scaled to 640x480) ---- */
+/* ---- the full-screen videos' look (portcfg videos=, Combat Variables VIDEO; src/vidfx.h). The original player
+ * (MW2SHELL FUN_00038c70 0x38d74, GBL FUN_0003c430 0x3c53d) sets the 320x200 mode (13h) and copies each frame 1:1: the
+ * VGA double-scans it, the monitor fills its 4:3 tube - each pixel a solid block, no black lines. ORIGINAL keeps the
+ * port's 640x480 stretch of that (g_fb, nearest, as before); the other looks are drawn at the renderer's real pixel size
+ * (the 4:3 area, at most 1920x1440 - 1600x1200 curved - then scaled by the GPU) into their own texture */
+static vidfx *g_vfx;
+static SDL_Texture *g_vfx_tx;
+static int g_vfx_tw, g_vfx_th;
+static int video_look(void)
+{
+    portcfg pc;
+    const char *e = getenv("MW2_VIDEOS");   /* tests: override the setting */
+    int i;
+    if (e) for (i = 0; i < PORTCFG_VID_COUNT; i++) if (!strcmp(e, PORTCFG_VID_NAME[i])) return i;
+    portcfg_load(NULL, &pc);
+    return pc.videos >= 0 && pc.videos < PORTCFG_VID_COUNT ? pc.videos : PORTCFG_VID_ORIGINAL;
+}
+/* the frame in the look, in g_vfx_tx (drawn over the whole 640x480 logical screen); NULL: draw g_fb (ORIGINAL) */
+static SDL_Texture *video_fx_texture(SDL_Renderer *rd, int look, smk *s)
+{
+    float sx = 1.0f, sy = 1.0f;
+    int ow, oh, maxh = look == PORTCFG_VID_CRT_CURVED ? 1200 : 1440, pitch;
+    void *px;
+    if (!rd || look == PORTCFG_VID_ORIGINAL || smk_width(s) > W || smk_height(s) > H) return NULL;
+    SDL_RenderGetScale(rd, &sx, &sy);
+    ow = (int)lroundf((float)W * sx); oh = (int)lroundf((float)H * sy);
+    if (oh > maxh) { ow = ow * maxh / oh; oh = maxh; }
+    if (ow < W || oh < H) { ow = W; oh = H; }
+    if (!g_vfx && !(g_vfx = vidfx_new())) return NULL;
+    if (!g_vfx_tx || g_vfx_tw != ow || g_vfx_th != oh) {
+        if (g_vfx_tx) SDL_DestroyTexture(g_vfx_tx);
+        g_vfx_tx = SDL_CreateTexture(rd, SDL_PIXELFORMAT_RGB24, SDL_TEXTUREACCESS_STREAMING, ow, oh);
+        if (!g_vfx_tx) return NULL;
+        SDL_SetTextureScaleMode(g_vfx_tx, SDL_ScaleModeLinear);   /* 1:1 unless capped */
+        g_vfx_tw = ow; g_vfx_th = oh;
+    }
+    if (SDL_LockTexture(g_vfx_tx, NULL, &px, &pitch) != 0) return NULL;
+    vidfx_render(g_vfx, look, smk_pixels(s), smk_width(s), smk_height(s), smk_palette(s), (uint8_t *)px, ow, oh, pitch);
+    SDL_UnlockTexture(g_vfx_tx);
+    return g_vfx_tx;
+}
+/* tests: MW2_VIDEO_SHOT=file.ppm writes the clip's last decoded frame in the look at MW2_VIDEO_SHOT_SIZE (WxH, default
+ * 1280x960) - headless, where nothing is presented; MW2_VIDEO_FRAMES=n decodes n frames headless */
+static void video_fx_shot(int look, smk *s)
+{
+    const char *path = getenv("MW2_VIDEO_SHOT"), *sz = getenv("MW2_VIDEO_SHOT_SIZE");
+    int ow = 1280, oh = 960;
+    uint8_t *buf;
+    vidfx *v;
+    FILE *o;
+    if (!path || !s) return;
+    if (sz && (sscanf(sz, "%dx%d", &ow, &oh) != 2 || ow < W || oh < H || ow > 4096 || oh > 4096)) { ow = 1280; oh = 960; }
+    if (!(buf = malloc((size_t)ow * (size_t)oh * 3)) || !(v = vidfx_new())) { free(buf); return; }
+    vidfx_render(v, look, smk_pixels(s), smk_width(s), smk_height(s), smk_palette(s), buf, ow, oh, ow * 3);
+    if ((o = fopen(path, "wb"))) { fprintf(o, "P6\n%d %d\n255\n", ow, oh); fwrite(buf, 1, (size_t)ow * (size_t)oh * 3, o); fclose(o); }
+    vidfx_free(v); free(buf);
+}
+static int video_headless_frames(int dflt) { const char *e = getenv("MW2_VIDEO_FRAMES"); return e && atoi(e) > 0 ? atoi(e) : dflt; }
+
+/* ---- full-screen cinematic (320x200 scaled to 640x480; the look: video_look) ---- */
 static void play_cinematic(SDL_Renderer *rd, SDL_Texture *tx, const char *name, int headless)
 {
     smk *s = open_smk(name);
-    int f, n, last = -1;
+    int f, n, last = -1, look = video_look();
     unsigned char *snd = NULL;
     Uint32 t0;
     if (!s) return;
-    n = headless ? 3 : smk_frames(s);
+    n = headless ? video_headless_frames(3) : smk_frames(s);
     {   /* the clip's sound (audio track 0), mixed as one 8-bit voice; the frames then follow the clock */
         int16_t *a = NULL;
         size_t ns = 0;
@@ -673,8 +754,9 @@ static void play_cinematic(SDL_Renderer *rd, SDL_Texture *tx, const char *name, 
             }
         if (!headless) {
             Uint32 now;
-            SDL_UpdateTexture(tx, NULL, g_fb, W * 3);
-            SDL_RenderClear(rd); SDL_RenderCopy(rd, tx, NULL, NULL); text_layer_draw(rd); SDL_RenderPresent(rd);
+            SDL_Texture *vt = video_fx_texture(rd, look, s);
+            if (!vt) SDL_UpdateTexture(tx, NULL, g_fb, W * 3);
+            SDL_RenderClear(rd); SDL_RenderCopy(rd, vt ? vt : tx, NULL, NULL); text_layer_draw(rd); SDL_RenderPresent(rd);
             while (SDL_PollEvent(&e)) if (e.type == SDL_KEYDOWN || e.type == SDL_MOUSEBUTTONDOWN || e.type == SDL_QUIT) skip = 1;
             if (skip) break;
             now = SDL_GetTicks() - t0;
@@ -682,6 +764,7 @@ static void play_cinematic(SDL_Renderer *rd, SDL_Texture *tx, const char *name, 
         }
     }
     (void)last;
+    if (headless) video_fx_shot(look, s);
     if (snd) { sfx_stop_pcm(g_sfx, snd); free(snd); }
     smk_close(s);
 }
@@ -3052,6 +3135,7 @@ static void combat_variables(SDL_Renderer *rd, SDL_Texture *tx, int headless)
     static const int ROW_Y[14] = {199, 219, 277, 297, 317, 337, 357, 377, 397, 416, 436, 456, 239, 258};
     static const char *const ED_TEXT[PORTCFG_ED_COUNT] = {"ENHANCED", "DOS", "3DFX", "ATI RAGE", "S3 VIRGE", "POWERVR", "MATROX MYSTIQUE"};
     static const char *const TX_TEXT[PORTCFG_TX_COUNT] = {"ORIGINAL", "TITANIUM"};
+    static const char *const VID_TEXT[PORTCFG_VID_COUNT] = {"FMV ORIGINAL", "FMV SMOOTH", "FMV SCANLINE", "FMV CRT", "FMV CURVED"};
     int tx_lock;
     memset(snd, 0, sizeof snd); memset(dif, 0, sizeof dif);
     wr32(snd + 0x0c, 65536); wr32(snd + 0x04, 65536); wr32(snd + 0x08, 65536);
@@ -3097,6 +3181,7 @@ static void combat_variables(SDL_Renderer *rd, SDL_Texture *tx, int headless)
                         if (x < 375 || x > 633 || y < ROW_Y[i] - 2 || y > ROW_Y[i] + 14) continue;
                         if (i == 0) dif[5] = (uint8_t)((dif[5] + 1) % 3);
                         else if (i == 1) dif[4] ^= 1;
+                        else if (i == 2 && x >= 495) pc.videos = (pc.videos + 1) % PORTCFG_VID_COUNT;   /* the port's FMV: the videos' look */
                         else if (i >= 2 && i <= 6) wr32(snd + 0x14 + 4 * (i - 2), !rd32(snd + 0x14 + 4 * (i - 2)));
                         else if (i == 7) {   /* RESOLUTION: NATIVE (no AA, 2X, 4X, 8X) -> 320x200 -> 640x480 -> 1024x768 */
                             if (!pc.render_w) {
@@ -3169,8 +3254,8 @@ static void combat_variables(SDL_Renderer *rd, SDL_Texture *tx, int headless)
             char vals[14][32];
             tt_item it;
             int k;
-            const char *lines[19];
-            int ly[19], lx[19];
+            const char *lines[20];
+            int ly[20], lx[20];
             for (k = 0; k < 14; k++) {
                 if (k == 0) snprintf(vals[k], sizeof vals[k], "%s", DIFF[sel[0] >= 0 && sel[0] < 3 ? sel[0] : 1]);
                 else if (k == 4 || k == 5) snprintf(vals[k], sizeof vals[k], "%s", sel[k] == 0 ? "HIGH" : "LOW");   /* DISPLAY DETAIL, OBJECT DENSITY */
@@ -3186,7 +3271,8 @@ static void combat_variables(SDL_Renderer *rd, SDL_Texture *tx, int headless)
             lines[16] = "TEXTURES"; ly[16] = ROW_Y[13] + 1; lx[16] = 360;
             lines[17] = pc.hud_original ? "HUD ORIGINAL" : "HUD WIDE"; ly[17] = ROW_Y[8] + 1; lx[17] = 520;   /* the DISPLAY row's right half */
             lines[18] = pc.dos_sky_smooth ? "DOS SMOOTH" : "DOS DITHERED"; ly[18] = ROW_Y[13] + 1; lx[18] = 500;   /* the TEXTURES row's (from 500: the column ends at 633) */
-            for (k = 0; k < 19; k++) {
+            lines[19] = VID_TEXT[pc.videos >= 0 && pc.videos < PORTCFG_VID_COUNT ? pc.videos : 0]; ly[19] = ROW_Y[2] + 1; lx[19] = 500;   /* the OBJECT TEXTURES row's right part: the videos' look */
+            for (k = 0; k < 20; k++) {
                 const char *t = lines[k];
                 int grey = tx_lock && (k == 13 || k == 16);   /* TEXTURES locked: its label and value greyed */
                 if (!ttext_available()) {   /* no font file: the original menu font */

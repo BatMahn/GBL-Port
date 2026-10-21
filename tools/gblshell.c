@@ -111,6 +111,7 @@ static Uint32 g_now;     /* the shell's clock in ms (virtual when headless) */
 static gbl_input g_in;   /* the last frame's input */
 static int g_quit_all;   /* the window was closed */
 
+static char g_grab[256];   /* TEST ONLY: a window grab requested by the event script */
 static void gbl_shot(const char *path)
 {
     FILE *o = fopen(path, "wb");
@@ -138,15 +139,123 @@ static void gbl_script(gbl_input *in)
         case 'k': { const char *a = cmd + 1; while (*a == ' ') a++; in->key = gbl_keyname(a); } break;
         case 't': { const char *a = cmd + 1; while (*a == ' ') a++; snprintf(in->text, sizeof in->text, "%.31s", a); } break;
         case 's': { const char *a = cmd + 1; while (*a == ' ') a++; gbl_shot(a); } break;
+        case 'S': { const char *a = cmd + 1; while (*a == ' ') a++; snprintf(g_grab, sizeof g_grab, "%s", a); } break;
         case 'q': in->quit = 1; g_quit_all = 1; break;
         }
     }
 }
+/* text covers. Windowed, the text is not in the frame: it is queued and drawn over the frame at the display's resolution
+ * (mw2shell.c draw_text). Whatever is painted into the frame over text queued before it - the Esc menu's panel over the
+ * screen it opened on, a dialog, a filled box - must hide that text, or the screen's text shows through the panel (Mike's
+ * report: the Mission Computer's briefing over the menu). gbl_text_cover(x0, y0, x1, y1) (x1 / y1 exclusive) drops the
+ * queued items wholly inside the box and records the box for the items partly inside it, which gbl_present then draws
+ * clipped to the area outside it. Text queued after the cover (the panel's own words) is not covered. The covers last
+ * one frame (the screens repaint and cover again each pass). Headless the text is in the frame and nothing is needed. */
+#define GT_COVERS 16
+typedef struct { int x0, y0, x1, y1, n; } gtext_cover;   /* n: covers the queue items 0..n-1 */
+static gtext_cover g_tcover[GT_COVERS];
+static int g_ntcover;
+static void gtext_box(const text_item *it, int *x0, int *y0, int *x1, int *y1)
+{
+    *x0 = it->x; *y0 = it->y;
+    *x1 = it->x + text_width(it->fo, it->t); *y1 = it->y + (it->fo->d ? it->fo->d[8] : 10);
+}
+static void gbl_text_cover(int x0, int y0, int x1, int y1)
+{
+    int i, k, n = 0, newn[GT_COVERS];
+    if (!g_text_hires) return;
+    for (k = 0; k < g_ntcover; k++) newn[k] = 0;
+    for (i = 0; i < g_ntext; i++) {
+        int a, b, c, d;
+        gtext_box(&g_text[i], &a, &b, &c, &d);
+        if (a >= x0 && b >= y0 && c <= x1 && d <= y1) continue;   /* wholly covered: gone */
+        for (k = 0; k < g_ntcover; k++) if (i < g_tcover[k].n) newn[k]++;   /* the earlier covers' counts follow */
+        g_text[n++] = g_text[i];
+    }
+    g_ntext = n;
+    for (k = 0; k < g_ntcover; k++) g_tcover[k].n = newn[k];
+    if (g_ntcover < GT_COVERS) {
+        gtext_cover *c = &g_tcover[g_ntcover++];
+        c->x0 = x0; c->y0 = y0; c->x1 = x1; c->y1 = y1; c->n = g_ntext;
+    }
+}
+/* the text layer with the covers: the items no cover touches as usual, each partly covered one once per rectangle of
+ * the screen outside its covers (SDL clip rectangles, in the 640x480 logical space) */
+static void gbl_text_layer(SDL_Renderer *rd)
+{
+    static text_item all[256];
+    int n = g_ntext, ntt = g_ntt, i, k, kept = 0;
+    if (!g_ntcover) { text_layer_draw(rd); return; }
+    for (k = 0; k < g_ntcover; k++) if (g_tcover[k].n > n) g_tcover[k].n = n;   /* the queue was cleared since */
+    memcpy(all, g_text, sizeof all);
+    for (i = 0; i < n; i++) {
+        int a, b, c, d, hit = 0;
+        gtext_box(&all[i], &a, &b, &c, &d);
+        for (k = 0; k < g_ntcover && !hit; k++)
+            hit = i < g_tcover[k].n && a < g_tcover[k].x1 && c > g_tcover[k].x0 && b < g_tcover[k].y1 && d > g_tcover[k].y0;
+        if (!hit) g_text[kept++] = all[i];
+    }
+    g_ntext = kept;
+    text_layer_draw(rd);   /* (and the TrueType items) */
+    g_ntt = 0;
+    for (i = 0; i < n; i++) {
+        SDL_Rect r[64];
+        int nr = 1, a, b, c, d, j;
+        gtext_box(&all[i], &a, &b, &c, &d);
+        r[0].x = a; r[0].y = b; r[0].w = c - a; r[0].h = d - b;
+        for (k = 0; k < g_ntcover; k++) {   /* subtract each cover that applies to this item */
+            const gtext_cover *cv = &g_tcover[k];
+            SDL_Rect out[64];
+            int no = 0;
+            if (i >= cv->n) continue;
+            for (j = 0; j < nr; j++) {
+                int rx0 = r[j].x, ry0 = r[j].y, rx1 = r[j].x + r[j].w, ry1 = r[j].y + r[j].h;
+                int ix0 = rx0 > cv->x0 ? rx0 : cv->x0, iy0 = ry0 > cv->y0 ? ry0 : cv->y0;
+                int ix1 = rx1 < cv->x1 ? rx1 : cv->x1, iy1 = ry1 < cv->y1 ? ry1 : cv->y1;
+                if (ix0 >= ix1 || iy0 >= iy1) { if (no < 64) out[no++] = r[j]; continue; }
+                if (iy0 > ry0 && no < 64) { SDL_Rect q = {rx0, ry0, rx1 - rx0, iy0 - ry0}; out[no++] = q; }   /* above */
+                if (ry1 > iy1 && no < 64) { SDL_Rect q = {rx0, iy1, rx1 - rx0, ry1 - iy1}; out[no++] = q; }   /* below */
+                if (ix0 > rx0 && no < 64) { SDL_Rect q = {rx0, iy0, ix0 - rx0, iy1 - iy0}; out[no++] = q; }   /* left */
+                if (rx1 > ix1 && no < 64) { SDL_Rect q = {ix1, iy0, rx1 - ix1, iy1 - iy0}; out[no++] = q; }   /* right */
+            }
+            memcpy(r, out, sizeof(SDL_Rect) * (size_t)no);
+            nr = no;
+        }
+        if (nr == 1 && r[0].x == a && r[0].y == b && r[0].w == c - a && r[0].h == d - b) continue;   /* untouched: drawn */
+        for (j = 0; j < nr; j++) {
+            if (r[j].w <= 0 || r[j].h <= 0) continue;
+            SDL_RenderSetClipRect(rd, &r[j]);
+            g_text[0] = all[i]; g_ntext = 1;
+            text_layer_draw(rd);
+        }
+    }
+    SDL_RenderSetClipRect(rd, NULL);
+    memcpy(g_text, all, sizeof all);
+    g_ntext = n; g_ntt = ntt;
+}
+static SDL_Texture *g_gvid_tx;   /* gbl_video: the frame in the videos' look (video_fx_texture), presented instead of g_fb */
 static void gbl_present(void)
 {
     if (!g_grd) return;
-    SDL_UpdateTexture(g_gtx, NULL, g_fb, W * 3);
-    SDL_RenderClear(g_grd); SDL_RenderCopy(g_grd, g_gtx, NULL, NULL); text_layer_draw(g_grd); SDL_RenderPresent(g_grd);
+    if (!g_gvid_tx) SDL_UpdateTexture(g_gtx, NULL, g_fb, W * 3);
+    SDL_RenderClear(g_grd); SDL_RenderCopy(g_grd, g_gvid_tx ? g_gvid_tx : g_gtx, NULL, NULL); gbl_text_layer(g_grd);
+    g_ntcover = 0;
+    if (g_grab[0]) {   /* TEST ONLY (GBL_EVENTS "S file.ppm", windowed): the rendered window with its text layer */
+        int ow, oh;
+        float sx, sy;
+        uint8_t *buf;
+        SDL_RenderGetScale(g_grd, &sx, &sy);   /* (a NULL rect reads the viewport: the 640x480 picture, scaled) */
+        ow = (int)(W * sx); oh = (int)(H * sy);
+        if ((buf = malloc((size_t)ow * (size_t)oh * 3))) {
+            if (SDL_RenderReadPixels(g_grd, NULL, SDL_PIXELFORMAT_RGB24, buf, ow * 3) == 0) {
+                FILE *o = fopen(g_grab, "wb");
+                if (o) { fprintf(o, "P6\n%d %d\n255\n", ow, oh); fwrite(buf, 1, (size_t)ow * (size_t)oh * 3, o); fclose(o); }
+            }
+            free(buf);
+        }
+        g_grab[0] = 0;
+    }
+    SDL_RenderPresent(g_grd);
 }
 /* present the frame built in g_fb, then gather the next frame's input into g_in (and return it) */
 static gbl_input *gbl_frame(void)
@@ -185,6 +294,16 @@ static gbl_input *gbl_frame(void)
             case SDL_TEXTINPUT: if (strlen(in->text) + strlen(e.text.text) < sizeof in->text) strcat(in->text, e.text.text); break;
             }
         }
+    }
+    if (getenv("GBL_EVENTS")) {   /* TEST ONLY: the event script also drives a real window (one script frame per frame,
+                                   * paced to 30 a second as the headless clock) */
+        static Uint32 t_last;
+        int ld2 = in->ldown;
+        Uint32 t = SDL_GetTicks();
+        if (t_last && t - t_last < 33) SDL_Delay(33 - (t - t_last));
+        t_last = SDL_GetTicks();
+        gbl_script(in);
+        if (!in->lclick && ld2 && !SDL_GetMouseState(NULL, NULL)) { in->ldown = 0; in->lup = 1; }
     }
     if (in->mx < 0) in->mx = 0;
     if (in->my < 0) in->my = 0;
@@ -256,10 +375,15 @@ static void gsnd_stop_all(void) { if (g_sfx) { sfx_stop_loops(g_sfx); } }
  * Flags (as the original uses them): 1 paused, 2 the background shows again under it when it is hidden / ends, 4 hold
  * the last frame, 8 loop, 0x20 hidden, 0x40 (always set by the callers), 0x200 at the end rewind to frame 1 and pause.
  * A clip without 8 / 0x200 that reaches its end stops: it keeps showing its last frame unless flag 2 is set and 4 is not.
+ * 0x80: (x, y) is the clip's bottom centre (FUN_0003d0c0 / FUN_0003cf70: x -= width / 2, y -= height; an SHP's size is
+ * its first shape's, FUN_0004aa43). Multi-frame SHP clips animate like the Smacker ones (FUN_0003ca50 0x3cb3b: one frame
+ * a pass when the clip's period has passed - the next time is now + period, no catching up; at the end 8 loops to frame
+ * 0, otherwise the clip stops on its last frame; 0x200 is Smacker-only). An empty SHP shape (left / top 0x7fffffff, e.g.
+ * wgbcs008 frame 0) draws nothing.
  * gs_done() is the original's FUN_0003cd80 == 0 (the clip has ended). gs_show_frame() picks a frame of a button SHP
  * (FUN_0003d7c0: 0 idle, 1 pressed, 2 hover). */
 #define GS_SLOTS 40
-enum { GS_PAUSED = 1, GS_RESTORE = 2, GS_HOLD = 4, GS_LOOP = 8, GS_HIDDEN = 0x20, GS_REWIND = 0x200 };
+enum { GS_PAUSED = 1, GS_RESTORE = 2, GS_HOLD = 4, GS_LOOP = 8, GS_HIDDEN = 0x20, GS_BOTTOM = 0x80, GS_REWIND = 0x200 };
 typedef struct {
     int used, x, y, flags, ms;
     smk *s;
@@ -298,6 +422,10 @@ static int gs_shp_frame(gslot *g, int k)
     if (g->have_fr && g->cur == k) return 0;
     if (g->have_fr) { shp_frame_free(&g->fr); g->have_fr = 0; }
     if (shp_decode(g->shp, g->shplen, k, &g->fr) != 0) return -1;
+    if (g->fr.left > 4096 || g->fr.top > 4096 || g->fr.left < -4096 || g->fr.top < -4096) {   /* an empty shape */
+        memset(g->fr.mask, 0, (size_t)g->fr.w * (size_t)g->fr.h);
+        g->fr.left = g->fr.top = 0;
+    }
     g->have_fr = 1; g->cur = k;
     return 0;
 }
@@ -330,6 +458,14 @@ static int gs_load(int i, const char *name, int x, int y, int flags, int fps)
         smk_next(g->s);
         g->nfr = smk_frames(g->s);
     }
+    if (flags & GS_BOTTOM) {   /* the position is the clip's bottom centre */
+        int w = 0, h = 0;
+        if (g->shp && g->shplen >= 16) {   /* the first shape's header: u16 height - 1, u16 width - 1 */
+            uint32_t off = g->shp[8] | g->shp[9] << 8 | g->shp[10] << 16 | (uint32_t)g->shp[11] << 24;
+            if (off + 4 <= g->shplen) { h = (g->shp[off] | g->shp[off + 1] << 8) + 1; w = (g->shp[off + 2] | g->shp[off + 3] << 8) + 1; }
+        } else if (g->s) { w = smk_width(g->s); h = smk_height(g->s); }
+        g->x -= w / 2; g->y -= h;
+    }
     g->used = 1; g->last = g_now; g->frame = 0; g->ended = 0;
     return 0;
 }
@@ -342,6 +478,7 @@ static void gs_restart(int i)
     if (!gs_loaded(i)) return;
     g = &g_gs[i];
     if (g->s) { smk_rewind(g->s); smk_next(g->s); }
+    if (g->shp) gs_shp_frame(g, 0);
     g->frame = 0; g->ended = 0; g->last = g_now;
     g->flags &= ~(GS_PAUSED | GS_HIDDEN);
 }
@@ -350,7 +487,7 @@ static void gs_show_frame(int i, int k)   /* a button: show frame k, held */
     gslot *g;
     if (!gs_loaded(i)) return;
     g = &g_gs[i];
-    if (g->shp) gs_shp_frame(g, k);
+    if (g->shp) { gs_shp_frame(g, k); g->frame = g->cur; }
     else if (g->s && k != g->frame) { smk_rewind(g->s); smk_next(g->s); g->frame = 0; while (g->frame < k && g->frame + 1 < g->nfr) { smk_next(g->s); g->frame++; } }
     g->flags |= GS_PAUSED;
 }
@@ -358,7 +495,18 @@ static void gs_show_frame(int i, int k)   /* a button: show frame k, held */
 static void gs_tick(int i)
 {
     gslot *g = &g_gs[i];
-    if (!g->used || !g->s || g->ended || (g->flags & GS_PAUSED)) return;
+    if (!g->used || g->ended || (g->flags & GS_PAUSED)) return;
+    if (g->shp) {   /* an SHP clip (0x3cb3b): at most one frame a pass */
+        if (g->nfr <= 1 || g_now - g->last < (Uint32)g->ms) return;
+        g->last = g_now;
+        if (g->frame + 1 >= g->nfr) {
+            if (g->flags & GS_LOOP) g->frame = 0;
+            else { g->ended = 1; return; }
+        } else g->frame++;
+        gs_shp_frame(g, g->frame);
+        return;
+    }
+    if (!g->s) return;
     while (g_now - g->last >= (Uint32)g->ms) {
         g->last += (Uint32)g->ms;
         if (g->frame + 1 >= g->nfr) {
@@ -406,18 +554,21 @@ static void gs_play_to_end(int i)
     }
 }
 
-/* full-screen video (FUN_0003c430: 320x200 SMK scaled; a key or a mouse button skips; returns 1 if skipped) */
+/* full-screen video (FUN_0003c430: 320x200 SMK scaled; a key or a mouse button skips; returns 1 if skipped). The
+ * original sets mode 13h for it (FUN_0004e4c8(200, 320) 0x3c547: the first mode table entry holding 320x200, BIOS mode
+ * 0x13) and copies each frame 1:1 (SmackToScreen at 0, 0, 0x3c56b); the clip opened with only its sound-track flags
+ * (0x95ecc = 0xfe00). The look: video_look() (mw2shell.c; ORIGINAL = the 640x480 stretch in g_fb) */
 static int gbl_video(const char *name)
 {
     char path[1200];
     smk *s;
-    int f, n, skipped = 0;
+    int f, n, skipped = 0, look = video_look();
     unsigned char *snd = NULL;
     Uint32 t0;
     if (!name || !name[0]) return 0;
     gbl_open_smkdir(name, "SMK", path, sizeof path);
     if (!(s = smk_open_file(path))) return 0;
-    n = g_headless ? 2 : smk_frames(s);
+    n = g_headless ? video_headless_frames(2) : smk_frames(s);
     if (!g_headless) {
         int16_t *a = NULL;
         size_t ns = 0;
@@ -445,13 +596,16 @@ static int gbl_video(const char *name)
                 memcpy(g_fb + ((size_t)y * W + (size_t)x) * 3, smk_palette(s)[smk_pixels(s)[(size_t)sy * (size_t)sw + (size_t)sx]], 3);
             }
         text_layer_clear();
+        g_gvid_tx = video_fx_texture(g_grd, look, s);
         in = gbl_frame();
+        g_gvid_tx = NULL;
         if (in->quit || in->lclick || in->rclick || in->key) skipped = 1;
         if (!g_headless) {
             Uint32 now = SDL_GetTicks() - t0;
             if ((double)now < (double)(f + 1) * smk_frame_ms(s)) SDL_Delay((Uint32)((double)(f + 1) * smk_frame_ms(s) - (double)now));
         }
     }
+    if (g_headless) video_fx_shot(look, s);
     if (snd) { sfx_stop_pcm(g_sfx, snd); free(snd); }
     smk_close(s);
     return skipped;
@@ -508,15 +662,43 @@ static void gbl_cursor_load(void)
     if (n > 0 && shp_decode(d, (size_t)n, 0, &g_cursor) == 0) g_have_cursor = 1;
     free(d);
 }
+/* the pixels under the pointer drawn last (headless): a screen keeps the presented frame as the picture under a panel
+ * (the Esc menu, a dialog) - gbl_cursor_unsave() takes the pointer of the previous frame out of such a copy */
+static uint8_t g_cur_under[96 * 96 * 3];
+static int g_cur_ux, g_cur_uy, g_cur_uw, g_cur_uh;
+static long g_cur_uframe = -10;
 static void gbl_draw_cursor(int x, int y)
 {
     int X, Y;
+    g_cur_uw = 0;
     if (!g_have_cursor || !g_headless) return;   /* windowed: the system pointer (SDL) */
+    if (g_cursor.w <= 96 && g_cursor.h <= 96) {
+        g_cur_ux = x + g_cursor.left; g_cur_uy = y + g_cursor.top; g_cur_uw = g_cursor.w; g_cur_uh = g_cursor.h;
+        for (Y = 0; Y < g_cur_uh; Y++)
+            for (X = 0; X < g_cur_uw; X++) {
+                int px = g_cur_ux + X, py = g_cur_uy + Y;
+                if (px < 0 || py < 0 || px >= W || py >= H) continue;
+                memcpy(g_cur_under + ((size_t)Y * 96 + (size_t)X) * 3, g_fb + ((size_t)py * W + (size_t)px) * 3, 3);
+            }
+        g_cur_uframe = g_frame_no;
+    }
     for (Y = 0; Y < g_cursor.h; Y++)
         for (X = 0; X < g_cursor.w; X++) {
             int px = x + g_cursor.left + X, py = y + g_cursor.top + Y;
             if (!g_cursor.mask[Y * g_cursor.w + X] || px < 0 || py < 0 || px >= W || py >= H) continue;
             memcpy(g_fb + ((size_t)py * W + (size_t)px) * 3, gbl_pal()[g_cursor.pix[Y * g_cursor.w + X]], 3);
+        }
+}
+/* put the pixels under the last presented frame's pointer back into fb (a copy of that frame; no-op windowed) */
+static void gbl_cursor_unsave(uint8_t *fb)
+{
+    int X, Y;
+    if (g_cur_uframe != g_frame_no - 1 || !g_cur_uw) return;
+    for (Y = 0; Y < g_cur_uh; Y++)
+        for (X = 0; X < g_cur_uw; X++) {
+            int px = g_cur_ux + X, py = g_cur_uy + Y;
+            if (px < 0 || py < 0 || px >= W || py >= H) continue;
+            memcpy(fb + ((size_t)py * W + (size_t)px) * 3, g_cur_under + ((size_t)Y * 96 + (size_t)X) * 3, 3);
         }
 }
 
@@ -951,8 +1133,8 @@ int main(int argc, char **argv)
     int headless;
     setenv("MW2_GAME", "gbl", 1);   /* the simulation's GBL rules (sim_game_gbl: weapons, AMS, NARC, bosses) - the
                                      * shell's Mech Lab reads the same tables */
+    portcfg_set_app("gblport", "gblport.cfg", "GBL-game", "GBL");   /* (before --sim too: the sim reads and writes gblport.cfg) */
     if (argc >= 2 && strcmp(argv[1], "--sim") == 0) return glview_main(argc - 1, argv + 1);   /* the simulation */
-    portcfg_set_app("gblport", "gblport.cfg", "GBL-game", "GBL");
     snprintf(g_exe_path, sizeof g_exe_path, "%s", argv[0]);
     if (!strchr(argv[0], '/')) { bp = SDL_GetBasePath(); snprintf(g_exe_path, sizeof g_exe_path, "%s%s", bp ? bp : "./", argv[0]); SDL_free(bp); }
     headless = g_headless = getenv("SDL_VIDEODRIVER") && (!strcmp(getenv("SDL_VIDEODRIVER"), "offscreen") || !strcmp(getenv("SDL_VIDEODRIVER"), "dummy"));
@@ -967,12 +1149,8 @@ int main(int argc, char **argv)
         return 2;
     }
     if (argc < 2 && !g_cfg.game[0]) portcfg_save(NULL, &g_cfg);
-    {   /* no 3D-edition files for GBL: the DOS renderer (GBL had no 3D-card editions) */
-        char p3[1200];
-        snprintf(p3, sizeof p3, "%s/3d/models.prj", g_cfg.game);
-        FILE *t = g_cfg.game[0] ? fopen(p3, "rb") : NULL;
-        if (t) fclose(t); else g_cfg.renderer = PORTCFG_ED_DOS;
-    }
+    /* gbl's looks (portcfg.h): DOS | ENHANCED | TITANIUM; TITANIUM needs titanium/MW2.PRJ - DOS without it */
+    if (!portcfg_gbl_look_ok(&g_cfg, portcfg_gbl_look(&g_cfg))) portcfg_gbl_set_look(&g_cfg, PORTCFG_GBL_DOS);
     snprintf(g_dir, sizeof g_dir, "%s", g_cfg.install);
     dp_clear_roots();
     dp_add_root(g_cfg.install);   /* pilots, settings, saves: first (and where writes go) */

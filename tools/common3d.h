@@ -60,9 +60,10 @@ static texture *c3d_texture(prj_archive *texs, int ati, const char *name, int al
         }
         c3d_ti_miss++;
     }
-    if (prj_read_named(texs, "CEL", name, &r) != PRJ_OK) { free(t); return NULL; }
+    if (prj_read_named(texs, "CEL", name, &r) != PRJ_OK) { if (ati == 5 && c3d_ti) c3d_ti_miss++; free(t); return NULL; }
     if (tex_decode(r.data, r.size, enc, t) != 0) { free(t); t = NULL; }
     prj_record_free(&r);
+    if (ati == 5 && c3d_ti) { if (t) c3d_ti_hits++; else c3d_ti_miss++; }   /* (gbl TITANIUM: the Titanium archive is the textures archive) */
     return t;
 }
 
@@ -363,5 +364,6 @@ static void c3d_ti_frame(glr_view *v, float eye_y)
         if (g < t->dens_m) g = t->dens_m; else if (g > 1.0f) g = 1.0f;
     } else g = 1.0f;
     for (k = 0; k < 3; k++) v->sky_color[k] = ((float)t->sky[k] * g + (float)t->fog[k] * (1.0f - g)) / 255.0f;
+    v->dos_fog_g = g;   /* (gbl ENHANCED: the same share over the DOS sky fill) */
 }
 #endif

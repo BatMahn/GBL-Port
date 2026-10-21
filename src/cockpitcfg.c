@@ -327,3 +327,21 @@ size_t cc_generate(const cc_config *c, const cc_device dev[CC_DEVICES], const in
     return b.over ? 0 : b.n;
 #undef EMIT
 }
+
+/* the drivers' titles (the string each GIDDI\<name>.DLL reports; the 8 base ones as cc_devices sets them) */
+const char *cc_driver_title(const char *shortname)
+{
+    static const char *const T[][2] = {
+        {"fltstck", "Flightstick PRO"}, {"joystick", "Two Button Joystick"}, {"keyboard", "Keyboard"}, {"mouse", "Mouse"},
+        {"msjstick", "MS SideWinder (CH Pro Mode)"}, {"tmaster", "ThrustMaster Mark II"},
+        {"vio1", "Virtual i/O i-glasses! on COM1:"}, {"vio2", "Virtual i/O i-glasses! on COM2:"},
+        {"avenger", "Spaceball Avenger"}, {"vfx1", "VFX1 HEADGEAR V1.2"}, {"vpilot", "CH Virtual Pilot PRO"},
+        {"wingman", "Wingman Extreme"}};
+    size_t i, k;
+    char lo[16];
+    if (!shortname) return NULL;
+    for (k = 0; shortname[k] && k + 1 < sizeof lo; k++) lo[k] = (char)(shortname[k] >= 'A' && shortname[k] <= 'Z' ? shortname[k] + 32 : shortname[k]);
+    lo[k] = 0;
+    for (i = 0; i < sizeof T / sizeof T[0]; i++) if (strcmp(lo, T[i][0]) == 0) return T[i][1];
+    return NULL;
+}

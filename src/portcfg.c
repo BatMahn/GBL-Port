@@ -8,7 +8,12 @@
 #include <sys/stat.h>
 #include <errno.h>
 
-void portcfg_defaults(portcfg *c) { memset(c, 0, sizeof *c); c->mode = 0; c->aa = 4; c->textures_ati = 1; c->speed = 0.85f; }
+static int app_gbl;   /* portcfg_set_app(..., "GBL"): Ghost Bear's Legacy's looks (portcfg.h) */
+void portcfg_defaults(portcfg *c)
+{
+    memset(c, 0, sizeof *c); c->mode = 0; c->aa = 4; c->textures_ati = 1; c->speed = 0.85f;
+    if (app_gbl) c->renderer = PORTCFG_ED_DOS;   /* gbl: the DOS look by default */
+}
 
 static int exists(const char *p) { struct stat st; return p && p[0] && stat(p, &st) == 0; }
 static int is_dir(const char *p) { struct stat st; return p && p[0] && stat(p, &st) == 0 && S_ISDIR(st.st_mode); }
@@ -39,7 +44,9 @@ static const char *app_cfgdir = "mw2port", *app_cfgfile = "mw2port.cfg", *app_ga
 void portcfg_set_app(const char *cfgdir, const char *cfgfile, const char *game_folder, const char *cd_data)
 {
     app_cfgdir = cfgdir; app_cfgfile = cfgfile; app_game = game_folder; app_cddata = cd_data;
+    app_gbl = cd_data && strcmp(cd_data, "GBL") == 0;
 }
+int portcfg_is_gbl(void) { return app_gbl; }
 const char *portcfg_cd_data(void) { return app_cddata; }
 const char *portcfg_game_folder(void) { return app_game; }
 
@@ -95,7 +102,16 @@ int portcfg_load(const char *unused, portcfg *c)
         } else if (strcmp(line, "system_shortcuts") == 0) c->system_shortcuts = strcmp(v, "allow") == 0;
         else if (strcmp(line, "hud_layout") == 0) c->hud_original = strcmp(v, "original") == 0;
         else if (strcmp(line, "dos_shading") == 0 || strcmp(line, "dos_sky") == 0) c->dos_sky_smooth = strcmp(v, "smooth") == 0;   /* (dos_sky=: its older name) */
+        else if (strcmp(line, "videos") == 0) {
+            int k;
+            for (k = 0; k < PORTCFG_VID_COUNT; k++) if (strcmp(v, PORTCFG_VID_NAME[k]) == 0) c->videos = k;
+        }
         else if (strcmp(line, "textures_kind") == 0) c->textures_ati = strcmp(v, "3dfx") != 0;
+        else if (app_gbl && strcmp(line, "renderer") == 0) {   /* gbl: dos | enhanced | titanium (anything else: DOS) */
+            int e, look = PORTCFG_GBL_DOS;
+            for (e = 0; e < PORTCFG_GBL_COUNT; e++) if (strcmp(v, PORTCFG_GBL_NAME[e]) == 0) look = e;
+            portcfg_gbl_set_look(c, look);
+        } else if (app_gbl && (strcmp(line, "edition") == 0 || strcmp(line, "textures") == 0)) {}   /* (not gbl's) */
         else if (strcmp(line, "renderer") == 0 || strcmp(line, "edition") == 0) {   /* (edition=: the old single look) */
             int e;
             for (e = 0; e < PORTCFG_ED_COUNT; e++) if (strcmp(v, PORTCFG_ED_NAME[e]) == 0) c->renderer = e;
@@ -128,11 +144,15 @@ int portcfg_save(const char *unused, const portcfg *c)
     fprintf(f, "aa=%d\n", c->aa);
     if (c->render_w) fprintf(f, "render=%dx%d\n", c->render_w, c->render_h); else fprintf(f, "render=native\n");
     fprintf(f, "speed=%.2f\n", (double)(c->speed > 0 ? c->speed : 0.85f));
-    fprintf(f, "renderer=%s\n", PORTCFG_ED_NAME[c->renderer >= 0 && c->renderer < PORTCFG_ED_COUNT ? c->renderer : 0]);
-    fprintf(f, "textures=%s\n", PORTCFG_TX_NAME[c->texset == PORTCFG_TX_TITANIUM ? 1 : 0]);
+    if (app_gbl) fprintf(f, "renderer=%s\n", PORTCFG_GBL_NAME[portcfg_gbl_look(c)]);   /* gbl: its three looks */
+    else {
+        fprintf(f, "renderer=%s\n", PORTCFG_ED_NAME[c->renderer >= 0 && c->renderer < PORTCFG_ED_COUNT ? c->renderer : 0]);
+        fprintf(f, "textures=%s\n", PORTCFG_TX_NAME[c->texset == PORTCFG_TX_TITANIUM ? 1 : 0]);
+    }
     fprintf(f, "system_shortcuts=%s\n", c->system_shortcuts ? "allow" : "block");
     fprintf(f, "hud_layout=%s\n", c->hud_original ? "original" : "wide");
     fprintf(f, "dos_shading=%s\n", c->dos_sky_smooth ? "smooth" : "dithered");
+    fprintf(f, "videos=%s\n", PORTCFG_VID_NAME[c->videos >= 0 && c->videos < PORTCFG_VID_COUNT ? c->videos : 0]);
     fclose(f);
     return 0;
 }
@@ -241,6 +261,8 @@ int portcfg_resolve(portcfg *c, const char *exe_dir, const char *hint)
 
 const char *const PORTCFG_ED_NAME[PORTCFG_ED_COUNT] = {"enhanced", "dos", "3dfx", "ati", "s3", "pvr", "mga"};
 const char *const PORTCFG_TX_NAME[PORTCFG_TX_COUNT] = {"original", "titanium"};
+const char *const PORTCFG_GBL_NAME[PORTCFG_GBL_COUNT] = {"dos", "enhanced", "titanium"};
+const char *const PORTCFG_VID_NAME[PORTCFG_VID_COUNT] = {"original", "smooth", "scanlines", "crt", "crt_curved"};
 
 static void cp(char *dst, const char *src) { snprintf(dst, PORTCFG_PATH, "%s", src ? src : ""); }
 
@@ -250,13 +272,18 @@ int portcfg_edition(const portcfg *c, int ed, char *models, char *textures, char
     /* the enhanced mix: the 3Dfx archive's models and data, the ATi archive's textures (the best-kept copy), the 3Dfx sky
      * file, the PowerVR fog */
     cp(models, c->models); cp(textures, c->textures); cp(kind, c->textures_ati ? "ati" : "3dfx"); cp(sky, c->skygnd); cp(fog, c->skygnd_fog);
-    if (ed == PORTCFG_ED_ENHANCED) return 0;
-    if (ed == PORTCFG_ED_DOS) {   /* the DOS archive (the install's, else the disc's) */
+    if (app_gbl && ed != PORTCFG_ED_ENHANCED && ed != PORTCFG_ED_DOS) return -1;   /* gbl: DOS and ENHANCED only */
+    if (ed == PORTCFG_ED_ENHANCED && !app_gbl) return 0;
+    if (ed == PORTCFG_ED_DOS || ed == PORTCFG_ED_ENHANCED) {   /* the DOS archive (the install's, else the disc's) */
         if (!find_ci(c->install, "MW2.PRJ", a, sizeof a)) {
             snprintf(b, sizeof b, "%s/%s", c->cd, app_cddata);
             if (!c->cd[0] || (!find_ci(b, "MW2.PRJ", a, sizeof a) && !find_ci(c->cd, "MW2.PRJ", a, sizeof a))) return -1;
         }
         cp(models, a); cp(textures, a); cp(kind, "dos"); cp(sky, ""); cp(fog, "");
+        if (ed == PORTCFG_ED_ENHANCED) {   /* gbl ENHANCED: the DOS archive drawn in true colour, the Titanium fog */
+            char t[PORTCFG_PATH];
+            if (portcfg_titanium(c, NULL, t) == 0 && t[0]) cp(fog, t);
+        }
         return 0;
     }
     if (!c->game[0]) return -1;
@@ -306,8 +333,37 @@ int portcfg_look(const portcfg *c, int renderer, int texset, char *models, char 
     char a[PORTCFG_PATH];
     if (portcfg_edition(c, renderer, models, textures, kind, sky, fog) != 0 || !portcfg_texset_ok(c, renderer, texset)) return -1;
     if (texset == PORTCFG_TX_TITANIUM) {   /* the Titanium sky file (its sky dome, ground, fog colours and depths) */
-        if (portcfg_titanium(c, NULL, a) != 0 || !models[0]) return -1;
+        char t[PORTCFG_PATH];
+        if (portcfg_titanium(c, t, a) != 0 || !models[0]) return -1;
         cp(sky, a); cp(fog, "");
+        /* gbl TITANIUM: the models argument stays the DOS archive (the sim's data: missions, MEKs, AI); the Titanium
+         * archive is the textures archive (and glview opens it beside as the models' archive, c3d_ti) */
+        if (app_gbl) { cp(textures, t); cp(kind, "titanium"); }
     }
     return 0;
+}
+
+int portcfg_gbl_look(const portcfg *c)
+{
+    if (c->renderer == PORTCFG_ED_DOS) return PORTCFG_GBL_DOS;
+    return c->texset == PORTCFG_TX_TITANIUM ? PORTCFG_GBL_TITANIUM : PORTCFG_GBL_ENHANCED;
+}
+void portcfg_gbl_set_look(portcfg *c, int look)
+{
+    c->renderer = look == PORTCFG_GBL_DOS ? PORTCFG_ED_DOS : PORTCFG_ED_ENHANCED;
+    c->texset = look == PORTCFG_GBL_TITANIUM ? PORTCFG_TX_TITANIUM : PORTCFG_TX_ORIGINAL;
+}
+int portcfg_gbl_look_ok(const portcfg *c, int look)
+{
+    if (look == PORTCFG_GBL_TITANIUM) return portcfg_titanium(c, NULL, NULL) == 0;
+    return look == PORTCFG_GBL_DOS || look == PORTCFG_GBL_ENHANCED;
+}
+int portcfg_gbl_next(const portcfg *c, int look)
+{
+    int k, n = look;
+    for (k = 0; k < PORTCFG_GBL_COUNT; k++) {
+        n = (n + 1) % PORTCFG_GBL_COUNT;
+        if (portcfg_gbl_look_ok(c, n)) return n;
+    }
+    return PORTCFG_GBL_DOS;
 }

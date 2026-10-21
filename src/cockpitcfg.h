@@ -61,5 +61,8 @@ int  cc_merge_defaults(cc_config *out, const char *dir, const int selected[CC_DE
 size_t cc_generate(const cc_config *c, const cc_device dev[CC_DEVICES], const int selected[CC_DEVICES], char *out, size_t cap);
 /* the text the editor shows for a binding: "key Equal/Minus", "joystick Left/Right", "----" */
 void cc_describe(const cc_binding *b, const cc_device dev[CC_DEVICES], char *out, size_t cap);
+/* the title of a GIDDI driver by its short name (the DLL's base name, any case): the 8 above and the drivers Ghost Bear's
+ * Legacy's GIDDI\ adds (avenger, vfx1, vpilot, wingman), as each DLL reports it; NULL for an unknown driver */
+const char *cc_driver_title(const char *shortname);
 
 #endif

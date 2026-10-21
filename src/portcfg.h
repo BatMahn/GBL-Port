@@ -30,6 +30,11 @@
  *                          sky palette's 15 colours 0xE0-0xEE, 0x3c000); smooth: the same colours blended into an even
  *                          gradient. dos_sky=banded | smooth, its older name, is still read. The other renderers are not
  *                          affected)
+ *   videos=original | smooth | scanlines | crt | crt_curved   (the shell's full-screen videos, 320x200 clips: original, the
+ *                          default, as DOS showed them - mode 13h, each pixel a solid block filling the 4:3 screen;
+ *                          smooth: filtered scaling; scanlines: dark gaps between the lines (the interlaced look); crt:
+ *                          scanlines, a soft glow and an aperture-grille mask; crt_curved: the same on a curved tube.
+ *                          Combat Variables' VIDEO, src/vidfx.h)
  *   system_shortcuts=block | allow   (macOS: block, the default, turns the system's keyboard shortcuts - Mission
  *                          Control's Ctrl+arrows, Cmd+Tab, Spotlight - off while a mission is played with the window in
  *                          front (not in the MAIN MENU or paused); allow leaves them on. Other systems: no effect)
@@ -57,11 +62,15 @@ typedef struct {
     int  hud_original;        /* hud_layout=: 0 wide (default), 1 original (the 4:3 layout centred) */
     int  dos_sky_smooth;      /* dos_shading= (dos_sky=): 0 dithered (default, the original), 1 smooth (the DOS renderer's
                                * Gouraud polygons and haze band blended) */
+    int  videos;              /* videos=: PORTCFG_VID_* (0 original, the default) */
 } portcfg;
 enum { PORTCFG_ED_ENHANCED, PORTCFG_ED_DOS, PORTCFG_ED_3DFX, PORTCFG_ED_ATI, PORTCFG_ED_S3, PORTCFG_ED_PVR, PORTCFG_ED_MGA, PORTCFG_ED_COUNT };
 extern const char *const PORTCFG_ED_NAME[PORTCFG_ED_COUNT];   /* "enhanced", "dos", ... (the file's words) */
 enum { PORTCFG_TX_ORIGINAL, PORTCFG_TX_TITANIUM, PORTCFG_TX_COUNT };
 extern const char *const PORTCFG_TX_NAME[PORTCFG_TX_COUNT];   /* "original", "titanium" */
+/* the full-screen videos' look (the order of vidfx.h's VIDFX_*) */
+enum { PORTCFG_VID_ORIGINAL, PORTCFG_VID_SMOOTH, PORTCFG_VID_SCANLINES, PORTCFG_VID_CRT, PORTCFG_VID_CRT_CURVED, PORTCFG_VID_COUNT };
+extern const char *const PORTCFG_VID_NAME[PORTCFG_VID_COUNT];   /* "original", "smooth", "scanlines", "crt", "crt_curved" */
 /* An edition's files: the archive for models and data, the archive for textures and its kind ("ati", "3dfx", "pvr",
  * "dos"), the sky / ground file and the fog file ("" = no fog). Returns 0 if the edition's files are present (else the
  * outputs describe the enhanced mix, or the DOS archive without the 3D files). */
@@ -77,6 +86,24 @@ int  portcfg_texset_ok(const portcfg *c, int renderer, int texset);
  * fog file - the Titanium fog comes from its own SKYGND.PAR). Returns 0 if both are available. */
 int  portcfg_look(const portcfg *c, int renderer, int texset, char *models, char *textures, char *kind, char *sky, char *fog);
 void portcfg_defaults(portcfg *c);
+/* Ghost Bear's Legacy (portcfg_set_app with the disc data folder "GBL"): its own three looks, the file's
+ * renderer=dos | enhanced | titanium (no textures= line; DOS the default, and the fallback when titanium/ is missing):
+ *   dos       the DOS software look (renderer DOS)
+ *   enhanced  GBL's own DOS MW2.PRJ models and 8-bit textures in true colour, filtered, with each mission's fog from the
+ *             Titanium SKYGND.PAR (renderer ENHANCED, textures ORIGINAL; the sim's kind "dos", MW2_EDITION=enhanced; the
+ *             fog file = titanium/SKYGND.PAR when present, else no fog)
+ *   titanium  the Titanium Edition's Direct3D look: titanium/MW2.PRJ's models and textures, its SKYGND.PAR and
+ *             particle.PID (renderer ENHANCED, textures TITANIUM; the sim's kind "titanium", the textures archive
+ *             titanium/MW2.PRJ)
+ * The data archive (mission records, MEKs, AI - the models archive argument) is always the DOS GBL MW2.PRJ (the standing
+ * rule: Titanium contributes looks only). No 3Dfx / ATi / S3 / PowerVR / Matrox / Rendition renderers in gbl. */
+enum { PORTCFG_GBL_DOS, PORTCFG_GBL_ENHANCED, PORTCFG_GBL_TITANIUM, PORTCFG_GBL_COUNT };
+extern const char *const PORTCFG_GBL_NAME[PORTCFG_GBL_COUNT];   /* "dos", "enhanced", "titanium" */
+int  portcfg_is_gbl(void);                                   /* the app is gbl */
+int  portcfg_gbl_look(const portcfg *c);                     /* PORTCFG_GBL_* of renderer + texset */
+void portcfg_gbl_set_look(portcfg *c, int look);
+int  portcfg_gbl_look_ok(const portcfg *c, int look);        /* 1 if its files are here (titanium: titanium/MW2.PRJ) */
+int  portcfg_gbl_next(const portcfg *c, int look);           /* the next available look after `look` (cycling) */
 /* The program the configuration belongs to (before any other call): config folder and file name, the game folder's
  * default name, the disc's data folder. Default: "mw2port", "mw2port.cfg", "MW2-game", "MECH2". */
 void portcfg_set_app(const char *cfgdir, const char *cfgfile, const char *game_folder, const char *cd_data);

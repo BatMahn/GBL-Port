@@ -61,6 +61,13 @@ typedef struct {
     float dos_band;          /* DOS haze band above the horizon (HRZM +4: pixels at 320 wide), 0 = none */
     int   dos_sky_smooth;    /* the port's dos_shading=smooth: the Gouraud polygons' and the haze band's colours blended, not
                               * stepped and dithered (0 = original) */
+    /* gbl's ENHANCED look (glview: GBL's own DOS models and 8-bit textures through the DOS renderer's tables): dos_tc 1 =
+     * true colour - the shade level unrounded and blended between the LUMA rows / ramp entries, the textures filtered
+     * (bilinear, widened when minified) through the live palette, the Gouraud polygons and haze band smooth, no dither -
+     * and the Titanium SKYGND.PAR fog (ti_fog, fog_color) over the DOS colours; dos_fog_g: the sky's share of the clear
+     * colour (sky x g + fog x (1 - g), common3d.h c3d_ti_frame) applied to the DOS sky fill. 0: the DOS look as it is */
+    int   dos_tc;
+    float dos_fog_g;
     int   pvr_veil;          /* PowerVR fog: the 40 % white, fogged plane at y 55555.55 over the sky (0x1005ED90) */
     int   solo;              /* the target viewer: black behind, no sky / ground / world layer / effects, no fog */
     float mono[4];           /* a > 0: the actor layer untextured in this colour, lit (the target viewer's solid mode); a = 2: in each
@@ -188,6 +195,9 @@ void glr_default_view(glr_view *v);
  * flat lit = ramp x 16 + level, textured = LUMA[level][texel] - with the level from the light, the ambient level and the
  * distance (MW2.EXE 0x38ae3, 0x3e086, 0x38ee0); luma: 16 x 256 (LUMA record), pal: the mission's PAL. */
 void glr_set_dos(glr *r, const uint8_t pal[256][3], const uint8_t *luma);
+/* DOS image enhancement: draw colour type 3 polygons (billboards) as their own triangles, as the DOS colour routine does
+ * there (MW2.EXE 0x38ae3 / GBL 0x39573); set before the layers are built. The port sets it for gbl only (mw2 unchanged) */
+void glr_set_dos_ie_triangles(glr *r, int on);
 /* replace only the DOS palette (the time-of-day fades) */
 /* The 3D editions' palette fade (engine 0x1002ad50 -> DAT_1024e494, DAT_10160cf0): tint != NULL - every textured
  * fragment (objects, ground, sky, billboards, effects) times tint (slot 0xc INFRARED (0, 1, 8/255), slot 0x11 the red
