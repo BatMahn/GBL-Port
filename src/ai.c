@@ -1,5 +1,6 @@
 /* ai.c - see ai.h. */
 #include "ai.h"
+#include "mek.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -286,7 +287,14 @@ static void start_manoeuvre(ai_mind *m, const ai_view *v, int man)
     }
     case 8: m->reverse = 1; m->man_limit = (float)(ai_rand(m, 11) * 181u + 1810u); break;   /* rand(11) x 181 + 0x712 */
     case 10: m->reverse = 1; m->man_limit = (m->prev_man == 10 && v->contact) ? 724.0f : 1448.0f; break;   /* 0x2d4 / 0x5a8 */
-    case 11: m->man_limit = 362.0f; m->turn = 0; m->jet_side = -1; break;        /* 0x16a; input +0x1e = 1 always: the LEFT
+    case 11:
+        if (sim_game_gbl()) {   /* GBL 0x2ced0 case 0xb: 0x16c ticks; +0x17e 0 or 2 -> the left jet (+0x1e),
+                                                  * else the forward jet (+0x20) */
+            m->man_limit = 364.0f; m->turn = 0;
+            if (m->dodge_fwd) { m->jet_side = 0; m->jet_forward = 1; } else m->jet_side = -1;
+            break;
+        }
+        m->man_limit = 362.0f; m->turn = 0; m->jet_side = -1; break;        /* 0x16a; input +0x1e = 1 always: the LEFT
                                                                                      * jet (0x10019310 tests +0x1e first;
                                                                                      * the AI display 0x10012150 shows '<') */
     case 12: m->man_limit = 18100.0f; break;                                    /* 0x46b4 */
@@ -501,6 +509,34 @@ void ai_missile_warning(ai_mind *m, const ai_view *v, int shooter_level, int (*s
             if (!side_free || side_free(ctx, side)) { m->forced_man = 11; return; }
     }
     if (m->forced_man == -1 && v->pilot_level < 4) m->forced_man = 4;
+}
+
+/* GBL: DOS MW2.EXE 0x2e750 (from the weapon fire 0x53458 / 0x54089 / 0x54a71). The shooter: +0x19c bit 2 (pilot
+ * level <= 2, 0x2c970 - set only for computer-run units, +0x10 == 2: the player's shots never warn - DOSBox probe, see
+ * docs/gbl/E_sim.md) and rand(3) != 0; a guided weapon or the PPC (0x15). The target: its current manoeuvre (+0x172)
+ * not 4; jets with heat < 65 (0x2e6d0(0x41)) and rand(3) != 0 -> the dodge direction from the shooter's quadrant
+ * off the target's heading (0x233f0: (bearing - heading + 360) % 360, / 90): +0x17e = ((q + 1) % 4) * 4; a 50 m probe
+ * (0x2e230 + 0x1c640), one side at random then the other: clear -> manoeuvre 11 at once. Otherwise, if its manoeuvre
+ * is 0 and its pilot level <= 3 (+0x19c bit 1), manoeuvre 4 (the jump). */
+void ai_missile_warning_gbl(ai_mind *m, const ai_view *v, int shooter_level, float shooter_rel, int (*side_free)(void *ctx, int side), void *ctx)
+{
+    int side, k, q;
+    float r;
+    if (shooter_level > 2 || ai_rand(m, 3) == 0) return;
+    if (m->man == 4 || m->state != AI_ATTACK) return;   /* +0x172 == 4; manoeuvres run in attack */
+    if (!jets_ok(v, 65.0f)) return;
+    if (ai_rand(m, 3) != 0) {
+        r = fmodf(shooter_rel + 360.0f, 360.0f);
+        q = (int)(r / 90.0f) & 3;
+        side = ai_rand(m, 2) == 0 ? 1 : -1;
+        for (k = 0; k < 2; k++, side = -side)
+            if (!side_free || side_free(ctx, side)) {
+                m->forced_man = 11;
+                m->dodge_fwd = ((q + 1) % 4) * 4 != 0;   /* 0x2ced0: +0x17e 0 / 2 -> left, else forward */
+                return;
+            }
+    }
+    if ((m->man == 0 || m->man < 0) && m->forced_man == -1 && v->pilot_level <= 3) m->forced_man = 4;
 }
 
 void ai_step(const ai_library *lib, ai_mind *m, const ai_view *v, float dt)

@@ -352,3 +352,14 @@ token streams of the two decompiles with FUN_/DAT_/LAB_ names, numbers and regis
 5. AMS: the 64-bit compare in 0x54bb0 (intercept distance 2500 vs 2500 + rand x 100) - read as 25 m.
 6. NetMech arenas: which EN0x star is the local player and how a net game launches them (no launcher in this install).
 7. GUI1-4 profile tables: the meaning of record field +2 (7) in the DOS chooser vs the 3Dfx rand(6) (base question).
+
+## The missile / PPC dodge (DOS 0x2e750) - DOSBox-verified
+Called from the weapon fire (0x53458, 0x54089, 0x54a71) for every shot. First test: the shooter's +0x19c bit 2, which
+0x2c970 sets for pilot level <= 2 - and 0x2c970 runs only for computer-run units (0x217b0: +0x10 == 2; the player's unit
+is made with +0x10 = 0, 0x24d58). Probe (a patched copy of the original MW2.EXE, BASSSCN1, the player firing with `;`):
+a divide fault placed on "player and bit clear" ends the game on the first volley; placed on "player and bit set" the
+game runs on. So in DOS the player's shots never make an enemy dodge; only the AI's guided / PPC shots do. The port's
+base engine (3D DLL 0x10020ac0) warns on the player's shots as a level 1 pilot; GBL now follows DOS
+(`ai_missile_warning_gbl`, msim.c `missile_warning`). The dodge itself (manoeuvre 11, 0x2ced0 case 0xb): 0x16c ticks;
++0x17e = ((q + 1) % 4) * 4 with q = the shooter's quadrant off the target's heading - 0 -> the left jet (+0x1e), else the
+forward jet (+0x20). The side probe keeps the port's 50 m sidestep check (ASSUMED equivalent of 0x2e230 / 0x1c640).

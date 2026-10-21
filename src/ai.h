@@ -142,6 +142,7 @@ typedef struct {
     float twist_demand, pitch_demand;   /* the AI's inputs this step (0x100231a0: twist demand = param_2) */
     int   reverse;           /* input +0x2f (manoeuvres 8 / 10): drive backwards at half speed (0x1001ff70 / 0x1001fc00) */
     int   jet_side;          /* manoeuvre 11: lateral jets (input +0x1e) */
+    int   dodge_fwd;         /* GBL manoeuvre 11: the dodge uses the forward jet (+0x20) instead of the left (+0x1e) */
     float speed;             /* actual ground speed, cm/s (signed; the velocity c[0x3d..0x3f], see msim_drive_step) */
     float thr_servo;         /* current throttle c[0x13] as a fraction of full (servo +0x44, T 36.2 ticks) */
     float spd_servo;         /* servoed drive speed c[0xb], cm/s (servo +0x24 toward c[10]) */
@@ -196,6 +197,9 @@ void ai_post(ai_mind *m, int cond);
 /* the target of a guided launch reacts (engine 0x10020ac0): shooter_level = the shooter's pilot level (player 1).
  * side_free(ctx, side) reports whether a 50 m sidestep that way (-1 left, +1 right) is clear. */
 void ai_missile_warning(ai_mind *m, const ai_view *v, int shooter_level, int (*side_free)(void *ctx, int side), void *ctx);
+/* GBL (DOS MW2.EXE 0x2e750): the same warning as the DOS engine runs it; shooter_rel = the shooter's bearing off the
+ * target's heading, degrees */
+void ai_missile_warning_gbl(ai_mind *m, const ai_view *v, int shooter_level, float shooter_rel, int (*side_free)(void *ctx, int side), void *ctx);
 /* one AI step: evaluate the current state's rules, then move per state. dt in seconds. */
 void ai_step(const ai_library *lib, ai_mind *m, const ai_view *v, float dt);
 

@@ -2792,8 +2792,9 @@ static int side_free(void *ctx, int side)
     int climb;
     return !probe_engine(c->s, c->i, p0, p1, &climb, &ox, &oz);
 }
-/* a guided launch at AI mech t by a shooter of pilot level lv (the player 1): engine 0x10020ac0 */
-static void missile_warning(msim *s, int t, int lv)
+/* a guided launch at AI mech t by a shooter of pilot level lv (the player 1): engine 0x10020ac0; GBL: DOS 0x2e750
+ * (shooter = the firing actor, for the dodge direction) */
+static void missile_warning(msim *s, int t, int lv, int shooter)
 {
     ai_view v;
     struct side_ctx c;
@@ -2803,6 +2804,16 @@ static void missile_warning(msim *s, int t, int lv)
     v.heat = s->units[t].heat;
     v.pilot_level = s->actors[t].ai_level >= 1 && s->actors[t].ai_level <= 4 ? s->actors[t].ai_level : 1;
     c.s = s; c.i = t;
+    if (sim_game_gbl()) {
+        float rel = 0.0f;
+        if (shooter >= 0 && shooter < s->actor_count) {
+            float dx = (float)(s->actors[shooter].mech.origin[0] - s->actors[t].mech.origin[0]);
+            float dz = (float)(s->actors[shooter].mech.origin[2] - s->actors[t].mech.origin[2]);
+            rel = wrap180(atan2f(dx, dz) * 180.0f / 3.14159265f - s->actors[t].mech.heading);
+        }
+        ai_missile_warning_gbl(&s->minds[t], &v, lv, rel, side_free, &c);
+        return;
+    }
     ai_missile_warning(&s->minds[t], &v, lv, side_free, &c);
 }
 
@@ -3057,7 +3068,7 @@ static void combat_step(msim *s, float dt)
                 }
                 if (who >= 0 && (msim_weapon_guided(w) || w == 0x15)) {   /* the target dodges (0x10020ac0 from 0x1004397b) */
                     int lv = s->actors[i].ai_level >= 1 && s->actors[i].ai_level <= 4 ? s->actors[i].ai_level : 1;
-                    missile_warning(s, who, lv);
+                    missile_warning(s, who, lv, i);
                 }
                 if (s->on_shot) s->on_shot(s->shot_user, w, i, first, src[0], src[2]);
                 if (first) muzzle(s, w, src, src == mf ? &s->actors[i].mech : NULL, mech3d_mount_slot(loc), s->actors[i].mech.heading);
@@ -3169,7 +3180,9 @@ static void combat_step(msim *s, float dt)
                         /* 0x10020ac0 (from 0x1004397b): the player (level 1) launching at its target - in its view: within
                          * 15 degrees of the aim - warns it */
                         float off = wrap180(atan2f(dx, dz) * 180.0f / 3.14159265f - s->player_aim_yaw);
-                        if (fabsf(off) < 15.0f) missile_warning(s, e, 1);
+                        /* GBL: never - DOS sets the shooter's level bits (0x2c970) only for computer-run units, so the
+                         * player's shots never pass 0x2e750's first test (DOSBox probe of GBL MW2.EXE, BASSSCN1) */
+                        if (fabsf(off) < 15.0f && !sim_game_gbl()) missile_warning(s, e, 1, -1);
                     }
                     s->shot_loc = loc;
                     if (s->on_shot) s->on_shot(s->shot_user, w, -1, first, src[0], src[2]);

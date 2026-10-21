@@ -391,9 +391,38 @@ typedef struct {
     Uint32 last;
     int ended, frame;
     char name[16];
+    unsigned char *snd; int snd_n, snd_rate;   /* the clip's sound track (8-bit), started with the clip */
 } gslot;
 static gslot g_gs[GS_SLOTS];
 static const uint8_t (*g_gs_pal)[3];   /* palette for SHP clips: NULL = the background's */
+/* a Smacker file's sound track 0 as unsigned 8-bit mono for sfx_play_pcm (NULL without one, or headless). The original
+ * opens every shell clip with the sound-track flags 0x95ecc = 0xfe00 (SmackOpen at 0x3cfdf - slot clips, 0x3c6cc /
+ * 0x3c72d - full-screen clips), so a clip with sound plays it: agbmcx01 (the zoom into the Mission Computer), aintro04
+ * (the title), agball02 (the roster's orb). */
+static unsigned char *gsmk_audio(smk *s, int *n, int *rate)
+{
+    int16_t *a = NULL;
+    size_t ns = 0, i;
+    int ch = 1;
+    unsigned char *snd = NULL;
+    *n = 0; *rate = 0;
+    if (g_headless || !g_sfx || !s) return NULL;
+    if (smk_audio(s, &a, &ns, rate, &ch) == 0 && ns > 0 && ch > 0 && (snd = malloc(ns / (size_t)ch + 1))) {
+        for (i = 0; i < ns / (size_t)ch; i++) {
+            int v = ch == 2 ? ((int)a[2 * i] + (int)a[2 * i + 1]) / 2 : a[i];
+            snd[i] = (unsigned char)((v >> 8) + 128);
+        }
+        *n = (int)(ns / (size_t)ch);
+    }
+    free(a);
+    return snd;
+}
+static void gs_snd_start(gslot *g)
+{
+    if (!g->snd || !g_sfx) return;
+    sfx_stop_pcm(g_sfx, g->snd);
+    sfx_play_pcm(g_sfx, g->snd, g->snd_n, g->snd_rate, 1.0f, 0);
+}
 static FILE *gbl_open_smkdir(const char *name, const char *ext, char *path, size_t n)
 {
     char dn[64];
@@ -409,6 +438,7 @@ static void gs_close(int i)
     if (i < 0 || i >= GS_SLOTS) return;
     g = &g_gs[i];
     if (g->s) smk_close(g->s);
+    if (g->snd) { if (g_sfx) sfx_stop_pcm(g_sfx, g->snd); free(g->snd); }
     if (g->have_fr) shp_frame_free(&g->fr);
     free(g->shp);
     memset(g, 0, sizeof *g);
@@ -457,6 +487,7 @@ static int gs_load(int i, const char *name, int x, int y, int flags, int fps)
         if (!g->s) { memset(g, 0, sizeof *g); return -1; }
         smk_next(g->s);
         g->nfr = smk_frames(g->s);
+        g->snd = gsmk_audio(g->s, &g->snd_n, &g->snd_rate);
     }
     if (flags & GS_BOTTOM) {   /* the position is the clip's bottom centre */
         int w = 0, h = 0;
@@ -467,6 +498,7 @@ static int gs_load(int i, const char *name, int x, int y, int flags, int fps)
         g->x -= w / 2; g->y -= h;
     }
     g->used = 1; g->last = g_now; g->frame = 0; g->ended = 0;
+    if (!(flags & (GS_PAUSED | GS_HIDDEN))) gs_snd_start(g);
     return 0;
 }
 static int gs_loaded(int i) { return i >= 0 && i < GS_SLOTS && g_gs[i].used; }
@@ -481,6 +513,7 @@ static void gs_restart(int i)
     if (g->shp) gs_shp_frame(g, 0);
     g->frame = 0; g->ended = 0; g->last = g_now;
     g->flags &= ~(GS_PAUSED | GS_HIDDEN);
+    gs_snd_start(g);
 }
 static void gs_show_frame(int i, int k)   /* a button: show frame k, held */
 {
@@ -510,7 +543,7 @@ static void gs_tick(int i)
     while (g_now - g->last >= (Uint32)g->ms) {
         g->last += (Uint32)g->ms;
         if (g->frame + 1 >= g->nfr) {
-            if (g->flags & GS_LOOP) { smk_rewind(g->s); smk_next(g->s); g->frame = 0; continue; }
+            if (g->flags & GS_LOOP) { smk_rewind(g->s); smk_next(g->s); g->frame = 0; gs_snd_start(g); continue; }
             if (g->flags & GS_REWIND) { smk_rewind(g->s); smk_next(g->s); g->frame = 0; g->flags |= GS_PAUSED; g->ended = 1; break; }
             g->ended = 1;
             break;
@@ -569,19 +602,9 @@ static int gbl_video(const char *name)
     gbl_open_smkdir(name, "SMK", path, sizeof path);
     if (!(s = smk_open_file(path))) return 0;
     n = g_headless ? video_headless_frames(2) : smk_frames(s);
-    if (!g_headless) {
-        int16_t *a = NULL;
-        size_t ns = 0;
-        int rate = 0, ch = 1;
-        if (smk_audio(s, &a, &ns, &rate, &ch) == 0 && ns > 0 && (snd = malloc(ns / (size_t)ch + 1))) {
-            size_t i;
-            for (i = 0; i < ns / (size_t)ch; i++) {
-                int v = ch == 2 ? ((int)a[2 * i] + (int)a[2 * i + 1]) / 2 : a[i];
-                snd[i] = (unsigned char)((v >> 8) + 128);
-            }
-            sfx_play_pcm(g_sfx, snd, (int)(ns / (size_t)ch), rate, 1.0f, 0);
-        }
-        free(a);
+    {
+        int sn, sr;
+        if ((snd = gsmk_audio(s, &sn, &sr))) sfx_play_pcm(g_sfx, snd, sn, sr, 1.0f, 0);
     }
     t0 = SDL_GetTicks();
     for (f = 0; f < n && !skipped; f++) {

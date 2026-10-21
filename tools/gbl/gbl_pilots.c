@@ -160,8 +160,11 @@ static void gp_play_full(const char *name)
     int f, n;
     Uint32 t0 = g_now;
     gbl_open_smkdir(name, "SMK", path, sizeof path);
+    unsigned char *snd;
+    int sn, sr;
     if (!(s = smk_open_file(path))) return;   /* missing: nothing (the original returns) */
     n = smk_frames(s);
+    if ((snd = gsmk_audio(s, &sn, &sr))) sfx_play_pcm(g_sfx, snd, sn, sr, 1.0f, 0);   /* its sound track (0x3c6cc) */
     for (f = 0; f < n && !g_quit_all; f++) {
         gbl_input *in;
         smk_next(s);
@@ -175,6 +178,7 @@ static void gp_play_full(const char *name)
             if ((double)now < due) SDL_Delay((Uint32)(due - (double)now));
         }
     }
+    if (snd) { sfx_stop_pcm(g_sfx, snd); free(snd); }
     smk_close(s);
 }
 
