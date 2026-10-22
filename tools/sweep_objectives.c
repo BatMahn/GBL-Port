@@ -799,7 +799,7 @@ static int run_scene(prj_archive *a, const char *scene)
     if (s.outcome != 2) anom(&nanom, scene, "mission not successful: %s", msim_outcome_text(&s) ? msim_outcome_text(&s) : "no outcome");
     printf("RESULT %-9s %-22s %7.1f s  anomalies %d  fallbacks %d\n", scene,
            msim_outcome_text(&s) ? msim_outcome_text(&s) : (s.logic.tables[0].node_count <= 1 ? "none (no objectives)" : "none (running)"),
-           (double)(s.ending ? s.end_at - (0x71c * 1000 / 182) : s.now) / 1000.0, nanom, at.fallbacks);
+           (double)(s.ending ? s.ending_at : s.now) / 1000.0, nanom, at.fallbacks);
 done:
     if (have_bm) bwd_mission_free(&bm);
     msim_free(&s);
@@ -845,14 +845,6 @@ int main(int argc, char **argv)
         else if (strcmp(argv[first], "-installstars") == 0) own_stars = 0;
     }
     if (!(a = prj_open(argv[1], err, sizeof err))) { fprintf(stderr, "%s\n", err); return 1; }
-    if (!getenv("MW2_GAME")) {   /* Ghost Bear's Legacy's install (GBL.EXE beside MW2.PRJ): run the sim's GBL rules */
-        char gp[1024];
-        const char *sl = strrchr(argv[1], '/');
-        FILE *gf;
-        snprintf(gp, sizeof gp, "%.*sGBL.EXE", sl ? (int)(sl - argv[1] + 1) : 0, argv[1]);
-        if ((gf = fopen(gp, "rb")) != NULL) { fclose(gf); setenv("MW2_GAME", "gbl", 1); }
-    }
-    if (sim_game_gbl()) printf("game: Ghost Bear's Legacy (MW2_GAME=gbl)\n");
     if (own_stars) {
         /* the shell's hand-off files (USERSTAR, EN01..05STAR, INSTMAP1) written fresh, as the Instant Action launch does
          * (mw2shell 0x1d540): a fixed lance so runs are repeatable and the Instant Action scenes have enemies. They go
@@ -884,7 +876,7 @@ int main(int argc, char **argv)
         scenes = calloc((size_t)prj_symbol_count(a, t) + 1, sizeof *scenes);
         for (i = 0; scenes && i < prj_symbol_count(a, t); i++)
             if (is_scene(prj_symbol_name(a, t, i))) {
-                if (sim_game_gbl() && net_arena(prj_symbol_name(a, t, i))) {
+                if (net_arena(prj_symbol_name(a, t, i))) {
                     printf("=== %s\nRESULT %-9s net arena - skipped\n", prj_symbol_name(a, t, i), prj_symbol_name(a, t, i));
                     continue;
                 }

@@ -1,3 +1,6 @@
+/* the sim's input map on the GBL install (test_inputmap <install>): GAMEKEY.MAP commands, INPUT.MAP rules, the built-in
+ * defaults (their command set must equal GAMEKEY.MAP's; GBL's INPUT.MAP has more rules than the built-in keyboard set,
+ * so the rule counts are printed, not compared), the stick and mouse shaping */
 #include <math.h>
 #include <stdlib.h>
 #include "inputmap.h"
@@ -15,7 +18,7 @@ int main(int argc, char **argv){ inputmap m; char a[1100], b[1100]; snprintf(a, 
  ks[SDL_SCANCODE_DELETE]=1; CHK(im_held(&m,"legs_pan_minus",ks) && im_held(&m,"jumpjet_enabled",ks)); memset(ks,0,sizeof ks);
  ks[SDL_SCANCODE_Z]=1; CHK(im_held(&m,"zoom_factor_plus",ks) && !im_held(&m,"zoom_factor_minus",ks)); ks[SDL_SCANCODE_RSHIFT]=1; CHK(im_held(&m,"zoom_factor_minus",ks)); memset(ks,0,sizeof ks);
  ks[SDL_SCANCODE_SEMICOLON]=1; CHK(im_action_held(&m,"FIRE_WEAPON_GROUP",ks));
- { FILE *f = fmemopen((void *)IM_DEFAULT_GAMEKEY, strlen(IM_DEFAULT_GAMEKEY), "r"); inputmap d; memset(&d, 0, sizeof d); im_parse_gamekey(&d, f); fclose(f); f = fmemopen((void *)IM_DEFAULT_INPUT, strlen(IM_DEFAULT_INPUT), "r"); im_parse_input(&d, f); fclose(f); CHK(d.nbinds == m.nbinds); CHK(d.nrules == m.nrules); }
+ { FILE *f = fmemopen((void *)IM_DEFAULT_GAMEKEY, strlen(IM_DEFAULT_GAMEKEY), "r"); inputmap d; memset(&d, 0, sizeof d); im_parse_gamekey(&d, f); fclose(f); f = fmemopen((void *)IM_DEFAULT_INPUT, strlen(IM_DEFAULT_INPUT), "r"); im_parse_input(&d, f); fclose(f); CHK(d.nbinds == m.nbinds); printf("built-in keyboard set: %d control rules (the install's INPUT.MAP: %d)\n", d.nrules, m.nrules); }
  /* the throttle axis (FLTSTCK / MSJSTICK 0x10a00): v / 0.8 rounded up to the next 1/32, no dead zone, full at 80 %; the
   * mouse (MOUSE.DLL 0x10350): the box offset / 512 */
  CHK(im_stick_shape(3, 0.0f) == 0.0f); CHK(fabsf(im_stick_shape(3, 0.4f) - 17.0f / 32.0f) < 1e-6f); CHK(fabsf(im_stick_shape(3, -0.4f) + 17.0f / 32.0f) < 1e-6f);

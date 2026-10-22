@@ -75,18 +75,12 @@ typedef struct {
     int ammo_per_ton;    /* 0 for energy weapons */
 } mek_weapon;
 
-extern const mek_weapon mek_weapons[];
-extern const int mek_weapon_count;
 /* Ghost Bear's Legacy's table (GBL MW2SHELL.EXE VA 0x80ad4, 35 x 40 bytes {heat, damage, unk, short, medium, range m,
  * tons x 100, crits, ammo/t, name*}): the base 31 with GBL's figures for NARC / AMS / Nuke, then Inferno SRM-2,
  * Torpedo, Inferno SSRM-2, ARROW IV (ids 3101-3402) */
 extern const mek_weapon mek_weapons_gbl[];
 extern const int mek_weapon_count_gbl;
-/* the game being run: 1 for Ghost Bear's Legacy (the environment's MW2_GAME is "gbl" - the gbl shell sets it before the
- * simulation starts), 0 for MechWarrior 2. Every GBL-only rule (weapon table, AMS, NARC lock, 14 weapons, boss AI) tests
- * it; unset, the base game runs exactly as before */
-int sim_game_gbl(void);
-/* the weapon table of the game being run (mek_weapons / mek_weapons_gbl) and its length */
+/* the game's weapon table (mek_weapons_gbl) and its length */
 const mek_weapon *mek_weapon_table(void);
 int mek_weapon_table_count(void);
 

@@ -7,7 +7,7 @@
 #include <string.h>
 
 #include "wtable.h"
-/* the game's weapon table (wtable.h: the base 31, or GBL's 35 when sim_game_gbl()) */
+/* the weapon table (wtable.h: GBL's 35) */
 #define WT (sim_wtab())
 #define WN (sim_wcount())
 
@@ -97,18 +97,18 @@ int combat_init(combat_unit *u, prj_archive *a, const char *loadout)
     u->tons = (int)d.tonnage;   /* controller +0xe4 (MEK +0x00): the head-hit ratio in 0x1000c1f0 */
     u->jets = (int)d.jump_mp;
     u->jet_ddy = d.walk_mp ? (float)d.jump_mp / (float)d.walk_mp * 0.1184f : 0;
-    u->jet_fuel = u->jets > 0 ? combat_jet_fuel_max : 0;
+    u->jet_fuel = u->jets > 0 ? COMBAT_JET_FUEL_MAX : 0;
     /* engine 0x10041410: the first 10 items are the weapons; for each, in order, every ammo link naming it becomes a
      * bin (at most 25) of per_volley x ammo_per_ton rounds, and the weapon's count is the sum (-1: no ammunition) */
-    for (i = 0; i < d.item_count && u->weapon_count < (sim_game_gbl() ? COMBAT_MAX_WEAPONS : 10); i++) {   /* GBL 0x4d670: 14 */
+    for (i = 0; i < d.item_count && u->weapon_count < COMBAT_MAX_WEAPONS; i++) {   /* GBL 0x4d670: 14 */
         const mek_weapon *w = mek_weapon_for(d.items[i].id);
         combat_weapon *cw;
         int wi, loc = MEK_CT;
         if (!w) continue;
         wi = (int)(d.items[i].id / 100);   /* the weapon index (mek_weapon_for: the game's table) */
         /* GBL 0x4d670: every one of the first item_count (at most 14) items is a weapon slot, damage 0 or not (Inferno,
-         * Flamer, NARC, AMS); the base port keeps only weapons that deal damage */
-        if (sim_game_gbl() ? (wi < 0 || wi >= WN) : (wi < 0 || wi >= WN || WT[wi].damage <= 0 || WT[wi].per_volley <= 0)) continue;
+         * Flamer, NARC, AMS) */
+        if (wi < 0 || wi >= WN) continue;
         for (l = 0; l < MEK_LOC_COUNT; l++)
             for (k = 0; k < MEK_SLOTS; k++)
                 if (d.loc[l].slots[k] == d.items[i].id) { loc = l; l = MEK_LOC_COUNT; break; }
@@ -477,16 +477,6 @@ static void apply_damage(combat_unit *t, float dmg, int rear, unsigned *rng)
 }
 
 int combat_damage_live = 1;
-/* the full jet tank, c[0x30] (controller +0xc0) in ticks: 3Dfx 0x712 = 1810 (0x10041beb at load, 0x1001a5ad / 0x1001a63c,
- * the Jets bar 0x1001c783); DOS MW2.EXE 0x71c = 1820 everywhere (0x4ce84 at load, 0x27b84 / 0x27c57 / 0x27c7d, the bar
- * 0x314b9). The front end sets it by edition */
-float combat_jet_fuel_max = 1810.0f;
-/* the refill with the jets released, both 0x1001a5ad (3Dfx) and DOS 0x27c63: below the full tank c[0x30] += the frame's
- * whole ticks >> 2 (no cap that frame), else = full. The 3D looks keep ticks / 4 (unchanged); the DOS look takes the
- * DOS rule at the agreed 30 fps: 182 / 30 = 6.07 ticks a frame - the clock's whole ticks 6 or 7, >> 2 = 1 a frame,
- * 30 a second (ticks / 4 is 45.5). The front end sets it by edition */
-int combat_jet_refill_dos = 0;
-int combat_ct_split = 3;   /* 3: the 3D editions' CT spread, 2: DOS's (the front end sets it by edition) */
 const char *combat_damage_src = "weapon";   /* TEST ONLY: what the next damage is, for MW2_DAMAGE_LOG */
 static void apply_damage_at(combat_unit *t, float dmg, int rear, int loc, unsigned *rng)
 {
@@ -500,9 +490,9 @@ static void apply_damage_at(combat_unit *t, float dmg, int rear, int loc, unsign
      * nothing at all before the player's first start-up is done (DAT_1024c570; DOSBox WHITSCN1 / PLUMSCN1: the dropped
      * player lands hard, MECMTNHD, the damage display stays blue) */
     if (!combat_damage_live || t->invulnerable || !(dmg > 1e-7f) || loc < 1 || loc > 8) return;
-    /* a CT hit is spread: the 3D editions rand(3) -> 2 / 3 / 4 (0x10017264); DOS rand(2) -> 2 / 3 (MW2.EXE 0x263c8) -
-     * DOSBox AQUASCN1 H T A L: one side torso and the CT take every hit, the other side torso none */
-    if (loc == 3) loc = 2 + rand_n(rng, combat_ct_split == 2 ? 2 : 3);
+    /* a CT hit is spread: DOS rand(2) -> 2 / 3 (MW2.EXE 0x263c8) - DOSBox AQUASCN1 H T A L: one side torso and the CT
+     * take every hit, the other side torso none */
+    if (loc == 3) loc = 2 + rand_n(rng, 2);
     i = loc - 1;
     t->damage_taken += (int)dmg;
     if (t->loc_gone[i]) return;                              /* already gone: no transfer (nothing more can happen) */
@@ -647,10 +637,10 @@ static int ai_choose(combat_unit *u, float distance, unsigned (*rng)(void *ctx, 
         /* 0x100151a0: 3 inside the minimum range (+0x3c), 2 inside the range, 1 at it, 0 beyond: fires on 1-2 */
         /* GBL 0x2ec90 with the group-fire flag: the heat of every ready weapon with ammunition summed - the loop reads the
          * CURRENT slot each pass (a slip), so weapon_count x its heat, and its ammunition the same way */
-        float hsum = u->group_fire && sim_game_gbl() ? sw->heat * (float)n : sw->heat;
+        float hsum = u->group_fire ? sw->heat * (float)n : sw->heat;
         if (usable && distance >= (float)sw->field3c && distance <= range_cm(cw->weapon) &&
             hsum + u->heat < 65.0f && cw->state == CW_READY && cw->ammo != 0 &&
-            rng(ctx, (unsigned)(sw->refire / (sim_game_gbl() ? 91 : 90) + 1)) == 0)   /* GBL 0x2ec90: refire / 0x5b + 1 */
+            rng(ctx, (unsigned)(sw->refire / 91 + 1)) == 0)   /* GBL 0x2ec90: refire / 0x5b + 1 */
             return i;
         ai_next_weapon(u);
     }
@@ -807,18 +797,17 @@ int combat_jets(combat_unit *u, int jetting, float dt, unsigned *rng)
         if (held) {
             u->jet_fuel -= ticks;
             if (u->jet_fuel <= 0) u->jet_fuel = 0;
-        } else if (combat_jet_refill_dos) {   /* DOS 0x27c57..0x27c7d, one step per 30 fps frame */
+        } else {   /* DOS 0x27c57..0x27c7d: below the full tank c[0x30] += the frame's whole ticks >> 2 (no cap that frame),
+                    * else = full - at the agreed 30 fps: 182 / 30 = 6.07 ticks a frame, the clock's whole ticks 6 or 7,
+                    * >> 2 = 1 a frame, 30 a second */
             int n;
             u->jet_refill_acc += dt * 30.0f;
             n = (int)u->jet_refill_acc;
             u->jet_refill_acc -= (float)n;
             while (n-- > 0) {
-                if (u->jet_fuel < combat_jet_fuel_max) u->jet_fuel += (float)((int)(COMBAT_TICKS_PER_S / 30.0f) >> 2);   /* 6 >> 2 = 1 (7 >> 2 too) */
-                else u->jet_fuel = combat_jet_fuel_max;
+                if (u->jet_fuel < COMBAT_JET_FUEL_MAX) u->jet_fuel += (float)((int)(COMBAT_TICKS_PER_S / 30.0f) >> 2);   /* 6 >> 2 = 1 (7 >> 2 too) */
+                else u->jet_fuel = COMBAT_JET_FUEL_MAX;
             }
-        } else if (u->jet_fuel < combat_jet_fuel_max) {
-            u->jet_fuel += ticks * 0.25f;
-            if (u->jet_fuel > combat_jet_fuel_max) u->jet_fuel = combat_jet_fuel_max;
         }
     }
     jet = held && u->jet_fuel > 0;

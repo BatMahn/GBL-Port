@@ -270,7 +270,7 @@ FUN_0003e2e0(slot) = 'Mech index or -1, FUN_0003e330(star) = record.
   bass's briefing: "choose your 'Mech well, as you will take it with you wherever you are posted") and a starmate's arrow
   toggles between "None" and the pilot's saved 'Mech for that slot (+0x72 + k*0x40).
 - Changing slot 0 redraws the wireframe clip 11.
-- Differences from the base (SHELL.md "Star Configuration" / "Ready Room" / "Briefing"): no formation choice (always 0 =
+- Differences from the base (the base shell "Star Configuration" / "Ready Room" / "Briefing"): no formation choice (always 0 =
   echelonl), no ADD / DELETE STARMATE buttons, no separate star screen, no SKIP / FERRARI, no trial "'Mech has been selected"
   messages (trials 0 / 12 let you choose; pete is fixed by name), no orbit / planet clip, briefing + video + star on one
   page; the briefing text is the same BRF1 ORDR record (base: KTWOBRF1 special case gone).
@@ -370,7 +370,7 @@ right-aligned at x 85 + 350 = 435 (MEASURED). Lines, in order:
 9. Altered reality: "\cNo Career Advancement with Altered Reality Enabled\n", honor 0. Status 3:
    "\n\cMission Failed:  NO HONOR ACQUIRED\n", honor 0.
 10. Status 2: pilot honor += honor. "Career Honor:" (MEASURED 1857 for TESTC with status 0: nothing added).
-Same numbers as the base (SHELL.md "Debriefing"); new in GBL: the trial override and ranks (2.4), +0x1d / deathmov,
+Same numbers as the base (the base shell "Debriefing"); new in GBL: the trial override and ranks (2.4), +0x1d / deathmov,
 the failure counter and renamed pilot, the location, and no "wingman" / "underweight" differences (underweight uses the
 max star size).
 
@@ -428,7 +428,7 @@ In the debriefing, key 0x8011 (getch 0 + scan 0x11 = **Alt+W**) restores the pil
   loadout's chassis (FUN_0001ce30 looks the chassis up by the loadout's first 3 letters) - INFERRED.
 
 ## 7. Differences from the base shell (summary)
-| base (SHELL.md) | GBL |
+| base (the base shell) | GBL |
 |---|---|
 | two clans, 16 missions each, records 0x7f04c + clan*4 {scn, trial, title} | one campaign, 22 missions, 0x8017c[0] -> 0x800ac, same 9-byte record; "Retired" terminator |
 | Ready Room 11 + Briefing 0 + Star Configuration 13 | one Mission Computer screen 5 (FUN_00028410) |

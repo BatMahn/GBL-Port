@@ -8,12 +8,11 @@
 /* ======================================================================================================================
  * helpers */
 
-/* the screen under the menu: the frame, the queued text (windowed mode draws text from a queue, see mw2shell.c), the
+/* the screen under the menu: the frame, the queued text (windowed mode draws text from a queue, see gbl_common.c), the
  * background (the pages load their own; the panel and the text use the background's palette) */
 typedef struct {
     uint8_t *fb;
     text_item text[256]; int ntext;
-    tt_item tt[32]; int ntt;
     int bg;
 } gbl_frame_screen;
 static int gbl_frame_save(gbl_frame_screen *s)
@@ -23,7 +22,6 @@ static int gbl_frame_save(gbl_frame_screen *s)
     memcpy(s->fb, g_fb, sizeof g_fb);
     gbl_cursor_unsave(s->fb);   /* without the pointer of the frame it was taken from */
     memcpy(s->text, g_text, sizeof g_text); s->ntext = g_ntext;
-    memcpy(s->tt, g_tt, sizeof g_tt); s->ntt = g_ntt;
     s->bg = g_bg_entry;
     return 0;
 }
@@ -32,7 +30,6 @@ static void gbl_frame_restore(const gbl_frame_screen *s)
     if (s->bg != g_bg_entry && s->bg >= 0) load_bg(s->bg);
     memcpy(g_fb, s->fb, sizeof g_fb);
     memcpy(g_text, s->text, sizeof g_text); g_ntext = s->ntext;
-    memcpy(g_tt, s->tt, sizeof g_tt); g_ntt = s->ntt;
 }
 
 /* the clip slots stand still while a modal page or the menu is up (the original does not call FUN_0003ca50 there): on
@@ -83,7 +80,7 @@ static int gbl_frame_any(const gbl_input *in) { return in->quit || in->lclick ||
  * centred at 320 - 30 (n - 1) + 61 k, y 276 (0x114), boxes +-26 x +-13 drawn with the panel's frame 0 (up) / 1 (pressed)
  * at 64x24; text y = 276 - height / 2. A press on a button pushes it, the release over it picks it; Enter and Esc pick the
  * default; a letter key picks the button starting with it (upper-cased). The menu's FLEE TO DOS (0x275f3) is the same
- * code inline. The same layout as the base shell_dialog (mw2shell.c), here on gbl_frame's input. */
+ * code inline. The same layout as the base shell_dialog (gbl_common.c), here on gbl_frame's input. */
 static int gbl_frame_dialog(const char *msg, int def)
 {
     char buf[256], *lines[8], *btn[4], *p;
@@ -827,7 +824,7 @@ static void gbl_combat_variables(void)
     uint8_t snd[0x40], dif[8], snd0[0x40], dif0[8];
     FILE *f;
     portcfg pc, pc0;
-    int i, nmodes = 0, mi = -1, tx_lock, grey;
+    int i, nmodes = 0, mi = -1, grey;
     struct { int w, h; } modes[64];
     gbl_frame_logo logo;
     /* rows: the original's (DIFFICULTY and HEAT TRACKING 20 px up, see above), then the port's RENDERER, TEXTURES */
@@ -847,8 +844,8 @@ static void gbl_combat_variables(void)
     if ((f = dp_fopen("MW2DIF.CFG", "rb"))) { if (fread(dif, 1, sizeof dif, f)) {} fclose(f); }
     memcpy(snd0, snd, sizeof snd); memcpy(dif0, dif, sizeof dif);
     portcfg_load(g_dir, &pc);
-    {   /* RENDERER shows the edition the simulation will use: the configured one when its files are here, else the
-         * core's choice (gblshell.c falls back to the DOS renderer without the 3D-edition files) */
+    {   /* RENDERER shows the look the simulation will use: the configured one when its files are here (DOS / ENHANCED: the
+         * DOS MW2.PRJ; TITANIUM: titanium/MW2.PRJ), else the core's choice (gblshell.c falls back to DOS) */
         char m1[PORTCFG_PATH], m2[PORTCFG_PATH], m3[PORTCFG_PATH], m4[PORTCFG_PATH], m5[PORTCFG_PATH];
         if (portcfg_edition(&g_cfg, pc.renderer, m1, m2, m3, m4, m5) != 0) pc.renderer = g_cfg.renderer;
         if (!portcfg_gbl_look_ok(&g_cfg, portcfg_gbl_look(&pc))) portcfg_gbl_set_look(&pc, PORTCFG_GBL_DOS);   /* (agent M) */
@@ -873,7 +870,6 @@ static void gbl_combat_variables(void)
         char res[32], disp[48];
         const char *val[14];
         int vx[14], vdim[14];
-        tx_lock = 1;   /* gbl: TEXTURES follows RENDERER (DOS / ENHANCED original, TITANIUM titanium; portcfg.h) - shown, not chosen */
         draw_bg();
         {   /* the port's layout (see above): the DIFFICULTY group's artwork 20 px up, the DETAIL heading to the RENDERER row */
             int x, y;
@@ -908,7 +904,7 @@ static void gbl_combat_variables(void)
         for (i = 0; i < 14; i++) {
             const char *t = val[i];
             int w;
-            vdim[i] = i == 13 && tx_lock;
+            vdim[i] = i == 13;   /* TEXTURES follows RENDERER (DOS / ENHANCED original, TITANIUM titanium): shown, not chosen */
             if (t[0] == '~') { t++; w = gtext_w(28, t); vx[i] = 443 - w / 2; }
             else if (i < 12) vx[i] = 443 - 14;
             else { w = gtext_w(28, t); vx[i] = 443 - w / 2; }   /* the port's rows: centred too, kept off the labels */
@@ -917,7 +913,7 @@ static void gbl_combat_variables(void)
         }
         /* the port's labels (right-aligned at 362 like the artwork's) and its right-hand words */
         gbl_frame_text(28, 362 - gtext_w(28, "RENDERER"), ROW_Y[12], "RENDERER", -1);
-        gbl_frame_text(28, 362 - gtext_w(28, "TEXTURES"), ROW_Y[13], "TEXTURES", tx_lock ? grey : -1);
+        gbl_frame_text(28, 362 - gtext_w(28, "TEXTURES"), ROW_Y[13], "TEXTURES", grey);
         if (pc.mode == 0) snprintf(disp, sizeof disp, "FULL SCREEN");   /* the port's DISPLAY: desktop / windowed / a mode */
         else if (pc.mode == 1) snprintf(disp, sizeof disp, "WINDOWED");
         else snprintf(disp, sizeof disp, "%dX%d", pc.w, pc.h);
@@ -991,9 +987,6 @@ static void gbl_combat_variables(void)
                     portcfg_gbl_set_look(&pc, nl); portcfg_gbl_set_look(&g_cfg, nl);
                     break;
                 }
-                case 13:   /* the port's TEXTURES: ORIGINAL / TITANIUM */
-                    if (!tx_lock) pc.texset = g_cfg.texset = pc.texset == PORTCFG_TX_TITANIUM ? PORTCFG_TX_ORIGINAL : PORTCFG_TX_TITANIUM;
-                    break;
                 }
             }
             for (i = 0; i < 3; i++)   /* MUSIC / EFFECTS / VOICE (0x26b20) */
@@ -1026,7 +1019,7 @@ static void gbl_combat_variables(void)
  * same order for an install folder), each titled as its DLL reports it (cc_driver_title); no keyboard.dll: "Error:
  * keyboard.dll not found.#Ok" and no page. A left or right press over a widget with a click runs it (FUN_00034320: x <=
  * mx < x + w, y <= my < y + h; h = the font height); Esc leaves. ACCEPT / CUSTOM CONFIGURATION / ABORT and the editor are
- * the base port's (cockpitcfg.c, mw2shell.c cc_*), which know the base's eight drivers: the four GBL-only ones can be
+ * the base port's (cockpitcfg.c, gbl_common.c cc_*), which know the base's eight drivers: the four GBL-only ones can be
  * selected here but add nothing to INPUT.MAP (the port's simulation has no driver for them - port limitation). */
 static int gbl_cc_cmp(const void *a, const void *b) { return strcmp((const char *)a, (const char *)b); }
 static void gbl_cockpit_controls(void)

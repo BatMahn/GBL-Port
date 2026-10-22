@@ -1,5 +1,5 @@
 /*
- * ai.h - MechWarrior 2's AI: AIT rule programs run per mech (3dfx MW2.DLL, see ASSUMPTIONS.md).
+ * ai.h - MechWarrior 2's AI: AIT rule programs run per mech (3dfx MW2.DLL, see docs/engine/ASSUMPTIONS.md).
  *
  * FROM THE ENGINE: states (idle 0, avoid 1, target 2, attack 3, flee 4, follow 5, recon 6,
  * patrol 7, godirect 8, rest 10, shutdown 11, dead 12); program layout (header of (state, rule
@@ -184,7 +184,7 @@ typedef struct {
     float engage_range;
 } ai_mind;
 
-/* GBL (sim_game_gbl) GPS skill 100-103 (GBL 0x217b0, table 0xa62dc: the GUI1-4 trial bosses): the profile's manoeuvre
+/* GBL GPS skill 100-103 (GBL 0x217b0, table 0xa62dc: the GUI1-4 trial bosses): the profile's manoeuvre
  * table and engage range go into the mind; *skill / *level get the profile's (1 / 1) and *group_fire its flag (+0x14).
  * Returns 1 when the skill named a profile, else 0 (nothing changed) */
 int  ai_gbl_profile(ai_mind *m, int gps_skill, int *skill, int *level, int *group_fire);
@@ -194,11 +194,9 @@ void ai_init(ai_mind *m, int order_prog);
 int  ai_allows(const ai_library *lib, const ai_mind *m, int state);
 /* post an event (condition code) to a mind, if it has none pending (engine 0x10014270) */
 void ai_post(ai_mind *m, int cond);
-/* the target of a guided launch reacts (engine 0x10020ac0): shooter_level = the shooter's pilot level (player 1).
- * side_free(ctx, side) reports whether a 50 m sidestep that way (-1 left, +1 right) is clear. */
-void ai_missile_warning(ai_mind *m, const ai_view *v, int shooter_level, int (*side_free)(void *ctx, int side), void *ctx);
-/* GBL (DOS MW2.EXE 0x2e750): the same warning as the DOS engine runs it; shooter_rel = the shooter's bearing off the
- * target's heading, degrees */
+/* the target of a guided launch reacts (GBL, DOS MW2.EXE 0x2e750): shooter_level = the shooter's pilot level;
+ * shooter_rel = the shooter's bearing off the target's heading, degrees; side_free(ctx, side) reports whether a 50 m
+ * sidestep that way (-1 left, +1 right) is clear */
 void ai_missile_warning_gbl(ai_mind *m, const ai_view *v, int shooter_level, float shooter_rel, int (*side_free)(void *ctx, int side), void *ctx);
 /* one AI step: evaluate the current state's rules, then move per state. dt in seconds. */
 void ai_step(const ai_library *lib, ai_mind *m, const ai_view *v, float dt);

@@ -148,7 +148,7 @@ typedef struct {
     int          outcome;        /* 0 running / none, 2 successful, 3 failed, 4 time exceeded */
     int          ending, over, player_lost;
     int          debug_invulnerable;   /* tests only: the player's destruction is ignored */
-    int32_t      end_at, ended_at;   /* ms */
+    int32_t      ending_at, ended_at;   /* ms: the end sequence started, the mission over */
     /* ejection (player_unit.ejected / intact_out, combat.h): state 5 holds the end back 0x389 ticks - the controller
      * (0x1001adf0) sets the end flag DAT_1024c568 only then, the end sequence (0x100374e0) follows */
     int32_t      eject_at;       /* sim ms the player went out in state 5 (0 none) */
@@ -183,13 +183,10 @@ typedef struct {
     int         *ai_focus;       /* per actor: the attacker it turned on (0x10012520): -1 the player, -2 none */
     int         *ai_who;
     int         *powered_down;   /* per actor: shut down by a rest / hold node (states 10 / 11, mech +0xa0 |= 3) */
-    int          sd_at_once;     /* the DOS rule for input +0x43 (self-destruct): destroyed at once (MW2.EXE 0x27785 ->
-                                    0x265f0); else the 3D editions' state 7, 0x16a ticks first (0x1001a180) */
-    int32_t     *sd_at;          /* per actor: the self-destruct's time (sim ms; 0 none) */
-    /* the DOS end (MW2.EXE 0x16e80, set by the front end for the DOS look): the player's star resolved, the radio idle -
-     * "Press any key to exit..." once more than 3 s (whole seconds, clock / 0xb6) have passed, any key then ends
-     * (0x45d80), and the mission ends by itself past 0x14 s; else the 3D editions' CTRL-Q prompt and 0x71c ticks */
-    int          dos_end, dos_prompted;
+    /* the DOS end (MW2.EXE 0x16e80): the player's star resolved, the radio idle - "Press any key to exit..." once more
+     * than 3 s (whole seconds, clock / 0xb6) have passed, any key then ends (0x45d80), and the mission ends by itself past
+     * 0x14 s */
+    int          dos_prompted;
     int32_t      dos_resolved_s;
     int         *seen_node;      /* per actor: the star's node last applied (0x10014520 runs on a change) */         /* per actor: whom it attacks (state 3), -1 the player, -2 none */    /* PLNT payload +0x38 == 0: explosions may take the scene light (0x1003de48 -> DAT_1025a6a8) */
     float       *centre_h;       /* per actor: centre above the feet, cm (MGEO int[0]: the climbable rise) */
@@ -239,7 +236,7 @@ typedef struct {
                        int32_t start; } area[64];
     int          area_count, splash;
     float        fx_radius[36];   /* per effect type (GBL has 36, base 32) */
-    /* Ghost Bear's Legacy (sim_game_gbl) only */
+    /* Ghost Bear's Legacy */
     int          gbl_pool[16];    /* projectiles per weapon kind: MW2_SHT1's BTHG pool objects of the kind (0x53823 takes a free
                                    * slot of the weapon's kind, none free: no projectile) */
     int          fx_follow;       /* while effect() runs for a unit hit: the unit struck (-1 the player, an actor; -2 none) */
@@ -397,9 +394,8 @@ int  msim_aim_target(const msim *s, float aim_yaw, float cone, float *distance);
  * *vel = the ground velocity along the heading (cm/s) approaching *spd. rev = -0.5 for an AI reversing (input +0x2f),
  * else 1; drive 0 = not up / immobile (c[10] cleared); slow: a walk key flagged 0x10 has run (servo T 90.5 ticks, else
  * 36.2). top = full-throttle speed, cm/s */
-/* 1: the DOS edition's integer throttle servo (MW2.EXE 0x49b80: truncating, stalls 5 / 1024 of full short at 30 fps) and
- * servo taus 36 / 91; 0: the 3Dfx DLL's floats (36.2 / 90.5). The front end sets it by edition */
-extern int msim_dos_int;
+/* (the DOS integer throttle servo, MW2.EXE 0x49b80: truncating, stalls 5 / 1024 of full short at 30 fps; servo taus
+ * 36 / 91) */
 void msim_drive_step(float *thr, float *spd, float *vel, float thr_target, float rev, float top, int drive, int slow, float ticks);
 /* a mech's full-throttle speed c[0x22] / 64 (cm/s) on a planet of gravity_g, in DOS MW2.EXE's integer steps */
 float msim_top_speed(int walk_mp, float gravity_g);

@@ -1,12 +1,17 @@
-/* test_port - unit tests for cdaudio + datapath. Usage: test_port MUSICDIR INSTALLDIR [CD.iso] */
+/* test_port - unit tests for cdaudio + datapath. Usage: test_port INSTALLDIR [GBL-CD.iso]
+ * cdaudio: against a two-track tone rip the test writes itself (Track02.wav 440 Hz, Track03.wav 660 Hz, 3 s each);
+ * datapath: against a Ghost Bear's Legacy install (MW2.PRJ, SND\DIG.INI) and the original GBL disc's image. */
 #include "cdaudio.h"
 #include "datapath.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+#include <sys/stat.h>
 
 static int fails;
+#define ISO 2
 #define CHECK(c, msg) do { if (c) printf("  ok   %s\n", msg); else { printf("  FAIL %s\n", msg); fails++; } } while (0)
 
 /* dominant frequency of the left channel via zero crossings */
@@ -16,6 +21,7 @@ static double freq(const float *b, size_t frames)
     for (i = 1; i < frames; i++) if ((b[(i - 1) * 2] < 0) != (b[i * 2] < 0)) z++;
     return (double)z * CDA_SAMPLE_RATE / (2.0 * (double)frames);
 }
+static int mkdir_p(const char *d) { return mkdir(d, 0755) == 0 ? 0 : -1; }
 static double peak(const float *b, size_t frames)
 {
     double m = 0; size_t i;
@@ -23,8 +29,34 @@ static double peak(const float *b, size_t frames)
     return m;
 }
 
+/* a 3 s 16-bit stereo 44.1 kHz WAV of a sine at hz */
+static int write_tone(const char *path, double hz)
+{
+    const uint32_t frames = CDA_SAMPLE_RATE * 3, data = frames * 4;
+    uint8_t h[44];
+    uint32_t i;
+    FILE *f = fopen(path, "wb");
+    if (!f) return -1;
+    memcpy(h, "RIFF", 4); h[4] = (uint8_t)(36 + data); h[5] = (uint8_t)((36 + data) >> 8); h[6] = (uint8_t)((36 + data) >> 16); h[7] = (uint8_t)((36 + data) >> 24);
+    memcpy(h + 8, "WAVEfmt ", 8);
+    h[16] = 16; h[17] = h[18] = h[19] = 0; h[20] = 1; h[21] = 0; h[22] = 2; h[23] = 0;
+    h[24] = (uint8_t)CDA_SAMPLE_RATE; h[25] = (uint8_t)(CDA_SAMPLE_RATE >> 8); h[26] = (uint8_t)(CDA_SAMPLE_RATE >> 16); h[27] = 0;
+    h[28] = (uint8_t)(CDA_SAMPLE_RATE * 4); h[29] = (uint8_t)((CDA_SAMPLE_RATE * 4) >> 8); h[30] = (uint8_t)((CDA_SAMPLE_RATE * 4) >> 16); h[31] = 0;
+    h[32] = 4; h[33] = 0; h[34] = 16; h[35] = 0;
+    memcpy(h + 36, "data", 4); h[40] = (uint8_t)data; h[41] = (uint8_t)(data >> 8); h[42] = (uint8_t)(data >> 16); h[43] = (uint8_t)(data >> 24);
+    fwrite(h, 1, 44, f);
+    for (i = 0; i < frames; i++) {
+        int16_t v = (int16_t)(sin(2.0 * 3.14159265358979 * hz * (double)i / CDA_SAMPLE_RATE) * 16000.0);
+        uint8_t b[4] = {(uint8_t)v, (uint8_t)((uint16_t)v >> 8), (uint8_t)v, (uint8_t)((uint16_t)v >> 8)};
+        fwrite(b, 1, 4, f);
+    }
+    fclose(f);
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
+    char rip[256], t2[300], t3[300];
     static float buf[CDA_SAMPLE_RATE * 2];
     cdaudio_options o = {0, 0, 0};
     cdaudio *cd;
@@ -34,9 +66,13 @@ int main(int argc, char **argv)
     FILE *f;
     size_t got;
 
-    if (argc < 3) return 2;
+    if (argc < 2) { fprintf(stderr, "usage: %s INSTALLDIR [GBL-CD.iso]\n", argv[0]); return 2; }
+    snprintf(rip, sizeof rip, "%s/test_port_rip_%d", getenv("TMPDIR") ? getenv("TMPDIR") : "/tmp", (int)getpid());
+    snprintf(t2, sizeof t2, "%s/Track02.wav", rip);
+    snprintf(t3, sizeof t3, "%s/Track03.wav", rip);
     printf("cdaudio\n");
-    CHECK(cdaudio_open(&cd, argv[1], &o) == 0, "open rip folder");
+    if (mkdir_p(rip) != 0 || write_tone(t2, 440.0) != 0 || write_tone(t3, 660.0) != 0) { printf("  FAIL cannot write the tone rip in %s\n", rip); return 1; }
+    CHECK(cdaudio_open(&cd, rip, &o) == 0, "open rip folder");
     cdaudio_track_info(cd, 1, &s1, NULL);
     cdaudio_track_info(cd, 2, &s2, NULL);
     cdaudio_track_info(cd, 3, &s3, NULL);
@@ -87,12 +123,13 @@ int main(int argc, char **argv)
         for (i = 0; i < got; i++) { if (fabs(buf[i*2]) > l) l = fabs(buf[i*2]); if (fabs(buf[i*2+1]) > r) r = fabs(buf[i*2+1]); }
         CHECK(fabs(l / full - 128.0 / 255.0) < 0.02 && r == 0, "per-channel volume (L=128, R=0)"); } }
     cdaudio_close(cd);
+    remove(t2); remove(t3); rmdir(rip);
 
     printf("datapath (against the real install)\n");
-    CHECK(dp_add_root(argv[2]) == 0, "add install folder as root");
+    CHECK(dp_add_root(argv[1]) == 0, "add install folder as root");
     CHECK(dp_resolve("MW2.PRJ", path, sizeof path) == 0, "resolve MW2.PRJ");
-    CHECK(dp_resolve("d:\\smk\\aiagrid.smk", path, sizeof path) == 0 && strstr(path, "SMK/AIAGRID.SMK"),
-          "lowercase DOS path with drive letter finds SMK/AIAGRID.SMK");
+    CHECK(dp_resolve("d:\\snd\\dig.ini", path, sizeof path) == 0 && strstr(path, "SND/DIG.INI"),
+          "lowercase DOS path with drive letter finds SND/DIG.INI");
     CHECK(dp_resolve("..\\etc\\passwd", path, sizeof path) != 0, "refuses to escape the root");
     CHECK(dp_resolve("MEK\\NOPE.MEK", path, sizeof path) != 0, "missing file reports not found");
     f = dp_fopen("SAVES\\..", "rb");
@@ -101,31 +138,31 @@ int main(int argc, char **argv)
     CHECK(f != NULL, "write creates a new file in the first root");
     if (f) { fclose(f); dp_resolve("porttest.tmp", path, sizeof path); remove(path); }
 
-    if (argc > 3) {
+    if (argc > 2) {
         unsigned char *a = NULL, *b = NULL;
         size_t la = 0, lb = 0;
         char inst[2048];
         printf("ISO 9660 (against the disc image)\n");
         dp_clear_roots();
-        CHECK(dp_add_iso_root(argv[3], "MECH2") == 0, "open image, MECH2 folder as root");
-        CHECK(dp_add_iso_root(argv[3], NULL) == 0, "open image, disc root");
-        CHECK(dp_add_iso_root(argv[3], "NOPE") != 0, "missing subfolder rejected");
-        CHECK(dp_read_file("mw2.prj", &a, &la) == 0 && la == 19960257, "MW2.PRJ read from image (lowercase name)");
-        snprintf(inst, sizeof inst, "%s/MW2.PRJ", argv[2]);
+        CHECK(dp_add_iso_root(argv[ISO], "GBL") == 0, "open image, GBL folder as root");
+        CHECK(dp_add_iso_root(argv[ISO], NULL) == 0, "open image, disc root");
+        CHECK(dp_add_iso_root(argv[ISO], "NOPE") != 0, "missing subfolder rejected");
+        CHECK(dp_read_file("mw2.prj", &a, &la) == 0 && la == 30815361, "MW2.PRJ read from image (lowercase name)");
+        snprintf(inst, sizeof inst, "%s/MW2.PRJ", argv[1]);
         f = fopen(inst, "rb");
         if (f) { b = malloc(la); lb = fread(b, 1, la, f); fclose(f); }
         CHECK(b && lb == la && memcmp(a, b, la) == 0, "image copy byte-identical to install copy");
         free(a); free(b); a = b = NULL;
-        CHECK(dp_read_file("d:\\smk\\aiagrid.smk", &a, &la) == 0 && la > 0, "SMK video from disc root, via drive-letter path");
+        CHECK(dp_read_file("d:\\smk\\abflam01.smk", &a, &la) == 0 && la > 0, "SMK video from disc root, via drive-letter path");
         free(a); a = NULL;
-        CHECK(dp_read_file("KEATING\\TRN1_01S.SFL", &a, &la) == 0 && la == 203651, "training audio KEATING\\TRN1_01S.SFL");
+        CHECK(dp_read_file("GBLINFO.TXT", &a, &la) == 0 && la == 107920, "GBLINFO.TXT from the disc root");
         free(a); a = NULL;
-        CHECK(dp_read_file("MECH2\\..\\..\\etc", &a, &la) != 0, "no traversal out of the image");
+        CHECK(dp_read_file("GBL\\..\\..\\etc", &a, &la) != 0, "no traversal out of the image");
         CHECK(dp_read_file("SMK", &a, &la) != 0, "directories are not read as files");
         dp_clear_roots();
-        dp_add_root(argv[2]);
-        dp_add_iso_root(argv[3], NULL);
-        CHECK(dp_resolve("MW2.PRJ", path, sizeof path) == 0 && strstr(path, argv[2]) == path,
+        dp_add_root(argv[1]);
+        dp_add_iso_root(argv[ISO], NULL);
+        CHECK(dp_resolve("MW2.PRJ", path, sizeof path) == 0 && strstr(path, argv[1]) == path,
               "install folder takes priority over the image");
     }
 

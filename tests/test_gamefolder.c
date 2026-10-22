@@ -1,5 +1,5 @@
 /* test_gamefolder: finding the game folder (portcfg.c) - next to a macOS .app bundle, App Translocation, a chosen
- * folder (the game folder or the folder holding MW2-game/). Builds its own fake layout:
+ * folder (the game folder or the folder holding GBL-game/). Builds its own fake layout:
  *   ./test_gamefolder [BASE]   (default /tmp/test_gamefolder_<pid>; removed at the end) */
 #include "portcfg.h"
 #include <stdio.h>
@@ -36,7 +36,7 @@ int main(int argc, char **argv)
     mk(base, "home");
     mk(base, "elsewhere");
     snprintf(b, sizeof b, "%s/home", base);
-    setenv("HOME", b, 1);   /* no ~/MW2-game */
+    setenv("HOME", b, 1);   /* no ~/GBL-game */
     snprintf(b, sizeof b, "%s/elsewhere", base);
     if (chdir(b) != 0) return 1;   /* not the current folder either (a double-clicked app's is "/") */
 
@@ -51,32 +51,32 @@ int main(int argc, char **argv)
           "App Translocation detected");
     CHECK(!portcfg_translocated("/Applications/MechWarrior 2.app/Contents/Resources/") && !portcfg_translocated(NULL), "not translocated");
 
-    /* <base>/Some.app/Contents/Resources + <base>/MW2-game: found next to the .app */
+    /* <base>/Some.app/Contents/Resources + <base>/GBL-game: found next to the .app */
     mk(base, "Some.app/Contents/Resources");
     mk(base, "Some.app/Contents/MacOS");
     snprintf(e, sizeof e, "%s/Some.app/Contents/Resources/", base);
     CHECK(found(e, NULL), "an empty layout: nothing found");
-    mk(base, "MW2-game/install");
-    snprintf(w, sizeof w, "%s/MW2-game", base);
+    mk(base, "GBL-game/install");
+    snprintf(w, sizeof w, "%s/GBL-game", base);
     { char *r = realpath(w, NULL); snprintf(w, sizeof w, "%s", r ? r : ""); free(r); }
-    CHECK(found(e, w), "Resources/: MW2-game next to the .app");
+    CHECK(found(e, w), "Resources/: GBL-game next to the .app");
     snprintf(e, sizeof e, "%s/Some.app/Contents/MacOS/", base);
-    CHECK(found(e, w), "MacOS/: MW2-game next to the .app");
+    CHECK(found(e, w), "MacOS/: GBL-game next to the .app");
     snprintf(e, sizeof e, "%s/bin/", base);
     CHECK(found(e, NULL), "a plain executable folder elsewhere: not found");
-    /* one level up: <base>/Apps/Some.app with <base>/MW2-game */
+    /* one level up: <base>/Apps/Some.app with <base>/GBL-game */
     mk(base, "Apps/Some.app/Contents/Resources");
     snprintf(e, sizeof e, "%s/Apps/Some.app/Contents/Resources/", base);
-    CHECK(found(e, w), "MW2-game one level above the .app's folder");
-    /* the .app inside the game folder itself: <base>/MW2-game/Some.app */
-    mk(base, "MW2-game/Some.app/Contents/Resources");
-    snprintf(e, sizeof e, "%s/MW2-game/Some.app/Contents/Resources/", base);
+    CHECK(found(e, w), "GBL-game one level above the .app's folder");
+    /* the .app inside the game folder itself: <base>/GBL-game/Some.app */
+    mk(base, "GBL-game/Some.app/Contents/Resources");
+    snprintf(e, sizeof e, "%s/GBL-game/Some.app/Contents/Resources/", base);
     CHECK(found(e, w), "the .app inside the game folder");
 
-    /* a chosen folder: the game folder, or the folder holding MW2-game/, else refused */
-    CHECK(portcfg_game_in(base, out, sizeof out) && strcmp(out, w) == 0, "the parent of MW2-game accepted (%s)", out);
-    snprintf(b, sizeof b, "%s/MW2-game", base);
-    CHECK(portcfg_game_in(b, out, sizeof out) && strcmp(out, w) == 0, "MW2-game itself accepted (%s)", out);
+    /* a chosen folder: the game folder, or the folder holding GBL-game/, else refused */
+    CHECK(portcfg_game_in(base, out, sizeof out) && strcmp(out, w) == 0, "the parent of GBL-game accepted (%s)", out);
+    snprintf(b, sizeof b, "%s/GBL-game", base);
+    CHECK(portcfg_game_in(b, out, sizeof out) && strcmp(out, w) == 0, "GBL-game itself accepted (%s)", out);
     snprintf(b, sizeof b, "%s/elsewhere", base);
     CHECK(!portcfg_game_in(b, out, sizeof out), "a folder without the game refused");
     snprintf(b, sizeof b, "%s/gone", base);

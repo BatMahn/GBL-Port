@@ -21,9 +21,9 @@
  *       (also out->npages). out is large (make it static).
  *   void gbl_text_draw(const gbl_text *t, int page)        draws one page (the text objects at their positions)
  *
- *   int gbl_pager(int bg_idx, const char *text, int x, int y, int w, int h, const gbl_hot *hot4)
- *       The paged full-screen viewer: loads background bg_idx (1-based DATABASE index, e.g. 0x16 "DETAILS"), lays text
- *       out in the box (font 33), shows page 0 and runs until it ends. Buttons (clip slots 26-31, FUN_0002a590): previous
+ *   int gbl_pager_pages(int bg_idx, const gbl_text *t, const char *title, const gbl_hot *hot4)
+ *       The paged full-screen viewer: loads background bg_idx (1-based DATABASE index, e.g. 0x16 "DETAILS"), shows page
+ *       0 of the laid-out collection t and runs until it ends. Buttons (clip slots 26-31, FUN_0002a590): previous
  *       wgbam001 / wgbamg01 (116,437), EXIT wgbam002 / wgbamg02 (278,437), next wgbam003 / wgbamg03 (436,437); the "g"
  *       picture is the one under the pointer, a button without a page to go to is not drawn. hot4 = the 4 hotspots
  *       (0 EXIT, 1 previous, 2 next, 3 off-screen; NULL = GBL_PAGER_HOT, the table 0x802a0 = 0x80260). Keys: Home = first
@@ -31,9 +31,7 @@
  *       The shared Esc menu runs every frame. Returns -5 (EXIT), -2 (Home on the first page), or the Esc menu's result
  *       (8 / -3 ...). The caller's clip slots keep running and drawing (FUN_0003ca50 draws every slot) - hide your own
  *       slots before calling, as the original's callers do; reload your background afterwards.
- *   int gbl_pager_pages(int bg_idx, const gbl_text *t, const char *title, const gbl_hot *hot4)
- *       The same with an already laid-out collection (the developer egg's records) and the title FUN_0002a060 draws
- *       on page 0 (font 28, "~" centred at (320, 50); "" none).
+ *       title: drawn by FUN_0002a060 on page 0 (font 28, "~" centred at (320, 50); "" none) - the developer egg's records.
  *   int gbl_pager_from(int bg_idx, const gbl_text *t, int first, const char *title, const gbl_hot *hot4)
  *       The same from page `first` of the collection (the Mission Computer's DETAILS and the debriefing's AFTERMATH: 1).
  * This is the shell's only text layout / pager: the Mission Computer and the debriefing (gbl_campaign.c) use it too.
@@ -493,12 +491,6 @@ static int gbl_pager_from(int bg_idx, const gbl_text *t, int first, const char *
     return r;
 }
 static int gbl_pager_pages(int bg_idx, const gbl_text *t, const char *title, const gbl_hot *hot4) { return gbl_pager_from(bg_idx, t, 0, title, hot4); }
-static int gbl_pager(int bg_idx, const char *text, int x, int y, int w, int h, const gbl_hot *hot4)
-{
-    static gbl_text t;
-    gbl_text_pages(text, GP_F33, x, y, w, h, &t);
-    return gbl_pager_pages(bg_idx, &t, "", hot4);
-}
 
 /* ======================================================================================================================
  * BRF2 defaults (FUN_0002c810(scenario, 1, 0)): "<first 4>BRF2" - SUPS -> the "-b=" string; the first SDSC -> star 0

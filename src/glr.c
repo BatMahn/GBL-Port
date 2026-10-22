@@ -85,7 +85,7 @@ struct glr {
 
     float  center[3], radius;
     GLint  u_point, u_lpos;
-    GLint  u_mono, u_mvp, u_view, u_light, u_ambient, u_fog_density, u_fog_color, u_texsize, u_tex, u_textured, u_unlit, u_wire, u_shadow;
+    GLint  u_mono, u_mvp, u_view, u_light, u_ambient, u_fog_color, u_texsize, u_tex, u_textured, u_unlit, u_wire, u_shadow;
     /* the DOS edition */
     int    dos;
     int    dos_ie_tri;                      /* glr_set_dos_ie_triangles */
@@ -99,7 +99,7 @@ struct glr {
     int    dsign;                           /* glr_set_damage_shade */
     float  tint[3], pfade;
     int    tint_on;
-    GLint  u_alpha, u_mga_lod, u_horizon, u_hz_r, u_hz_u, u_hz_f, u_hz_c, u_hz_band, u_hz_x, u_hz_smooth, u_tifog, u_blend, u_dos_tc, u_hz_eye;
+    GLint  u_alpha, u_horizon, u_hz_r, u_hz_u, u_hz_f, u_hz_c, u_hz_band, u_hz_x, u_hz_smooth, u_tifog, u_blend, u_dos_tc, u_hz_eye;
     /* the Titanium edition's sky dome (glr_set_skydome): triangles (pos, texel uv / (size - 1), slot) by slot */
     GLuint dome_vao, dome_vbo, dome_tex[GLR_SLOTS];
     float *dome_v;                          /* x, y, z, u, v per vertex (game coordinates, GL z) */
@@ -229,7 +229,7 @@ static const char *FS =
     "uniform vec4 u_wire, u_mono;\n"
     "uniform int u_shadow;\n"
     "uniform vec3 u_light, u_fog_color;\n"
-    "uniform float u_ambient, u_fog_density;\n"
+    "uniform float u_ambient;\n"
     "uniform mat4 u_view;\n"
     "uniform vec3 u_tint; uniform float u_pfade; uniform sampler2D u_ptab; uniform int u_notex, u_tinton, u_dsign;\n"
     "uniform int u_dos, u_dos_dir; uniform sampler2D u_dos_tab; uniform vec3 u_dos_lpos; uniform float u_dos_amb, u_dos_fogdist;\n"
@@ -237,7 +237,7 @@ static const char *FS =
      * viewport (origin, size); u_dos_smooth: the port's dos_shading=smooth */
     "uniform samplerBuffer u_dos_vtx; uniform mat4 u_mvp; uniform vec2 u_vp, u_vpo; uniform int u_dos_smooth;\n"
     "noperspective in vec2 v_gs;\n"
-    "uniform float u_alpha; uniform int u_mga_lod;\n"
+    "uniform float u_alpha;\n"
     /* the Titanium edition (mercsw.dll): its vertex fog - x 1 = on, y the full-fog depth Z (0: none), w the camera's
      * factor; u_blend: alpha-blended (no alpha test), the texel's alpha out */
     "uniform vec4 u_tifog; uniform int u_blend;\n"
@@ -458,8 +458,7 @@ static const char *FS =
      * object class (-v_texsel: 1 OBJECT, 2 TERRAIN) is switched off is drawn in its texture's average colour (v_color) */
     "  if (u_textured != 0 && u_mono.a <= 0.0 && (v_texsel >= 0 || ((-v_texsel) & u_notex) == 0)) {\n"
     "    vec4 t;\n"
-    "    if (u_mga_lod != 0) { float z = -v_viewpos.z; t = textureLod(u_tex, v_uv / u_texsize, z < 2500.0 ? 0.0 : z < 5000.0 ? 1.0 : z < 15000.0 ? 2.0 : 3.0); }\n"
-    "    else t = texture(u_tex, v_uv / u_texsize);\n"
+    "    t = texture(u_tex, v_uv / u_texsize);\n"
     "    if (u_blend != 0) { if (t.a < 0.004) discard; } else if (t.a < 0.5) discard; base = t.rgb * u_tint; ta = t.a; tinted = u_tinton != 0; }\n"
     /* an untextured polygon's palette colour toward the fade's target palette (its index + 1 in v_texsel) */
     "  else if (u_pfade > 0.0 && v_texsel > 0 && v_bb == 0) base = mix(base, texture(u_ptab, vec2((float(v_texsel - 1) + 0.5) / 256.0, 0.5)).rgb, u_pfade);\n"
@@ -474,15 +473,7 @@ static const char *FS =
      * mercsw 0x1002ecaa / 0x1002f238 and dx5draw's SHADEMODE) */
     "  vec3 lit = u_unlit != 0 || v_bb != 0 || tinted || (v_tif & 2) != 0 || v_ticm == 3 ? base : u_tilit == 1 ? base * (v_ticm == 1 ? v_tic : ti_light((v_tif & 1) != 0 ? v_normal : n > 0.0 ? v_normal / n : vec3(0.0)))\n"
     "           : u_tilit == 2 ? base * u_tignd : base * min(1.0, (u_ambient + diff) * ds);\n"   /* SGL: ambient + parallel light, saturating */
-    /* PowerVR PCX2 table fog (Imagination's Series 1 driver source, MIT: dlcamera.c sgl_set_fog, rncamera.c, simulat3
-     * hwsabren.c Fog / texas.c): per pixel, from the depth 1/w: index i = depth >> shift = K / z (K below, z the view depth
-     * in game units), the 8-bit fog f = PowerTable[i & 127] >> min(i >> 7, 9) with PowerTable[k] = 256 x 2^(-k/128)
-     * (entry 0 = 255), so f = 0 from i = 1152 (near) up to 255 far; colour += (fog - colour) x f / 256 */
-    "  float fz = max(-v_viewpos.z, 1.0);\n"
-    "  float fi = u_fog_density > 0.0 ? floor(u_fog_density / fz) : 1.0e9;\n"
-    "  float fk = mod(fi, 128.0), fs = floor(fi / 128.0);\n"
-    "  float ft = fk == 0.0 ? 255.0 : floor(256.0 * exp2(-fk / 128.0));\n"
-    "  float ff = fs >= 9.0 ? 0.0 : floor(ft / exp2(fs)) / 256.0;\n"
+    "  float fz = max(-v_viewpos.z, 1.0), ff = 0.0;\n"
     /* Titanium (mercsw.dll): the vertex fog the D3D plugin takes as the specular alpha a (fog = 1 - a); the world, the
      * objects and the ground (0x10053474, 0x10001b53): a = (1 - min(1, z / Z)) x the camera's factor (density Y's
      * ground fog / low cloud, 0x1006a851); Z = 0: no distance fog */
@@ -533,7 +524,7 @@ glr *glr_create(void)
     }
 #define U(name) r->name = glGetUniformLocation(r->prog, #name)
     U(u_point); U(u_lpos);
-    U(u_mvp); U(u_view); U(u_light); U(u_ambient); U(u_fog_density); U(u_fog_color);
+    U(u_mvp); U(u_view); U(u_light); U(u_ambient); U(u_fog_color);
     U(u_texsize); U(u_tex); U(u_textured); U(u_mono);
 #undef U
     {
@@ -580,7 +571,6 @@ glr *glr_create(void)
     glUniform1i(r->u_dos_vtx, 3);
     glUseProgram(0);
     r->u_alpha = glGetUniformLocation(r->prog, "u_alpha");
-    r->u_mga_lod = glGetUniformLocation(r->prog, "u_mga_lod");
     r->u_horizon = glGetUniformLocation(r->prog, "u_horizon");
     r->u_hz_r = glGetUniformLocation(r->prog, "u_hz_r");
     r->u_hz_u = glGetUniformLocation(r->prog, "u_hz_u");
@@ -1584,20 +1574,6 @@ static void mat_mul(float *o, const float *a, const float *b)
     memcpy(o, t, sizeof t);
 }
 
-/* The PowerVR fog constant K (index x game units) for an sgl_set_fog density d (MW2 passes skygnd.par's value):
- * the driver takes x = -log2(1 - d), splits it by frexp into fraction m and power p, scales the camera depth Cd =
- * foreground x 0.1 by 1/m and shifts the depth by CdPower + p + 22 - (screen rescale shifts); the hardware depth is
- * Cd' / z x 2^31 (z in SGL units = game units x 0.1, MW2 0x101a7580). With MW2's foreground 50 x 0.1 = 5 (Cd 0.5:
- * fraction 0.5, power 0) all the powers cancel: i = 2^31 x 0.5 / m / 2^(p + 22) / (0.1 z) = 2560 / (x z) */
-static float fog_k(float d)
-{
-    double x;
-    if (d <= 0) return 0;
-    if (d >= 1) return 1e9f;
-    x = -log2(1.0 - (double)d);
-    return x > 0 ? (float)(2560.0 / x) : 0;
-}
-
 static void perspective(float *m, float vfov_deg, float aspect, float zn, float zf)
 {
     float f = 1.0f / tanf(vfov_deg * 3.14159265f / 360.0f);
@@ -1746,7 +1722,6 @@ void glr_draw_rect(glr *r, const glr_view *v, int x0, int y0, int w, int h)
     glUniform1i(r->u_dsign, r->dsign);
     glUniform1f(r->u_pfade, 0);
     glUniform1i(r->u_horizon, 0);
-    glUniform1i(r->u_mga_lod, 0);
     glUniform1f(r->u_alpha, 1.0f);
     glUniform1i(r->u_blend, 0);
     glUniform4f(r->u_tifog, v->ortho_w > 0 ? 0.0f : v->ti_fog[0], v->ti_fog[1], v->dos_fog_g, v->ti_fog[2]);
@@ -1792,7 +1767,7 @@ void glr_draw_rect(glr *r, const glr_view *v, int x0, int y0, int w, int h)
             {-64e6f, 2.2e6f, 64e6f, 0, 0}, {64e6f, 2.2e6f, 64e6f, 1, 0}, {76.8e6f, -0.4e6f, 76.8e6f, 1, 1}, {-76.8e6f, -0.4e6f, 76.8e6f, 0, 1},
             {-64e6f, 2.2e6f, -64e6f, 0, 0}, {-64e6f, 2.2e6f, 64e6f, 1, 0}, {-76.8e6f, -0.4e6f, 76.8e6f, 1, 1}, {-76.8e6f, -0.4e6f, -76.8e6f, 0, 1},
             {64e6f, 2.2e6f, -64e6f, 0, 0}, {64e6f, 2.2e6f, 64e6f, 1, 0}, {76.8e6f, -0.4e6f, 76.8e6f, 1, 1}, {76.8e6f, -0.4e6f, -76.8e6f, 0, 1}};
-        float env[(24 + 6 + 6 + 6 + 6) * FLOATS_PER_VERTEX], *f = env, sproj[16], sview[16], smvp[16], origin[3] = {0, 0, 0};
+        float env[(24 + 6 + 6 + 6) * FLOATS_PER_VERTEX], *f = env, sproj[16], sview[16], smvp[16], origin[3] = {0, 0, 0};
         float half = 2.0e6f, gs = r->tile_ground / 32.0e6f;  /* repeats per unit */
         float cx = eye[0], cz = eye[2];
         int q, c;
@@ -1817,11 +1792,7 @@ void glr_draw_rect(glr *r, const glr_view *v, int x0, int y0, int w, int h)
                 f = env_vertex(f, gx[k], 0, gz[k], 0, 1, 0, gx[k] * gs, -gz[k] * gs);
             }
         }
-        {   /* the PowerVR fog veil (0x1005ED90): a plane at y 55555.55, world-fixed, here +-64e6 around the eye (vertices 36-41) */
-            float vx[4] = {cx - 64e6f, cx + 64e6f, cx + 64e6f, cx - 64e6f}, vz[4] = {cz - 64e6f, cz - 64e6f, cz + 64e6f, cz + 64e6f};
-            for (c = 0; c < 6; c++) { int k = QUAD[c]; f = env_vertex(f, vx[k], 55555.55f, vz[k], 0, -1, 0, 0, 0); }
-        }
-        {   /* a full-window quad in clip space for the DOS horizon fill (vertices 42-47) */
+        {   /* a full-window quad in clip space for the DOS horizon fill (vertices 36-41) */
             static const float QX[4] = {-1, 1, 1, -1}, QY[4] = {-1, -1, 1, 1};
             for (c = 0; c < 6; c++) { int k = QUAD[c]; f = env_vertex(f, QX[k], QY[k], 0.999f, 0, 0, 0, 0, 0); }
         }
@@ -1864,7 +1835,7 @@ void glr_draw_rect(glr *r, const glr_view *v, int x0, int y0, int w, int h)
             glUniform1f(r->u_hz_eye, eye[1] > 1.0f ? eye[1] : 1.0f);
             glUniform1i(r->u_horizon, 1);
             glDisable(GL_DEPTH_TEST); glDepthMask(GL_FALSE);
-            glDrawArrays(GL_TRIANGLES, 42, 6);
+            glDrawArrays(GL_TRIANGLES, 36, 6);
             glDepthMask(GL_TRUE); glEnable(GL_DEPTH_TEST);
             glUniform1i(r->u_horizon, 0);
         }
@@ -1877,38 +1848,16 @@ void glr_draw_rect(glr *r, const glr_view *v, int x0, int y0, int w, int h)
             glDepthMask(GL_FALSE);
             glUniformMatrix4fv(r->u_mvp, 1, GL_FALSE, smvp);
             glUniformMatrix4fv(r->u_view, 1, GL_FALSE, sview);
-            glUniform1f(r->u_fog_density, 0);
             glUniform4f(r->u_tifog, 0, 0, 0, 1);
             glUniform1f(r->u_ambient, 1);
             glBindTexture(GL_TEXTURE_2D, v->flat_sky && r->sky_flat ? r->sky_flat : r->env_tex[1]);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, (GLint)(v->mga_mip ? GL_NEAREST : eminf));   /* Mystique sky: one level */
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, (GLint)eminf);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, (GLint)emagf);
             glDrawArrays(GL_TRIANGLES, 0, 30);   /* walls + ceiling */
             glUniform4f(r->u_tifog, v->ortho_w > 0 ? 0.0f : v->ti_fog[0], v->ti_fog[1], v->dos_fog_g, v->ti_fog[2]);
             glDepthMask(GL_TRUE);
             glEnable(GL_DEPTH_TEST);
             glUniform1f(r->u_ambient, v->ambient);
-        }
-        if (v->pvr_veil && v->fog_density >= 1e-7f && !r->dos) {
-            /* the PowerVR fog veil: white, unlit, fogged by the table fog at its own depth, 40 % opaque, drawn over the
-             * sky before the scene with no depth test (the terrain and mechs, all below it, overwrite it) */
-            float vproj[16], vmvp[16];
-            perspective(vproj, v->vfov, (float)w / (float)(h > 0 ? h : 1), 100.0f, 2.0e8f);
-            mat_mul(vmvp, vproj, view);
-            glUniformMatrix4fv(r->u_mvp, 1, GL_FALSE, vmvp);
-            glUniformMatrix4fv(r->u_view, 1, GL_FALSE, view);
-            glUniform1f(r->u_fog_density, v->ortho_w > 0 ? 0.0f : fog_k(v->fog_density));
-            glUniform1i(r->u_textured, 0);
-            glUniform1i(r->u_unlit, 1);
-            glUniform1f(r->u_alpha, 0.4f);
-            glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-            glDisable(GL_DEPTH_TEST); glDepthMask(GL_FALSE);
-            glDrawArrays(GL_TRIANGLES, 36, 6);
-            glDepthMask(GL_TRUE); glEnable(GL_DEPTH_TEST);
-            glDisable(GL_BLEND);
-            glUniform1f(r->u_alpha, 1.0f);
-            glUniform1i(r->u_unlit, r->dos);
-            glUniform1i(r->u_textured, 1);
         }
         if (r->dome_n > 0 && !r->dos && v->ortho_w <= 0) {
             /* the Titanium sky dome: around the eye (its x, z; the dome's own height), no depth (the 16-bit engine has no
@@ -1952,7 +1901,6 @@ void glr_draw_rect(glr *r, const glr_view *v, int x0, int y0, int w, int h)
                 glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
                 glUniformMatrix4fv(r->u_mvp, 1, GL_FALSE, dmvp);
                 glUniformMatrix4fv(r->u_view, 1, GL_FALSE, dview);
-                glUniform1f(r->u_fog_density, 0);
                 glUniform4f(r->u_tifog, 0, 0, 0, 1);
                 glUniform1i(r->u_unlit, 1);
                 glUniform1i(r->u_blend, 1);
@@ -1976,15 +1924,12 @@ void glr_draw_rect(glr *r, const glr_view *v, int x0, int y0, int w, int h)
         if (r->env_has[0] && !r->dos) {
             glUniformMatrix4fv(r->u_mvp, 1, GL_FALSE, mvp);
             glUniformMatrix4fv(r->u_view, 1, GL_FALSE, view);
-            glUniform1f(r->u_fog_density, v->ortho_w > 0 ? 0.0f : fog_k(v->fog_density));
             glBindTexture(GL_TEXTURE_2D, v->flat_ground && r->ground_flat ? r->ground_flat : r->env_tex[0]);   /* TERRAIN TEXTURES: objects of type 0x800 only */
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, (GLint)eminf);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, (GLint)emagf);
-            glUniform1i(r->u_mga_lod, v->mga_mip);
             if (v->ti_light) glUniform1i(r->u_tilit, 2);   /* Titanium: the ground's one colour (0x1005527e) */
             glDrawArrays(GL_TRIANGLES, 30, 6);
             glUniform1i(r->u_tilit, 0);
-            glUniform1i(r->u_mga_lod, 0);
         }
         glBindVertexArray(0);
     }
@@ -1993,7 +1938,6 @@ void glr_draw_rect(glr *r, const glr_view *v, int x0, int y0, int w, int h)
     glUniform3fv(r->u_light, 1, L);
     glUniform1i(r->u_point, v->point_light);
     glUniform1f(r->u_ambient, v->ambient);
-    glUniform1f(r->u_fog_density, v->ortho_w > 0 ? 0.0f : fog_k(v->fog_density));
     glUniform3fv(r->u_fog_color, 1, v->fog_color);
     glUniform1f(r->u_far, v->ortho_w > 0 ? 0.0f : v->far_cull);   /* the world and actor layers carry their spheres */
     glUniform2f(r->u_vp, (float)w, (float)h);                     /* the billboards' screen squares */
@@ -2021,7 +1965,6 @@ void glr_draw_rect(glr *r, const glr_view *v, int x0, int y0, int w, int h)
         glUniform1i(r->u_dos_dir, v->point_light ? 0 : v->dos_dir);
         glUniform1i(r->u_dos_smooth, v->dos_sky_smooth);   /* the port's dos_shading=smooth */
         glUniform1i(r->u_dos_tc, v->dos_tc && !v->wire);      /* gbl ENHANCED: true colour + the Titanium fog */
-        glUniform1f(r->u_fog_density, 0);
     }
     glActiveTexture(GL_TEXTURE0);
     glUniform1i(r->u_tilit, v->ti_light && !r->dos ? 1 : 0);   /* Titanium: the objects' lights (0x1002ecaa) */
@@ -2168,7 +2111,6 @@ void glr_draw_rect(glr *r, const glr_view *v, int x0, int y0, int w, int h)
             glUniformMatrix4fv(r->u_mvp, 1, GL_FALSE, ident);
             glUniformMatrix4fv(r->u_view, 1, GL_FALSE, ident);
             glUniform1f(r->u_far, 0);
-            glUniform1f(r->u_fog_density, 0);
             glUniform4f(r->u_tifog, 0, 0, 0, 1);
             glUniform1i(r->u_unlit, 1);
             glUniform1i(r->u_textured, 1);
@@ -2195,7 +2137,6 @@ void glr_draw_rect(glr *r, const glr_view *v, int x0, int y0, int w, int h)
             glUniform1i(r->u_unlit, 0);
             glUniformMatrix4fv(r->u_mvp, 1, GL_FALSE, mvp);
             glUniformMatrix4fv(r->u_view, 1, GL_FALSE, view);
-            glUniform1f(r->u_fog_density, v->ortho_w > 0 ? 0.0f : fog_k(v->fog_density));
             glUniform4f(r->u_tifog, v->ortho_w > 0 ? 0.0f : v->ti_fog[0], v->ti_fog[1], v->dos_fog_g, v->ti_fog[2]);
             glUniform1f(r->u_far, v->ortho_w > 0 ? 0.0f : v->far_cull);
             glBindVertexArray(0);

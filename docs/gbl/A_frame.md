@@ -9,7 +9,7 @@ Conventions
 - **Getter index vs entry.** Both DATABASE getters are 1-based: `FUN_00022920(db, idx, &ptr, &size)` (raw read) and
   `FUN_000229d0(db, idx, &ptr, &size)` (LZSS-unpacked) read entry `idx - 1` (`FUN_00010470(list, idx - 1)`); idx < 0 or
   idx > count, or a database whose file did not open (+0x80 == 0), return 1 and leave ptr/size untouched. Throughout,
-  "idx 0x51" means getter index 0x51 = **entry 80**. Same convention as base (SHELL.md "getters are 1-based").
+  "idx 0x51" means getter index 0x51 = **entry 80**. Same convention as base (the base shell "getters are 1-based").
 - Watcom register calls: Ghidra drops/garbles register args (EDX/EBX/ECX carried over from the previous call). Where the
   decompile disagrees with the asm I quote the asm.
 - Background loaders: `FUN_00040bb0(screen, db, idx)` (idx in EBX) and `FUN_00041110(screen)` which loads idx = EDX left
@@ -176,7 +176,7 @@ when 0xa917c != 0 - never set: ignore.
 | 0, 2, 4, 6, 11, 13, 14, other | 0x3ad1e | default: `fprintf(stderr, "Unknown Transition Requested: %d\n")` (0x78a64) and exit(1) | - |
 
 GBL has **no** state 0 (base briefing), 11 (Ready Room), 13 (Star Configuration), 14 (Cadet Training); base 15 = landing
-cinematic mwoland / mjfland -> 1 and 16 = ending mend / mend2 -> 1 (SHELL.md "Screen state machine").
+cinematic mwoland / mjfland -> 1 and 16 = ending mend / mend2 -> 1 (the base shell "Screen state machine").
 Base rewrote `state 11 && ctx 2 -> 7`; GBL rewrites `state 5 && ctx 2 -> 7`.
 
 **Exit** (`state == -3`, 0x3ad50): `FUN_0003af90(-3, ctx, flag, "exittos")` (mw2prm.cfg: +0 = -3, +0x1c0 = "exittos -b=..."),
@@ -219,7 +219,7 @@ or the star-slot-0 name (FUN_0003e330(0) + 0x28).
 | 7 | 0x76b3f | **THEWATCHER** | roster FUN_0003b8d0 (0x3b6fc, 0x3bbad, 0x3c058) | a new pilot of that name starts with missions done = 0x16 (22, every mission); LAUNCH OLD MISSION entries above index 0x10 (missions 17-21, gui1..guin) are allowed only for this name |
 
 Base equivalents: plain names "Calvin" / "Hobbes" / a third string for the IA mechs, FREEBIRTHTOAD for the Ready Room
-(SHELL.md). C table:
+(the base shell). C table:
 ```c
 static const char *const GBL_CHEATS[8] = { "DOOMSDAY", "LOVECRAFT", "RVWINDOW", "IMMORTAL",
                                            "TOLKEIN", "WIDOW", "LITTLEGUY", "THEWATCHER" };
@@ -237,7 +237,7 @@ static const char *const GBL_CHEATS[8] = { "DOOMSDAY", "LOVECRAFT", "RVWINDOW", 
 
 Types read from the file (my parser: raw RIFF / "1.10" SHP / "1." font / MZ; others LZSS with u32 size; PCX decoded):
 0-4 PCX, 5-7 SHP, 8-25 PCX (18), 26 SHP, 27-33 fonts, 34 MZ DLL, 35-74 XMIDI (LZSS), 75-126 WAV (raw).
-Base (SHELL.md): 21 PCX, 3 SHP, cursor, 7 fonts, DLL, 40 XMIDI, 30 WAV = 103.
+Base (the base shell): 21 PCX, 3 SHP, cursor, 7 fonts, DLL, 40 XMIDI, 30 WAV = 103.
 The Titanium disc's DATABASE.MW2 differs only in entries 2 (Combat Variables background) and 27-29, 31-33 (fonts).
 
 | entry | idx | type | GBL user (address) | base entry / user | match |
@@ -330,7 +330,7 @@ A_t8.png (pointer outside every hotspot: no label).
   | 2 | aintro02 | 412x68, 40 frames | (118, 2) | 10 (loop) | when slot 1 has ended: slot 1 gets bits 0x20 (frozen) + 1, then aintro02 starts (0x2df8a) |
   | 4 | aintro04 | 408x96, 33 frames (3.3 s) | (122, 256) | 6 (once, hold) | when slot 3 has ended: slot 3 frozen, "GHOST BEAR'S LEGACY" plate (0x2dfe5) |
 
-  Base title: one clip amwlogo1 at (111, 33) (SHELL.md). The SMKs come from `smk\` (155 rip files = disc files).
+  Base title: one clip amwlogo1 at (111, 33) (the base shell). The SMKs come from `smk\` (155 rip files = disc files).
 - Sounds: idx 0x51 (entry 80): made, then `FUN_0003dc50(snd, 500, 1000, 0, 0x1e)` = volume ramp from 0 to 30, one step
   per 500 calls of FUN_0003dcb0 (called once per loop pass, so CPU-paced), at most 1000 steps; idx 0x7e (entry 125) at
   volume 0x32, started once (0x2decd: `FUN_0003dd70(snd, -1)`). A third getter call (0x2dedf) gets idx -1 (EDX = -1 left

@@ -8,11 +8,10 @@
 #include <sys/stat.h>
 #include <errno.h>
 
-static int app_gbl;   /* portcfg_set_app(..., "GBL"): Ghost Bear's Legacy's looks (portcfg.h) */
 void portcfg_defaults(portcfg *c)
 {
-    memset(c, 0, sizeof *c); c->mode = 0; c->aa = 4; c->textures_ati = 1; c->speed = 0.85f;
-    if (app_gbl) c->renderer = PORTCFG_ED_DOS;   /* gbl: the DOS look by default */
+    memset(c, 0, sizeof *c); c->mode = 0; c->aa = 4; c->speed = 0.85f;
+    c->renderer = PORTCFG_ED_DOS;   /* the DOS look by default */
 }
 
 static int exists(const char *p) { struct stat st; return p && p[0] && stat(p, &st) == 0; }
@@ -38,15 +37,13 @@ static int find_ci(const char *dir, const char *name, char *out, size_t outlen)
     return 0;
 }
 
-/* which game this run is for: the config folder / file, the game folder's default name, the disc's data folder.
- * MechWarrior 2 by default; Ghost Bear's Legacy (its own program, as GBL.EXE was) sets its own (portcfg_set_app) */
-static const char *app_cfgdir = "mw2port", *app_cfgfile = "mw2port.cfg", *app_game = "MW2-game", *app_cddata = "MECH2";
+/* the config folder / file, the game folder's default name, the disc's data folder (gbl's; portcfg_set_app may name
+ * others) */
+static const char *app_cfgdir = "gblport", *app_cfgfile = "gblport.cfg", *app_game = "GBL-game", *app_cddata = "GBL";
 void portcfg_set_app(const char *cfgdir, const char *cfgfile, const char *game_folder, const char *cd_data)
 {
     app_cfgdir = cfgdir; app_cfgfile = cfgfile; app_game = game_folder; app_cddata = cd_data;
-    app_gbl = cd_data && strcmp(cd_data, "GBL") == 0;
 }
-int portcfg_is_gbl(void) { return app_gbl; }
 const char *portcfg_cd_data(void) { return app_cddata; }
 const char *portcfg_game_folder(void) { return app_game; }
 
@@ -56,7 +53,7 @@ const char *portcfg_file(void)
     const char *home = getenv("HOME"), *xdg = getenv("XDG_CONFIG_HOME");
     if (getenv("MW2_CONFIG")) { snprintf(path, sizeof path, "%s", getenv("MW2_CONFIG")); return path; }   /* tests */
 #if defined(_WIN32)
-    {   /* %APPDATA%\mw2port\mw2port.cfg */
+    {   /* %APPDATA%\gblport\gblport.cfg */
         const char *appdata = getenv("APPDATA");
         if (!appdata || !appdata[0]) appdata = getenv("USERPROFILE");
         snprintf(path, sizeof path, "%s/%s/%s", appdata ? appdata : ".", app_cfgdir, app_cfgfile);
@@ -106,19 +103,14 @@ int portcfg_load(const char *unused, portcfg *c)
             int k;
             for (k = 0; k < PORTCFG_VID_COUNT; k++) if (strcmp(v, PORTCFG_VID_NAME[k]) == 0) c->videos = k;
         }
-        else if (strcmp(line, "textures_kind") == 0) c->textures_ati = strcmp(v, "3dfx") != 0;
-        else if (app_gbl && strcmp(line, "renderer") == 0) {   /* gbl: dos | enhanced | titanium (anything else: DOS) */
+        else if (strcmp(line, "renderer") == 0) {   /* dos | enhanced | titanium (anything else: DOS) */
             int e, look = PORTCFG_GBL_DOS;
             for (e = 0; e < PORTCFG_GBL_COUNT; e++) if (strcmp(v, PORTCFG_GBL_NAME[e]) == 0) look = e;
             portcfg_gbl_set_look(c, look);
-        } else if (app_gbl && (strcmp(line, "edition") == 0 || strcmp(line, "textures") == 0)) {}   /* (not gbl's) */
-        else if (strcmp(line, "renderer") == 0 || strcmp(line, "edition") == 0) {   /* (edition=: the old single look) */
-            int e;
-            for (e = 0; e < PORTCFG_ED_COUNT; e++) if (strcmp(v, PORTCFG_ED_NAME[e]) == 0) c->renderer = e;
-            if (strcmp(v, "titanium") == 0) { c->renderer = PORTCFG_ED_ENHANCED; c->texset = PORTCFG_TX_TITANIUM; }   /* migrated */
-        } else if (strcmp(line, "textures") == 0 && (strcmp(v, "original") == 0 || strcmp(v, "titanium") == 0))
-            c->texset = strcmp(v, "titanium") == 0 ? PORTCFG_TX_TITANIUM : PORTCFG_TX_ORIGINAL;
-        STR(game); STR(install); STR(cd); STR(music); STR(ultrasnd); STR(mt32); STR(models); STR(textures); STR(skygnd); STR(skygnd_fog); STR(titanium);
+        }
+        else if (strcmp(line, "edition") == 0 || strcmp(line, "textures") == 0) {}   /* (MW2's keys; textures= ignored as
+                                                                                     * before: the DOS archive is resolved) */
+        STR(game); STR(install); STR(cd); STR(music); STR(models); STR(titanium);
 #undef STR
     }
     fclose(f);
@@ -133,10 +125,10 @@ int portcfg_save(const char *unused, const portcfg *c)
     snprintf(dir, sizeof dir, "%s", portcfg_file());
     if ((slash = strrchr(dir, '/'))) { *slash = 0; mkdirs(dir); }
     if (!(f = fopen(portcfg_file(), "w"))) return -1;
-    fprintf(f, "# MechWarrior 2 port settings (see portcfg.h). Paths left out are taken from the game folder.\n");
+    fprintf(f, "# Ghost Bear's Legacy port settings (see portcfg.h). Paths left out are taken from the game folder.\n");
     if (c->game[0]) fprintf(f, "game=%s\n", c->game);
 #define OPT(k) if (c->k[0] && !c->game[0]) fprintf(f, #k "=%s\n", c->k)
-    OPT(install); OPT(cd); OPT(music); OPT(ultrasnd); OPT(mt32); OPT(models); OPT(textures); OPT(skygnd); OPT(skygnd_fog); OPT(titanium);
+    OPT(install); OPT(cd); OPT(music); OPT(models); OPT(textures); OPT(titanium);
 #undef OPT
     if (c->mode == 0) fprintf(f, "resolution=desktop\n");
     else if (c->mode == 1) fprintf(f, "resolution=window\n");
@@ -144,11 +136,7 @@ int portcfg_save(const char *unused, const portcfg *c)
     fprintf(f, "aa=%d\n", c->aa);
     if (c->render_w) fprintf(f, "render=%dx%d\n", c->render_w, c->render_h); else fprintf(f, "render=native\n");
     fprintf(f, "speed=%.2f\n", (double)(c->speed > 0 ? c->speed : 0.85f));
-    if (app_gbl) fprintf(f, "renderer=%s\n", PORTCFG_GBL_NAME[portcfg_gbl_look(c)]);   /* gbl: its three looks */
-    else {
-        fprintf(f, "renderer=%s\n", PORTCFG_ED_NAME[c->renderer >= 0 && c->renderer < PORTCFG_ED_COUNT ? c->renderer : 0]);
-        fprintf(f, "textures=%s\n", PORTCFG_TX_NAME[c->texset == PORTCFG_TX_TITANIUM ? 1 : 0]);
-    }
+    fprintf(f, "renderer=%s\n", PORTCFG_GBL_NAME[portcfg_gbl_look(c)]);   /* the three looks */
     fprintf(f, "system_shortcuts=%s\n", c->system_shortcuts ? "allow" : "block");
     fprintf(f, "hud_layout=%s\n", c->hud_original ? "original" : "wide");
     fprintf(f, "dos_shading=%s\n", c->dos_sky_smooth ? "smooth" : "dithered");
@@ -200,7 +188,7 @@ int portcfg_resolve(portcfg *c, const char *exe_dir, const char *hint)
     char p[PORTCFG_PATH * 2];
     const char *home = getenv("HOME");
 #ifdef _WIN32
-    if (!home || !home[0]) home = getenv("USERPROFILE");   /* %USERPROFILE%\MW2-game */
+    if (!home || !home[0]) home = getenv("USERPROFILE");   /* %USERPROFILE%\GBL-game */
 #endif
     if (hint && portcfg_is_game_dir(hint)) snprintf(c->game, sizeof c->game, "%s", hint);
     if (!c->game[0] && !c->install[0]) {   /* look for it */
@@ -230,24 +218,10 @@ int portcfg_resolve(portcfg *c, const char *exe_dir, const char *hint)
         if (!c->cd[0] && is_dir(p)) snprintf(c->cd, sizeof c->cd, "%s", p);
         snprintf(p, sizeof p, "%s/music", c->game);
         if (!c->music[0] && is_dir(p)) snprintf(c->music, sizeof c->music, "%s", p);
-        snprintf(p, sizeof p, "%s/ultrasnd", c->game);
-        if (!c->ultrasnd[0] && is_dir(p)) snprintf(c->ultrasnd, sizeof c->ultrasnd, "%s", p);
-        snprintf(p, sizeof p, "%s/mt32", c->game);
-        if (!c->mt32[0] && is_dir(p)) snprintf(c->mt32, sizeof c->mt32, "%s", p);
-        snprintf(p, sizeof p, "%s/3d/models.prj", c->game);
-        if (!c->models[0] && exists(p)) snprintf(c->models, sizeof c->models, "%s", p);
-        snprintf(p, sizeof p, "%s/3d/textures.prj", c->game);
-        if (!c->textures[0] && exists(p)) snprintf(c->textures, sizeof c->textures, "%s", p);
-        snprintf(p, sizeof p, "%s/3d/skygnd.par", c->game);
-        if (!c->skygnd[0] && exists(p)) snprintf(c->skygnd, sizeof c->skygnd, "%s", p);
-        snprintf(p, sizeof p, "%s/3d/skygnd_pvr.par", c->game);
-        if (!c->skygnd_fog[0] && exists(p)) snprintf(c->skygnd_fog, sizeof c->skygnd_fog, "%s", p);
-        snprintf(p, sizeof p, "%s/3d/pvr/skygnd.par", c->game);   /* the PowerVR edition's own file: the fog densities */
-        if (!c->skygnd_fog[0] && exists(p)) snprintf(c->skygnd_fog, sizeof c->skygnd_fog, "%s", p);
         snprintf(p, sizeof p, "%s/titanium", c->game);   /* the Titanium edition's 16-bit files */
         if (!c->titanium[0] && is_dir(p)) snprintf(c->titanium, sizeof c->titanium, "%s", p);
     }
-    /* without the 3D editions' files: the DOS archive (models only, untextured) */
+    /* the DOS archive: the install's, else the disc's */
     if (!c->models[0] && c->install[0]) {
         if (!find_ci(c->install, "MW2.PRJ", c->models, sizeof c->models) && c->cd[0]) {
             snprintf(p, sizeof p, "%s/%s", c->cd, app_cddata);
@@ -259,7 +233,7 @@ int portcfg_resolve(portcfg *c, const char *exe_dir, const char *hint)
     return c->install[0] ? 0 : -1;
 }
 
-const char *const PORTCFG_ED_NAME[PORTCFG_ED_COUNT] = {"enhanced", "dos", "3dfx", "ati", "s3", "pvr", "mga"};
+const char *const PORTCFG_ED_NAME[PORTCFG_ED_COUNT] = {"enhanced", "dos"};
 const char *const PORTCFG_TX_NAME[PORTCFG_TX_COUNT] = {"original", "titanium"};
 const char *const PORTCFG_GBL_NAME[PORTCFG_GBL_COUNT] = {"dos", "enhanced", "titanium"};
 const char *const PORTCFG_VID_NAME[PORTCFG_VID_COUNT] = {"original", "smooth", "scanlines", "crt", "crt_curved"};
@@ -268,47 +242,16 @@ static void cp(char *dst, const char *src) { snprintf(dst, PORTCFG_PATH, "%s", s
 
 int portcfg_edition(const portcfg *c, int ed, char *models, char *textures, char *kind, char *sky, char *fog)
 {
-    char a[PORTCFG_PATH * 2], b[PORTCFG_PATH * 2];
-    /* the enhanced mix: the 3Dfx archive's models and data, the ATi archive's textures (the best-kept copy), the 3Dfx sky
-     * file, the PowerVR fog */
-    cp(models, c->models); cp(textures, c->textures); cp(kind, c->textures_ati ? "ati" : "3dfx"); cp(sky, c->skygnd); cp(fog, c->skygnd_fog);
-    if (app_gbl && ed != PORTCFG_ED_ENHANCED && ed != PORTCFG_ED_DOS) return -1;   /* gbl: DOS and ENHANCED only */
-    if (ed == PORTCFG_ED_ENHANCED && !app_gbl) return 0;
-    if (ed == PORTCFG_ED_DOS || ed == PORTCFG_ED_ENHANCED) {   /* the DOS archive (the install's, else the disc's) */
-        if (!find_ci(c->install, "MW2.PRJ", a, sizeof a)) {
-            snprintf(b, sizeof b, "%s/%s", c->cd, app_cddata);
-            if (!c->cd[0] || (!find_ci(b, "MW2.PRJ", a, sizeof a) && !find_ci(c->cd, "MW2.PRJ", a, sizeof a))) return -1;
-        }
-        cp(models, a); cp(textures, a); cp(kind, "dos"); cp(sky, ""); cp(fog, "");
-        if (ed == PORTCFG_ED_ENHANCED) {   /* gbl ENHANCED: the DOS archive drawn in true colour, the Titanium fog */
-            char t[PORTCFG_PATH];
-            if (portcfg_titanium(c, NULL, t) == 0 && t[0]) cp(fog, t);
-        }
-        return 0;
+    char a[PORTCFG_PATH * 2], b[PORTCFG_PATH * 2], t[PORTCFG_PATH];
+    cp(models, c->models); cp(textures, c->textures); cp(kind, "dos"); cp(sky, ""); cp(fog, "");
+    if (ed != PORTCFG_ED_ENHANCED && ed != PORTCFG_ED_DOS) return -1;
+    if (!find_ci(c->install, "MW2.PRJ", a, sizeof a)) {   /* the DOS archive (the install's, else the disc's) */
+        snprintf(b, sizeof b, "%s/%s", c->cd, app_cddata);
+        if (!c->cd[0] || (!find_ci(b, "MW2.PRJ", a, sizeof a) && !find_ci(c->cd, "MW2.PRJ", a, sizeof a))) return -1;
     }
-    if (!c->game[0]) return -1;
-    if (ed == PORTCFG_ED_3DFX) {
-        if (!c->models[0]) return -1;
-        cp(textures, c->models); cp(kind, "3dfx"); cp(fog, "");
-        return 0;
-    }
-    if (ed == PORTCFG_ED_ATI) {
-        snprintf(a, sizeof a, "%s/3d/ati/skygnd.par", c->game);
-        if (!c->textures[0] || !c->textures_ati) return -1;
-        cp(models, c->textures); cp(kind, "ati"); cp(fog, "");
-        if (exists(a)) cp(sky, a);
-        return 0;
-    }
-    {
-        const char *dir = ed == PORTCFG_ED_S3 ? "s3" : ed == PORTCFG_ED_MGA ? "mga" : "pvr";
-        snprintf(a, sizeof a, "%s/3d/%s/MW2.PRJ", c->game, dir);
-        snprintf(b, sizeof b, "%s/3d/%s/skygnd.par", c->game, dir);
-    }
-    if (!exists(a)) return -1;
-    cp(models, a); cp(textures, a); cp(sky, exists(b) ? b : c->skygnd);
-    /* the S3 edition's textures are the 3Dfx edition's, byte for byte; the Mystique's RGB555 with 0x0000 keyed */
-    cp(kind, ed == PORTCFG_ED_S3 ? "3dfx" : ed == PORTCFG_ED_MGA ? "mga" : "pvr");
-    cp(fog, ed == PORTCFG_ED_PVR && exists(b) ? b : "");
+    cp(models, a); cp(textures, a);
+    /* ENHANCED: the DOS archive drawn in true colour, the Titanium fog */
+    if (ed == PORTCFG_ED_ENHANCED && portcfg_titanium(c, NULL, t) == 0 && t[0]) cp(fog, t);
     return 0;
 }
 
@@ -336,9 +279,9 @@ int portcfg_look(const portcfg *c, int renderer, int texset, char *models, char 
         char t[PORTCFG_PATH];
         if (portcfg_titanium(c, t, a) != 0 || !models[0]) return -1;
         cp(sky, a); cp(fog, "");
-        /* gbl TITANIUM: the models argument stays the DOS archive (the sim's data: missions, MEKs, AI); the Titanium
-         * archive is the textures archive (and glview opens it beside as the models' archive, c3d_ti) */
-        if (app_gbl) { cp(textures, t); cp(kind, "titanium"); }
+        /* the models argument stays the DOS archive (the sim's data: missions, MEKs, AI); the Titanium archive is the
+         * textures archive (and glview opens it beside as the models' archive, c3d_ti) */
+        cp(textures, t); cp(kind, "titanium");
     }
     return 0;
 }

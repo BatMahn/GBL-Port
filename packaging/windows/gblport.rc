@@ -1,0 +1,27 @@
+/* Windows resources for gbl.exe: version information, and the program icon when packaging/windows/gblport.ico exists
+ * (the Makefile passes -DGBL_ICON then; no icon is shipped in the repository). */
+#ifdef GBL_ICON
+1 ICON "gblport.ico"
+#endif
+
+1 VERSIONINFO
+FILEVERSION     0,1,0,0
+PRODUCTVERSION  0,1,0,0
+FILEOS          0x40004
+FILETYPE        0x1
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "FileDescription", "MechWarrior 2: Ghost Bear's Legacy (64-bit port)"
+      VALUE "ProductName", "GBL-Port"
+      VALUE "OriginalFilename", "gbl.exe"
+      VALUE "InternalName", "gbl"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END

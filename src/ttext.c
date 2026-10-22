@@ -22,8 +22,8 @@ int ttext_init(const char *base_dir)
        macOS .app layout (scripts/macos_app.sh) */
     static const char *REL[] = {"assets/fonts/LiberationSans-Bold.ttf", "../assets/fonts/LiberationSans-Bold.ttf",
                                 "../Resources/assets/fonts/LiberationSans-Bold.ttf"};
-    /* installed copies: the RPM (packaging/mw2port.spec) puts assets/ in /usr/share/mw2port; then the distro font */
-    static const char *SYS[] = {"/usr/share/mw2port/assets/fonts/LiberationSans-Bold.ttf",
+    /* installed copies: the RPM (packaging/gblport.spec) puts assets/ in /usr/share/gblport; then the distro font */
+    static const char *SYS[] = {"/usr/share/gblport/assets/fonts/LiberationSans-Bold.ttf",
                                 "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
                                 "/usr/share/fonts/liberation-sans/LiberationSans-Bold.ttf"};
     char path[1024];
@@ -43,11 +43,6 @@ int ttext_init(const char *base_dir)
         fclose(f);
     }
     return g_ok ? 0 : -1;
-}
-
-uint8_t *ttext_render(const char *s, float cap_px, float hscale, int *w, int *h, int *baseline_y)
-{
-    return ttext_render_track(s, cap_px, hscale, 0.0f, w, h, baseline_y);
 }
 
 float ttext_width(const char *s, float cap_px, float hscale)

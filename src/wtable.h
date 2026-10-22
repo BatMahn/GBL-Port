@@ -23,59 +23,18 @@
 #ifndef MW2_WTABLE_H
 #define MW2_WTABLE_H
 
-#include "mek.h"   /* sim_game_gbl */
-
 typedef struct { int type, repeat, per_volley, speed; float damage, heat; int refire, interval, life; float target_heat; int ammo_per_ton, range, field3c, drop, sound, visual; } sim_weapon;
-
-static const sim_weapon sim_weapons[31] = {
-    {4, 0, 20, 100, 2.0f, 0.6000000238418579f, 2534, 11, 905, 0.0f, 6, 100100, 7500, 0, 189, 3},  /* LRM 20 */
-    {4, 0, 15, 100, 2.0f, 0.6000000238418579f, 2172, 22, 905, 0.0f, 8, 100100, 7500, 0, 189, 3},  /* LRM 15 */
-    {4, 0, 10, 100, 2.0f, 0.800000011920929f, 1810, 45, 905, 0.0f, 12, 100100, 7500, 0, 189, 3},  /* LRM 10 */
-    {4, 0, 5, 100, 2.0f, 0.800000011920929f, 1448, 45, 905, 0.0f, 24, 100100, 7500, 0, 189, 3},  /* LRM 5 */
-    {3, 0, 6, 70, 3.0f, 1.340000033378601f, 1448, 60, 543, 0.0f, 15, 49686, 0, 0, 258, 3},  /* SRM 6 */
-    {3, 0, 4, 70, 3.0f, 1.5f, 1267, 45, 543, 0.0f, 25, 49686, 0, 0, 258, 3},  /* SRM 4 */
-    {3, 0, 2, 100, 3.0f, 2.0f, 1086, 45, 543, 0.0f, 50, 49686, 0, 0, 258, 3},  /* SRM 2 */
-    {4, 0, 6, 70, 3.0f, 1.3339999914169312f, 1086, 45, 543, 0.0f, 15, 49686, 25, 1, 189, 3},  /* Streak SRM-6 */
-    {4, 0, 4, 70, 3.0f, 1.5f, 1448, 45, 543, 0.0f, 25, 49686, 25, 1, 189, 3},  /* Streak SRM-4 */
-    {4, 0, 2, 70, 3.0f, 2.0f, 1448, 45, 543, 0.0f, 50, 49686, 25, 1, 189, 3},  /* Streak SRM-2 */
-    {5, 1, 1, 300, 1.0f, 0.0f, 11, 11, 57, 0.0f, 200, 17500, 0, 1, 226, 5},  /* Machine Gun */
-    {7, 0, 1, 280, 18.0f, 0.5f, 724, 90, 646, 0.0f, 8, 182000, 0, 0, 218, 11},  /* Gauss Rifle */
-    {5, 1, 1, 240, 3.0f, 0.5f, 45, 45, 331, 0.0f, 45, 80000, 0, 0, 1, 11},  /* LB 2-X AC */
-    {5, 1, 1, 240, 7.5f, 0.5f, 45, 45, 289, 0.0f, 20, 70000, 0, 0, 1, 11},  /* LB 5-X AC */
-    {5, 1, 1, 240, 15.0f, 1.0f, 45, 11, 247, 0.0f, 10, 60000, 0, 0, 1, 11},  /* LB 10-X AC */
-    {5, 1, 1, 240, 30.0f, 3.0f, 45, 11, 186, 0.0f, 5, 45000, 0, 0, 1, 11},  /* LB 20-X AC */
-    {5, 1, 1, 220, 3.0f, 0.5f, 22, 11, 316, 0.0f, 45, 70000, 0, 0, 187, 11},  /* Ultra AC/2 */
-    {5, 1, 1, 220, 7.5f, 0.5f, 22, 11, 271, 0.0f, 20, 60000, 0, 0, 187, 11},  /* Ultra AC/5 */
-    {5, 1, 1, 220, 15.0f, 1.5f, 22, 11, 226, 0.0f, 10, 50000, 0, 0, 187, 11},  /* Ultra AC/10 */
-    {5, 1, 1, 220, 30.0f, 3.5f, 22, 11, 181, 0.0f, 5, 40000, 0, 0, 187, 11},  /* Ultra AC/20 */
-    {7, 0, 1, 80, 20.0f, 12.0f, 90, 181, 181, 0.0f, 8, 80000, 1000, 0, 227, -1},  /* Flamer */
-    {6, 0, 1, 70, 17.0f, 12.5f, 452, 22, 1705, 3.5f, -1, 120000, 0, 0, 227, 6},  /* ER PPC */
-    {0, 1, 1, 280, 8.0f, 6.0f, 108, 60, 362, 0.0f, -1, 101920, 0, 0, 199, 0},  /* ER Laser (Large) */
-    {1, 1, 1, 280, 5.0f, 2.5f, 90, 60, 181, 0.0f, -1, 50960, 0, 0, 228, 1},  /* ER Laser (Medium) */
-    {2, 1, 1, 280, 3.0f, 1.0f, 72, 60, 90, 0.0f, -1, 25480, 0, 0, 243, 2},  /* ER Laser (Small) */
-    {0, 1, 2, 280, 4.0f, 3.5f, 45, 60, 289, 0.0f, -1, 81536, 0, 0, 277, 0},  /* Pulse Laser (Large) */
-    {1, 1, 2, 280, 2.0f, 1.5f, 36, 11, 144, 0.0f, -1, 40768, 0, 0, 234, 1},  /* Pulse Laser (Medium) */
-    {2, 1, 2, 280, 1.0f, 0.5f, 18, 11, 72, 0.0f, -1, 20384, 0, 0, 278, 2},  /* Pulse Laser (Small) */
-    {3, 0, 1, 80, 0.0f, 4.0f, 2534, 45, 1448, 0.0f, -1, 200000, 0, 1, 189, 8},  /* Narc Missile Beacon */
-    {5, 1, 1, 600, 1.0f, 0.0f, 11, 5, 271, 0.0f, 24, 10000, 0, 1, 1, 5},  /* Anti-Missile System */
-    {22, 1, 1, 0, 100.0f, 0.0f, 36200, 181, 5430, 0.0f, 1, 200000, 0, 0, 189, 22},  /* Nuke */
-};
-
-/* short names (+0x50, 8 chars), as the HUD weapon list shows them */
-static const char *const sim_weapon_short[31] = {
-    "LRM20", "LRM15", "LRM10", "LRM5", "SRM6", "SRM4", "SRM2", "SSRM6", "SSRM4", "SSRM2", "MGun", "GAUSS", "xAC2", "xAC5", "xAC10", "xAC20", "uAC2", "uAC5", "uAC10", "uAC20", "FLAMER", "PPC", "LLASER", "MLASER", "SLASER", "LPLAS", "MPLAS", "SPLAS", "NARC", "AMS", "NUKE"
-};
 
 /* ---- Ghost Bear's Legacy (MW2.EXE "REL_11 Addon1"): the sim's 35-entry table at VA 0xafecc (file 0x90ecc), 0x68 bytes
  * each: 16 new bytes {+0x00 fn0 per-frame callback, +0x04 fn1 fire callback (0x53823 default), +0x08 flags, +0x0c
  * texture base} and the base DOS 0x58-byte record after them (+0x10 type, +0x14 visual, +0x18 / +0x1c muzzle effects,
  * +0x20 repeat, +0x24 f14 (0: the default fire spawns no projectile), +0x28 guided, +0x2c per volley, +0x30 ammo per ton,
  * +0x34 sound, +0x38 drop, +0x3c speed, +0x40 damage (int), +0x44 heat 16.16, +0x48 target heat 16.16, +0x4c f3c, +0x50
- * range, +0x54 refire, +0x58 interval, +0x5c life, +0x60 name). Entries 0-30: the port's base table above with the
- * fields GBL changed against the base DOS table (0x9ee58) set to GBL's values (the rest - timings from the 3Dfx table
+ * range, +0x54 refire, +0x58 interval, +0x5c life, +0x60 name). Entries 0-30: the MW2 port's 3Dfx-derived base table with
+ * the fields GBL changed against the base DOS table (0x9ee58) set to GBL's values (the rest - timings from the 3Dfx table
  * the base port uses - kept); 31-34 new, GBL's figures as they stand (182 Hz ticks, as the port's clock).
- * Used only when sim_game_gbl() (MW2_GAME=gbl). */
-static const sim_weapon sim_weapons_gbl[35] = {
+ */
+static const sim_weapon sim_weapons[35] = {
     {4, 0, 20, 100, 2.0f, 0.6000000238418579f, 2534, 11, 905, 0.0f, 6, 100100, 7500, 0, 189, 3},  /* LRM 20 */
     {4, 0, 15, 100, 2.0f, 0.6000000238418579f, 2172, 22, 905, 0.0f, 8, 100100, 7500, 0, 189, 3},  /* LRM 15 */
     {4, 0, 10, 100, 2.0f, 0.800000011920929f, 1810, 45, 905, 0.0f, 12, 100100, 7500, 0, 189, 3},  /* LRM 10 */
@@ -119,7 +78,7 @@ static const sim_weapon sim_weapons_gbl[35] = {
  * +0x0c the texture base, +0x18 / +0x1c the muzzle effects, +0x24 f14 (0: no projectile from the default fire path),
  * +0x28 guided; fn0 / fn1 not 0x53823: the AMS (msim.c gbl_ams_*) */
 typedef struct { int flags, tex, fx0, fx1, f14, guided; } sim_weapon_gx;
-static const sim_weapon_gx sim_weapons_gbl_x[35] = {
+static const sim_weapon_gx sim_weapons_x[35] = {
     {5, 0, 26, 27, 1, 1}, {5, 0, 26, 27, 1, 1}, {5, 0, 26, 27, 1, 1}, {5, 0, 26, 27, 1, 1},
     {5, 0, 26, 27, 1, 0}, {5, 0, 26, 27, 1, 0}, {5, 0, 26, 27, 1, 0},
     {5, 0, 26, 27, 1, 1}, {5, 0, 26, 27, 1, 1}, {5, 0, 26, 27, 1, 1},
@@ -135,18 +94,17 @@ static const sim_weapon_gx sim_weapons_gbl_x[35] = {
     {5, 0, -1, -1, 1, 0},                                                /* Nuke */
     {5, 0, 26, 27, 1, 0}, {0x15, 0, 32, 33, 1, 1}, {5, 0, 26, 27, 1, 1}, {5, 0, -1, -1, 1, 1},   /* Inf SRM, Torpedo, Inf SSRM, Arrow IV */
 };
-static const char *const sim_weapon_short_gbl[35] = {
+static const char *const sim_weapon_short[35] = {
     "LRM20", "LRM15", "LRM10", "LRM5", "SRM6", "SRM4", "SRM2", "SSRM6", "SSRM4", "SSRM2", "MGun", "GAUSS", "xAC2", "xAC5", "xAC10", "xAC20", "uAC2", "uAC5", "uAC10", "uAC20", "FLAMER", "PPC", "LLASER", "MLASER", "SLASER", "LPLAS", "MPLAS", "SPLAS", "NARC", "AMS", "NUKE",
     "Inf SRM", "Torpedo", "InfSSRM", "ArrowIV"
 };
 #define SIM_W_AMS 29          /* the anti-missile system's index (GBL 0x548d0 tests slot +4 == 0x1d) */
 #define SIM_W_NARC 28
 
-/* the game's table (mek.h sim_game_gbl: MW2_GAME=gbl) */
-static inline const sim_weapon *sim_wtab(void) { return sim_game_gbl() ? sim_weapons_gbl : sim_weapons; }
-static inline int sim_wcount(void) { return sim_game_gbl() ? 35 : 31; }
-static inline const char *sim_weapon_name(int w) { return w >= 0 && w < sim_wcount() ? (sim_game_gbl() ? sim_weapon_short_gbl[w] : sim_weapon_short[w]) : "?"; }
-/* GBL only: the extra fields (NULL in the base game) */
-static inline const sim_weapon_gx *sim_wx(int w) { return sim_game_gbl() && w >= 0 && w < 35 ? &sim_weapons_gbl_x[w] : (const sim_weapon_gx *)0; }
+/* the table, its length, the short names, the extra fields (NULL out of range) */
+static inline const sim_weapon *sim_wtab(void) { return sim_weapons; }
+static inline int sim_wcount(void) { return 35; }
+static inline const char *sim_weapon_name(int w) { return w >= 0 && w < sim_wcount() ? sim_weapon_short[w] : "?"; }
+static inline const sim_weapon_gx *sim_wx(int w) { return w >= 0 && w < 35 ? &sim_weapons_x[w] : (const sim_weapon_gx *)0; }
 
 #endif

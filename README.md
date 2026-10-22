@@ -4,10 +4,7 @@ A native 64-bit reimplementation of **MechWarrior 2: Ghost Bear's Legacy**, the 
 original disc's `GBL\MW2SHELL.EXE` and `GBL\MW2.EXE`. Portable C99 with SDL2 and OpenGL 3.3; builds on macOS, Linux
 and Windows. You need your own copy of the game (see "Setting up the game folder").
 
-As on DOS, Ghost Bear's Legacy is its own program: `gbl`, not an add-on to MechWarrior 2. It is built from the same
-source tree as the [MechWarrior 2 port](https://github.com/BatMahn/MW2-Port) (`make mw2` still builds that game; see
-[README_MW2.md](README_MW2.md)): the two share the simulation and the shell's building blocks. GBL's own rules sit
-behind its own switches, so MechWarrior 2 is unchanged.
+As on DOS, Ghost Bear's Legacy is its own program: `gbl`.
 
 ## Status (2026-10-21)
 Playable from start to finish. There are no releases yet: build from source (below).
@@ -23,7 +20,8 @@ Playable from start to finish. There are no releases yet: build from source (bel
   - lift ground and the turrets;
   - the new weapons (Inferno SRM-2, Torpedo, Inferno SSRM-2, Arrow IV) and the AMS;
   - the boss pilots and the new effects;
-  - GBL's own HUD layout (the 14-weapon list in two columns).
+  - GBL's own HUD layout (the 14-weapon list in two columns);
+  - enemies dodging only the computer-controlled 'Mechs' missiles and PPCs, never yours, as in DOS.
 - **Look:** chosen in Combat Variables (RENDERER):
   - **DOS** (the default): the original software renderer.
   - **ENHANCED:** GBL's own models and textures in true colour and filtered, plus each mission's fog from the Titanium
@@ -33,23 +31,16 @@ Playable from start to finish. There are no releases yet: build from source (bel
   ENHANCED and TITANIUM need three files from the Titanium disc. The in-game videos have their own look setting:
   original, smooth, scanlines, CRT or curved CRT.
 - **Sound:** the original's effects and voices (briefings and debriefings included), and the disc's CD audio as the
-  mission music from your own rips. GBL's shell plays no MIDI, so no MT-32 ROMs are needed.
+  mission music from your own rips.
 - **No CD check:** the original looked for a hidden file on the GBL disc at start-up. The port never asks for the disc.
 
 The DOS game is the reference for all behaviour: AI, simulation values, mission logic and music. The Titanium Edition
 (1998) contributes looks only. Its AI changes and its shortened soundtrack are not used.
 
 How the original works is documented in [docs/GBL_SHELL.md](docs/GBL_SHELL.md) and the specs in
-[docs/gbl/](docs/gbl/). Each value is traced from the binaries or measured in DOSBox running the original. See
-[CHANGELOG.md](CHANGELOG.md) for what changed.
-
-Known open items:
-
-- Two of the 22 new scenes don't pass the headless objective sweep yet: BRANSCN1 (the lift's path timing) and
-  ZACKSCN1 (the test harness).
-- Some of the new projectiles are not drawn yet.
-- GBL's added cockpit-control drivers don't map to INPUT.MAP yet.
-- There is no macOS app bundle or release package for `gbl` yet.
+[docs/gbl/](docs/gbl/); the simulation engine's records are in [docs/engine/](docs/engine/). Each value is traced from
+the binaries or measured in DOSBox running the original. See [CHANGELOG.md](CHANGELOG.md) for what changed and
+[KNOWN_ISSUES.md](KNOWN_ISSUES.md) for what is still open.
 
 ## Build
 Needs a C99 compiler, make, SDL2 (development files) and OpenGL 3.3.
@@ -58,16 +49,22 @@ Needs a C99 compiler, make, SDL2 (development files) and OpenGL 3.3.
     Linux (Debian/Ubuntu):  sudo apt install build-essential libsdl2-dev libgl-dev
 
     make gbl                # the game: menus + missions in one program
+    sh scripts/macos_app.sh # macOS: "Ghost Bear's Legacy.app", with SDL2 bundled inside
 
-Windows (64-bit, not yet tested for `gbl`): MSYS2's MINGW64 shell (`pacman -S make mingw-w64-x86_64-gcc mingw-w64-x86_64-SDL2`), then
-`make gbl`. You can also cross-compile from Linux with `make gbl WINDOWS=1 CC=x86_64-w64-mingw32-gcc ...`; the flags
-are as in README_MW2.md. Put `SDL2.dll` beside `gbl.exe`. Run `make clean` when you switch between a Windows build and
-a native build.
+Windows (64-bit, not yet tested): MSYS2's MINGW64 shell (`pacman -S make mingw-w64-x86_64-gcc mingw-w64-x86_64-SDL2`),
+then `make gbl`. Or cross-compile from Linux with the SDL2 MinGW development package:
+
+    make gbl WINDOWS=1 CC=x86_64-w64-mingw32-gcc SDL2_CONFIG=/path/to/SDL2-x.y.z/x86_64-w64-mingw32/bin/sdl2-config
+
+Put `SDL2.dll` beside `gbl.exe`. Run `make clean` when you switch between a Windows build and a native build.
+
+The macOS app is only ad-hoc signed. A downloaded copy needs `xattr -dr com.apple.quarantine "Ghost Bear's Legacy.app"`
+once (or System Settings > Privacy & Security > Open Anyway). Move it out of Downloads first: run from there, macOS
+uses a temporary copy that can't see a game folder next to it.
 
 ## Setting up the game folder
 `gbl` needs its own folder, `GBL-game`, built from **your original Ghost Bear's Legacy CD**: the 1995 hybrid DOS /
-Windows 95 disc. The base MechWarrior 2 CD isn't needed, because GBL's disc carries the whole game. None of the game's
-files are part of this repository.
+Windows 95 disc, which carries the whole game. None of the game's files are part of this repository.
 
     GBL-game/
       cd/         REQUIRED - the whole GBL disc, copied as it is (GBL\, SMK\, SND\, GIDDI\ ...)
@@ -76,7 +73,7 @@ files are part of this repository.
       titanium/   optional - MW2.PRJ, SKYGND.PAR, particle.PID from the Titanium disc's INSTALL\16BIT\
                   (for the ENHANCED and TITANIUM looks)
 
-**See [FOLDER_SETUP_GBL.md](FOLDER_SETUP_GBL.md) for the details:** copying the disc or a BIN/CUE image, ripping the
+**See [FOLDER_SETUP.md](FOLDER_SETUP.md) for the details:** copying the disc or a BIN/CUE image, ripping the
 music and the common mistakes.
 
 ## Playing
@@ -90,8 +87,8 @@ You don't have to give the folder each time. Without one, `gbl` looks in this or
 3. one level up (`GBL-game`);
 4. `~/GBL-game`.
 
-If it finds none, it says so and names the folder it needs. The folder is remembered in GBL's own settings file,
-separate from MechWarrior 2's:
+If it finds none, it asks for the folder with the system's folder picker. The folder is remembered in the settings
+file:
 
     Linux   ~/.config/gblport/gblport.cfg        macOS   ~/Library/Application Support/gblport/gblport.cfg
     Windows %APPDATA%\gblport\gblport.cfg
@@ -112,11 +109,11 @@ only.
 ## Tests
 The tests need your own game data, which isn't in the repository:
 
-- `MW2_GAME=gbl MW2_INSTALL_DIR=<install> ./sweep_objectives <install>/MW2.PRJ [scenes]` runs every mission's
-  objectives headless.
+- `make check GBL=<GBL-game>/install` runs the tool and data checks.
+- `MW2_INSTALL_DIR=<install> ./sweep_objectives <install>/MW2.PRJ [scenes]` runs every mission's objectives headless.
 - `python3 tests/gbl/gbl_hud_check.py <GBL-game>` checks GBL's HUD: the weapon order and the target display.
 
 ## Licences
 The port's source code is the author's. miniaudio (third_party/) is public domain / MIT-0, and Liberation Sans
-(assets/fonts/) is under the SIL Open Font License: see THIRD_PARTY.md. MechWarrior 2 and Ghost Bear's Legacy are
-Activision's. No game data is included here.
+(assets/fonts/) is under the SIL Open Font License: see THIRD_PARTY.md. Ghost Bear's Legacy is Activision's. No game
+data is included here.

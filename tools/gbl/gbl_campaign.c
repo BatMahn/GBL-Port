@@ -5,7 +5,7 @@
  * captures ref/C_07mission, C_10..C_15, C_34debrief, C_35/36, C_44, C_52..C_59, C_70..C_75, D2_mission.
  *
  * Contents:
- *   GBL_MISSIONS / GBL_MX / gbl_mission_title      the campaign tables (0x800ac, 0x7fb8c)
+ *   GBL_MISSIONS / GBL_MX                          the campaign tables (0x800ac, 0x7fb8c)
  *   gc_star_slot / gc_star_mech                     the original star API FUN_0003e0b0 / FUN_0003e2e0 (see the note)
  *   gc_brf2                                         FUN_0002c810: BRF2 SUPS / SDSC
  *   gc_text_* / gc_fill / gc_draw_page              the text box engine (FUN_0001c600, FUN_0003f4d0, FUN_0003eaa0)
@@ -53,7 +53,6 @@ static const gbl_mission_x GBL_MX[23] = {
   {"gui1brf1","gui1dbfs",18,40,0,0,{0},{0},{0}}, {"gui2brf1","gui2dbfs",19,41,0,0,{0},{0},{0}},
   {"gui3brf1","gui3dbfs",20,42,0,0,{0},{0},{0}}, {"gui4brf1","gui4dbfs",21,43,0,0,{0},{0},{0}},
   {"guinbrf1","guindbfs",22,44,0,0,{0},{0},{0}}, {"","",-1,-1,0,0,{0},{0},{0}}};
-static const char *gbl_mission_title(int i) { return i >= 0 && i < 23 ? GBL_MISSIONS[i].title : ""; }
 static const char *const GC_RANKS[7] = {"Cadet", "Mechwarrior", "Star Commander", "Star Captain", "Star Colonel",
                                         "Nova Commander", "Galaxy Commander"};   /* 0x7e790 */
 static int gc_mission(void) { gbl_pilot *p = pil(); int m = p ? p->done : 0; return m < 0 ? 0 : m > 22 ? 22 : m; }

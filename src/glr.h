@@ -37,7 +37,6 @@ typedef struct {
     float ambient;           /* 0-1 */
     int   point_light;       /* 1: the light sits at light_pos (a lit explosion, engine 0x10045d00) instead of shining along light */
     float light_pos[3];
-    float fog_density;       /* per world unit; 0 = off */
     float fog_color[3];
     float sky_color[3];      /* clear colour */
     int   bilinear;          /* texture filtering on/off */
@@ -68,7 +67,6 @@ typedef struct {
      * colour (sky x g + fog x (1 - g), common3d.h c3d_ti_frame) applied to the DOS sky fill. 0: the DOS look as it is */
     int   dos_tc;
     float dos_fog_g;
-    int   pvr_veil;          /* PowerVR fog: the 40 % white, fogged plane at y 55555.55 over the sky (0x1005ED90) */
     int   solo;              /* the target viewer: black behind, no sky / ground / world layer / effects, no fog */
     float mono[4];           /* a > 0: the actor layer untextured in this colour, lit (the target viewer's solid mode); a = 2: in each
                               * part's own colour (mech3d_part.tint) */
@@ -76,7 +74,6 @@ typedef struct {
                               * cockpit window opening or closing (3Dfx 0x10011aa0: the view keeps its scale, clipped) */
     float far_cull;          /* > 0: objects wholly beyond this distance (cm) are not drawn - the planet's VIEW far
                               * (DOS MW2.EXE 0x3f500 / 0x4e741, 3Dfx 0x1002fba0 / 0x1003dfbc); 0 = everything */
-    int   mga_mip;           /* Matrox Mystique: the ground's mip level by view depth (2500 / 5000 / 15000 cm, MYSTIQUE.PAR) */
     /* the Titanium edition (mercsw.dll + its renderer plugins): its vertex fog ti_fog = {1 = on, Z (the full-fog depth,
      * 0 = none), the camera's factor}; the cloud layer's drift (slot 0x8c, U and V in texture repeats); effects
      * alpha-blended (Render type 8) instead of alpha-tested */

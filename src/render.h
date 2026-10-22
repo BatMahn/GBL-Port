@@ -34,24 +34,6 @@ int  r_set_shade_table(r_target *t, const uint8_t *table, size_t len);
  * light is a direction (need not be normalised). */
 void r_draw_mech(r_target *t, const mech3d *m, float yaw, float pitch, const float light[3]);
 
-/* ---- true-colour textured path (3D-edition look) ---- */
-
-#include "tex.h"
-
-typedef struct {
-    int       w, h;
-    uint8_t  *rgb;      /* w*h*3 */
-    float    *depth;
-} rt_target;
-
-int  rt_init(rt_target *t, int w, int h, uint8_t r, uint8_t g, uint8_t b);
-void rt_free(rt_target *t);
-/* Polygons with material 0x0Bxx get `camo`; parts whose model name contains
- * "DECL" get `decal` (alpha-tested); the rest use palette[color >> 8]. */
-void rt_draw_mech(rt_target *t, const mech3d *m, float yaw, float pitch, const float light[3],
-                  const texture *camo, const texture *decal, const uint8_t palette[256][3]);
-int  rt_write_ppm(const rt_target *t, const char *path);
-
 /* Write the framebuffer as a binary PPM (RGB). Returns 0 on success. */
 int  r_write_ppm(const r_target *t, const char *path);
 

@@ -64,7 +64,7 @@ void hud_draw_stretch_top(hud *h, const hud_sprite *s, float height_px);
 void hud_draw_stretch_row(hud *h, const hud_sprite *s, float height_px, int bottom);
 /* the 640-space x of the viewport's left edge (negative when the viewport is wider than 4:3) */
 float hud_left_x(const hud *h);
-/* The port's wide HUD layout (mw2port.cfg hud_layout=wide): the drawing that follows placed as if the 4:3 area stood at
+/* The port's wide HUD layout (gblport.cfg hud_layout=wide): the drawing that follows placed as if the 4:3 area stood at
  * the window's left edge (side -1), right edge (+1) or in the centre (0, as hud_begin leaves it) - corner instruments
  * keep their size and their distance from the 4:3 area's edge. No effect unless the window is wider than 4:3. */
 void hud_side(hud *h, int side);

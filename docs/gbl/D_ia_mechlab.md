@@ -1,7 +1,7 @@
 # D - GBL Instant Action ("Combat Simulator", screen 7) and the Mech Lab (screen 9)
 
 Agent D, 2026-10-21. Binary: GBL MW2SHELL.EXE (re/shellgbl_decomp.c, shellgbl.asm; data read with tools/sh.py).
-Base references: docs/SHELL.md ("Instant Action", "Star Configuration and the Mech Lab", "Mech Lab ... decoding",
+Base references: the base shell (MW2SHELL.EXE) ("Instant Action", "Star Configuration and the Mech Lab", "Mech Lab ... decoding",
 "CUSTOMIZE"), base FUN_00029680 / FUN_000339e0 (handoff re/mw2shell_decomp.c), the port's run_mech_lab / run_customize.
 Markers: TRACED (address), MEASURED (DOSBox capture in /home/claude/gbl/ref), ASSUMED / INFERRED (with the reason).
 Call convention used below: clip(slot, name, x, y, flags, fps) = FUN_0003d1a0 (fps 0 -> 10; it tries smk\<name>.shp,
@@ -107,7 +107,7 @@ when 0x12 finishes -> hide it, restart 0x11 and 0x0f; forever (D_ia.png vs D_ia2
 Leaving the hotspots: EXIT back to frame 0, label back to 0xa9458. The global Esc menu (FUN_00026f10) works here.
 Dead code: cases 5/7 (slots 2/4), 8/9, 0xc (re-randomise + formation labels "Echelon Left".. via 0x7e8a8) can't occur.
 
-### 1.4 Differences from base screen 7 (SHELL.md "Instant Action")
+### 1.4 Differences from base screen 7 (the base shell "Instant Action")
 Base: 25 hotspots (scenario, 3 + 3 mechs, formations, clans, Mech Lab / Star Config per side), clan emblems WIA*, planet
 APLANnnC at (414,10), PDSC text, 15-18 mechs by "Calvin"/"Hobbes". GBL: 5 hotspots, one chassis, random scenario, no
 text, wgbcs* clips, 29-31 mechs by WIDOW / LITTLEGUY, reached from the hall's COMBAT SIMULATOR, EXIT returns to the hall.
@@ -200,7 +200,7 @@ loads the MEK and fills the panels ("Variant: Primary Config", "Alt. Config A"..
 - max mass (0xabe58) < used (0xabe5c) -> "Invalid 'Mech specification:|Chassis can not support|current mass.#Ok".
 - First free slot s in 100..199, else "Error: Too many mechs|of this variant to save.#Ok". File name
   sprintf("%s%02dusr.mek", archive code, s - 100) - NN starts at 00 (consistent with the PRJ's DRW00USR / NGA00USR;
-  note SHELL.md / the port say 01-99: the original's first design is 00 and is called "User Variant #1").
+  note the base shell / the port say 01-99: the original's first design is 00 and is called "User Variant #1").
 - fopen("mek\<name>", "wb"); failure -> mkdir("mek") and retry; writes header 0x18, 8 x 0x28 locations, items x 8,
   links x 8, name 0x32 (the base MEK layout); failure -> "Error saving 'Mech.#Ok"; success -> the new slot is current.
 - Other strings of the page code (unchanged): "...ed critical|can not be removed.#Ok" (0x77b80 tail), 'MASC', 'CASE'.

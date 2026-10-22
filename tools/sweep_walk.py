@@ -6,7 +6,9 @@ climbing onto object tops.
 Uses the test-only glview hooks MW2_WALK_TRACE (walk / walkblk / walknav lines), MW2_TEST_PASSIVE (no damage,
 no heat), MW2_TEST_NAVSEEN (navs already visited), MW2_TEST_NAVAUTO (autopilot on), MW2_DEBUG_INVULN.
 
-  tools/sweep_walk.py [-j 2] [-o /tmp/walk] [SCENE ...]      (default: every mission in models.prj)
+  tools/sweep_walk.py [-j 2] [-o /tmp/walk] [SCENE ...]      (default: every mission in the GBL MW2.PRJ)
+
+The game: GBL_GAME (default ../GBL-game: install/MW2.PRJ, the DOS look); MW2_INSTALL_DIR (default its install/).
 
 A leg = drop point (or the last nav) -> the next selectable nav the autopilot takes. When a leg stalls the
 run is restarted at the stalled leg's nav (MW2_START) with the earlier navs marked visited, so every leg is
@@ -16,13 +18,14 @@ import argparse, math, os, re, subprocess, sys
 from concurrent.futures import ThreadPoolExecutor
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-GAME = os.path.join(os.path.dirname(ROOT), 'MW2-game', '3d')
+GAME = os.environ.get('GBL_GAME', os.path.join(os.path.dirname(ROOT), 'GBL-game'))
+PRJ = os.path.join(GAME, 'install', 'MW2.PRJ')
 
 def env_for(out):
     e = dict(os.environ)
-    e.update(MW2_CONFIG=os.path.join(out, 'test.cfg'), MW2_INSTALL_DIR=os.environ.get('MW2_INSTALL_DIR', '/tmp/gtest'),
+    e.update(MW2_CONFIG=os.path.join(out, 'test.cfg'), MW2_INSTALL_DIR=os.environ.get('MW2_INSTALL_DIR', os.path.join(GAME, 'install')),
              SDL_VIDEODRIVER='offscreen', SDL_AUDIODRIVER='dummy', MW2_SIZE='160x120',
-             MW2_SKYGND=os.path.join(GAME, 'skygnd.par'), MW2_EDITION='enhanced', MW2_NO_STARTUP='1',
+             MW2_EDITION='dos', MW2_NO_STARTUP='1',
              MW2_DEBUG_INVULN='1', MW2_TEST_PASSIVE='1', MW2_WALK_TRACE='1', MW2_TEST_NAVAUTO='1')
     return e
 
@@ -33,7 +36,7 @@ def run(glview, out, scene, secs, tag, start=None, heading=None, seen=None):
     if heading is not None: e['MW2_START_HEADING'] = '%.1f' % heading
     if seen: e['MW2_TEST_NAVSEEN'] = ','.join(str(s) for s in sorted(seen))
     log = os.path.join(out, 'logs', '%s.%s.log' % (scene, tag))
-    cmd = [glview, os.path.join(GAME, 'models.prj'), os.path.join(GAME, 'textures.prj'), 'ati', '@', scene]
+    cmd = [glview, PRJ, PRJ, 'dos', '@', scene]
     navs, rows = {}, []
     with open(log, 'w') as f:
         f.write('# ' + ' '.join('%s=%s' % (k, e[k]) for k in ('MW2_START', 'MW2_START_HEADING', 'MW2_TEST_NAVSEEN', 'MW2_AUTOPILOT') if k in e) + '\n')
@@ -171,7 +174,7 @@ def main():
     ap.add_argument('scenes', nargs='*')
     a = ap.parse_args()
     for d in ('logs', 'shots'): os.makedirs(os.path.join(a.o, d), exist_ok=True)
-    scenes = a.scenes or [l.split()[0] for l in subprocess.run([os.path.join(ROOT, 'bwdtool'), os.path.join(GAME, 'models.prj'), 'missions'],
+    scenes = a.scenes or [l.split()[0] for l in subprocess.run([os.path.join(ROOT, 'bwdtool'), PRJ, 'missions'],
                                                               capture_output=True, text=True).stdout.splitlines() if re.match(r'^\w+SCN\d ', l)]
     with ThreadPoolExecutor(a.j) as ex, open(os.path.join(a.o, 'report.txt'), 'w') as rep:
         for res in ex.map(lambda s: sweep(a.glview, a.o, s), scenes):

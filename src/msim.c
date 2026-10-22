@@ -351,7 +351,6 @@ int msim_init(msim *s, prj_archive *a, const char *scene, world_actor *actors, i
     s->ai_who = malloc((size_t)(count > 0 ? count : 1) * sizeof *s->ai_who);
     for (i = 0; s->ai_focus && s->ai_who && i < count; i++) s->ai_focus[i] = s->ai_who[i] = -2;
     s->powered_down = calloc((size_t)(count > 0 ? count : 1), sizeof *s->powered_down);
-    s->sd_at = calloc((size_t)(count > 0 ? count : 1), sizeof *s->sd_at);
     s->seen_node = malloc((size_t)(count > 0 ? count : 1) * sizeof *s->seen_node);
     for (i = 0; s->seen_node && i < count; i++) s->seen_node[i] = -2;
     for (i = 0; s->online_at && i < count; i++) s->online_at[i] = (float)(0x43e + rnd_ms(&s->rng) % 0x16a) * 1000.0f / 182.0f;
@@ -486,7 +485,7 @@ int msim_init(msim *s, prj_archive *a, const char *scene, world_actor *actors, i
             for (i = 0; i < FX_TYPES; i++) s->fx_radius[i] = sqrtf(fd->half_w[i] * fd->half_w[i] + fd->half_h[i] * fd->half_h[i]);
         free(fd);
     }
-    if (sim_game_gbl()) {   /* GBL: the projectile pool per weapon kind - MW2_SHT1's BTHG {u16, u16 kind} objects (0x53823 takes a
+    {   /* GBL: the projectile pool per weapon kind - MW2_SHT1's BTHG {u16, u16 kind} objects (0x53823 takes a
                              * free slot whose kind is the weapon's +0x10; GBL's file: 11 / 11 / 11 lasers, 32 SRM, 48 LRM, 32
                              * bullets, 8 PPC, 6 gauss, 32 flamer, 8 torpedo, 5 Arrow IV, 3 NARC) */
         prj_record r;
@@ -538,7 +537,7 @@ int msim_init(msim *s, prj_archive *a, const char *scene, world_actor *actors, i
         s->engage[i] = !(actors[i].friendly && actors[i].table == 0);   /* 0x100124a0: the player's group 0 */
     }
     for (i = 0; s->minds && i < count; i++) ai_init(&s->minds[i], actors[i].leader ? AIP_LDEFEND : AIP_FDEFEND);
-    for (i = 0; s->minds && sim_game_gbl() && i < count; i++) {   /* GBL 0x217b0: GPS skill 100-103, the boss profiles */
+    for (i = 0; s->minds && i < count; i++) {   /* GBL 0x217b0: GPS skill 100-103, the boss profiles */
         int sk, lv, gf;
         if (ai_gbl_profile(&s->minds[i], actors[i].ai_skill, &sk, &lv, &gf)) {
             actors[i].ai_skill = sk;
@@ -1091,24 +1090,22 @@ static void aim_trace(const msim *s, const msim_shot *sh, const char *what, cons
 static int missile_fx(int weapon)
 {
     int v = combat_weapon_visual(weapon);
-    if (v >= 0 && sim_game_gbl() && ((v & 0xff) == 0x22 || (v & 0xff) == 0x23)) return 1;   /* GBL 0x52040: 0x22 / 0x23 go the missiles' way (0x52125: the 0x10b chunks too) */
+    if (v >= 0 && ((v & 0xff) == 0x22 || (v & 0xff) == 0x23)) return 1;   /* GBL 0x52040: 0x22 / 0x23 go the missiles' way (0x52125: the 0x10b chunks too) */
     return v >= 0 && ((v & 0xff) == 3 || (v & 0xff) == 4);
 }
-/* effect types whose live effect damages the units round it (0x1025b180: +0x18 of the 0x1025b168 rows) */
-static const unsigned char AREA_TYPE[32] = {0,0,0,1, 1,0,1,1, 0,0,0,0, 1,1,0,0, 0,1,0,1, 1,1,1,0, 0,0,0,0, 0,0,0,0};
 static void effect(msim *s, int type, const float p[3], int chunks)
 {
     s->fx_refused = 0;
     if (s->on_effect) s->on_effect(s->shot_user, type, p);
     if (chunks && !s->fx_refused) spawn_debris(s, 4, p);
-    if (!s->fx_refused && type >= 0 && type < (sim_game_gbl() ? FX_TYPES : 32) && (sim_game_gbl() ? fx_damaging(type) : AREA_TYPE[type]) &&
+    if (!s->fx_refused && type >= 0 && type < FX_TYPES && fx_damaging(type) &&
         s->area_count < (int)(sizeof s->area / sizeof s->area[0])) {
         struct msim_area *a = &s->area[s->area_count++];
         a->type = type; memcpy(a->pos, p, sizeof a->pos); a->r = s->fx_radius[type];
         a->start = (int32_t)((int64_t)s->now * 182 / 1000);
         a->end = a->start + fx_duration(type);
         a->follow = -2;
-        if (sim_game_gbl() && (fx_flags(type) & 1)) {
+        if (fx_flags(type) & 1) {
             /* GBL 0x52040: an effect that follows its object (flags 1: the burning one, type 10) is attached to the unit it
              * struck (0x39410 -> 0x1e870) and lasts its full time; anything else (the ground, a structure) keeps it 0xb6
              * ticks */
@@ -1170,35 +1167,7 @@ static void gbl_area_damage(msim *s, float ticks)
     }
 }
 
-static void area_damage(msim *s, float ticks)
-{
-    if (sim_game_gbl()) { gbl_area_damage(s, ticks); return; }
-    {
-    int32_t now = (int32_t)((int64_t)s->now * 182 / 1000);
-    int k, u, l;
-    for (k = 0; k < s->area_count; ) {
-        struct msim_area *a = &s->area[k];
-        if (now >= a->end) { s->area[k] = s->area[--s->area_count]; continue; }
-        for (u = -1; s->splash && u < s->actor_count; u++) {
-            combat_unit *cu = u < 0 ? &s->player_unit : &s->units[u];
-            float x = u < 0 ? s->player[0] : (float)s->actors[u].mech.origin[0], z = u < 0 ? s->player[2] : (float)s->actors[u].mech.origin[2];
-            float y = cu->y + (u < 0 ? s->player_centre_h : s->centre_h ? s->centre_h[u] : 550.0f), rr = u < 0 ? s->player_radius : (s->radius ? s->radius[u] : 450.0f), dx = x - a->pos[0], dy = y - a->pos[1], dz = z - a->pos[2];
-            float d = ticks / 256.0f * (cu->destroyed && !cu->intact_out ? 2.0f : 1.0f);
-            if (u >= 0 && !s->armed[u]) continue;
-            if (msim_dos_int) {   /* DOS 0x517c0: the octagonal estimate (4 x max + mid + min) >> 2 of |dx|, |dy|, |dz| */
-                float p0 = fabsf(dx), p1 = fabsf(dy), p2 = fabsf(dz), q;
-                if (p0 < p1) { q = p0; p0 = p1; p1 = q; }
-                if (p0 < p2) { q = p0; p0 = p2; p2 = q; }
-                if ((p0 * 4.0f + p1 + p2) * 0.25f >= rr + a->r) continue;
-            } else if (dx * dx + dy * dy + dz * dz >= (rr + a->r) * (rr + a->r)) continue;
-            /* the head: half (3Dfx 0x10046700: / DAT_102485f8 = 2.0); a quarter in DOS (MW2.EXE 0x517c0: 0x26270(iVar4 >> 2, 1)) */
-            combat_damage_at(cu, msim_dos_int ? d / 4.0f : d / 2.0f, 1, &s->rng);
-            for (l = 2; l <= 8; l++) combat_damage_at(cu, d, l, &s->rng);
-        }
-        k++;
-    }
-    }
-}
+static void area_damage(msim *s, float ticks) { gbl_area_damage(s, ticks); }
 
 /* a bin explosion (0x100167b0, the count not 0): explosion 7 at the location's node (0x1000fec0 / 0x1000f760 ->
  * 0x10045c30) - a damaging effect type (0x1025b180), so it hurts every location of the units round it, the exploding
@@ -1456,7 +1425,7 @@ void msim_step(msim *s, int32_t dt_ms)
     debris_step(s, (float)dt_ms * 0.182f);
     unit_messages(s);   /* deaths so far: announced before the mission tables look at them (0x10016280 posts at once) */
     mtbl_logic_step(&s->logic, s->now, &w);
-    /* mission end (engine 0x10009f50 for the player's star; 0x100374e0 end sequence: 0x71c ticks) */
+    /* mission end (engine 0x10009f50 for the player's star; the DOS end below, MW2.EXE 0x16e80) */
     if (!s->ending) {
         if (s->logic.result[0]) s->outcome = s->logic.result[0];
         if (s->debug_invulnerable && s->player_unit.destroyed) s->player_unit.destroyed = 0;
@@ -1483,7 +1452,7 @@ void msim_step(msim *s, int32_t dt_ms)
             s->ending = 1;
             s->player_lost = s->player_unit.destroyed;
             s->end_flush_at = s->now + 0x108 * 1000 / 182;   /* 0x100374e0: radio flushed 264 ticks in */
-            s->end_at = s->now + 0x71c * 1000 / 182;         /* mission over 1820 ticks in */
+            s->ending_at = s->now;
             snprintf(line, sizeof line, "%6.1fs %s", s->now / 1000.0, s->outcome ? msim_outcome_text(s) : "player destroyed: mission over");
             if (s->log) s->log(s->log_user, line);
             /* the star's outcome line (0x10009f50): MTBL header +0x12 on success, +0x1d on failure, BET68 for time
@@ -1492,11 +1461,9 @@ void msim_step(msim *s, int32_t dt_ms)
                 const char *o = s->outcome == 2 ? s->logic.tables[0].win_sound : s->outcome == 3 ? s->logic.tables[0].lose_sound : "BET68";
                 if (o[0]) s->on_radio(s->shot_user, o);
             }
-            /* "Press CTRL-Q to exit..." on the message bar: 0x1536 ticks at priority 100 (0x10002f20) */
-            if (s->dos_end) s->dos_resolved_s = (s->logic.result_time[0] > 0 ? s->logic.result_time[0] : s->now) / 1000;   /* star +8 */
-            else if (s->on_message) s->on_message(s->message_user, "Press CTRL-Q to exit...", -0x1536);
+            s->dos_resolved_s = (s->logic.result_time[0] > 0 ? s->logic.result_time[0] : s->now) / 1000;   /* star +8 */
         }
-    } else if (!s->over && s->dos_end) {
+    } else if (!s->over) {
         /* DOS 0x16fbe..0x1703b: with no radio line playing (DAT_00097ddc), past 3 s the prompt (0x11020: 0x1554 ticks,
          * priority 100) once; past 0x14 s the loop's end (DAT_00095864 += 2) */
         int el = (int)(s->now / 1000) - (int)s->dos_resolved_s;
@@ -1509,9 +1476,6 @@ void msim_step(msim *s, int32_t dt_ms)
                 s->ended_at = s->now;
             }
         }
-    } else if (!s->over && s->now >= s->end_at) {
-        s->over = 1;
-        s->ended_at = s->now;
     }
 
     /* AI (src/ai.c): every unit runs its AIT programs; the group's mission order picks the
@@ -1803,22 +1767,17 @@ void msim_step(msim *s, int32_t dt_ms)
                                                                                                * (no walking, turning, jets, dodges or fire) */
             m->throttle = 0; m->turn = 0; m->jet = 0; m->jet_forward = 0; m->jet_back = 0; m->jet_side = 0; m->wants_fire = 0; m->reverse = 0;
         }
-        if (s->sd_at && m->self_destruct) {
-            /* input +0x43 (manoeuvre 6's charge ended within 20 m, 0x1001fb90). 3D editions (0x1001a180): taken only with
-             * the mech up (controller state 2) and cleared: state 7 with a deadline 0x16a ticks on - no fire meanwhile
-             * (0x100437a0 runs in state 2 only; it has no weapons left anyway), the AI and the legs carry on; then
-             * 0x100174f0(c, 0). The DOS game (0x27785 -> 0x265f0; its charge 0x2d4a0) destroys it at once. No message
-             * or sound for an AI unit (message 4 is the player's) */
-            int up = !s->units[i].shutdown && !(s->online_at && s->now < s->online_at[i]);
-            if (s->log && (s->sd_at_once || (up && !s->sd_at[i]))) {
+        if (m->self_destruct) {
+            /* input +0x43 (manoeuvre 6's charge ended within 20 m, 0x1001fb90): the DOS game (0x27785 -> 0x265f0; its
+             * charge 0x2d4a0) destroys it at once (the 3D editions waited 0x16a ticks in state 7). No message or sound for
+             * an AI unit (message 4 is the player's) */
+            if (s->log) {
                 char line[128];
                 snprintf(line, sizeof line, "%6.1fs %s (%s) self-destruct (input +0x43)", (double)s->now / 1000.0, ac->name, ac->group);
                 s->log(s->log_user, line);
             }
-            if (s->sd_at_once) { m->self_destruct = 0; self_destruct(s, i); }
-            else if (up) { m->self_destruct = 0; if (!s->sd_at[i]) s->sd_at[i] = s->now + 0x16a * 1000 / 182; }
+            m->self_destruct = 0; self_destruct(s, i);
         }
-        if (s->sd_at && s->sd_at[i] && s->now > s->sd_at[i]) { s->sd_at[i] = 0; self_destruct(s, i); }
         if (s->ai_who) s->ai_who[i] = m->state == AI_ATTACK && v.has_enemy ? enemy_who : -2;
         if (s->cmd && s->cmd[i] == MSIM_CMD_SHUTDOWN) { m->state = AI_SHUTDOWN; m->throttle = 0; m->turn = 0; m->wants_fire = 0; m->target = 0; }
         /* action 4 (0x100141e0 -> 0x10014270): (condition, the pick) to the leader - itself when it leads - if it has none
@@ -2171,7 +2130,7 @@ void msim_free(msim *s)
     free(s->msg_seen); s->msg_seen = NULL;
     free(s->twist_limit);
     free(s->minds);
-    free(s->cmd); free(s->online_at); free(s->radius); free(s->fly_seen); free(s->centre_h); free(s->ai_focus); free(s->ai_who); free(s->powered_down); free(s->seen_node); free(s->sd_at); free(s->cmd_target); free(s->engage); free(s->mate_target); free(s->defend_leg);
+    free(s->cmd); free(s->online_at); free(s->radius); free(s->fly_seen); free(s->centre_h); free(s->ai_focus); free(s->ai_who); free(s->powered_down); free(s->seen_node); free(s->cmd_target); free(s->engage); free(s->mate_target); free(s->defend_leg);
     free(s->bld);
     free(s->inspected);
     free(s->ai_lock);
@@ -2301,8 +2260,7 @@ int msim_weapon_guided(int w)
     return w >= 0 && w < 31 && GUIDED[w];
 }
 /* weapon table +0x3c / +0x40: the lock's range window, cm */
-static const int LOCK_MIN_BASE[31] = {7500,7500,7500,7500, 0,0,0, 25,25,25, 0,0,0,0,0,0,0,0,0,0,1000,0,0,0,0,0,0,0, 0, 0,0};
-static int lock_min(int w) { return sim_game_gbl() ? (w >= 0 && w < 35 ? sim_weapons_gbl[w].field3c : 0) : LOCK_MIN_BASE[w]; }   /* GBL: +0x4c */
+static int lock_min(int w) { return w >= 0 && w < 35 ? sim_weapons[w].field3c : 0; }   /* GBL: +0x4c */
 #define LOCK_MIN_OF(w) lock_min(w)
 static void car_inc(msim *s, int off);
 
@@ -2403,7 +2361,7 @@ static void spawn_shot_h(msim *s, int weapon, int owner, const float from[3], co
     msim_shot *sh;
     float d[3], len, sp = combat_weapon_speed(weapon);
     if (s->shot_count >= MSIM_MAX_SHOTS || sp <= 0) return;
-    if (sim_game_gbl()) {
+    {
         /* GBL 0x53823: 255 projectile slots (DAT_001657a8), each of one weapon kind (MW2_SHT1 BTHG): the projectile takes a
          * free slot of its weapon's kind - none free, none flies (the round is spent all the same) */
         int kind = combat_weapon_kind(weapon), q, live = 0;
@@ -2423,7 +2381,7 @@ static void spawn_shot_h(msim *s, int weapon, int owner, const float from[3], co
          * level perpendicular p = (-dz, 0, dx) / |(dx, dz)| of its unit direction d, plus the same amount along the
          * engine's (d x p) with its y as written: (dy pz, dx pz + dz px, -dy px) - its flight line unchanged */
         int kind = combat_weapon_kind(weapon);
-        if (kind == 3 || kind == 4 || (sim_game_gbl() && (kind == 9 || kind == 10 || kind == 12))) {   /* GBL 0x53823: 3 4 9 10 12 */
+        if (kind == 3 || kind == 4 || kind == 9 || kind == 10 || kind == 12) {   /* GBL 0x53823: 3 4 9 10 12 */
             float ux = d[0] / len, uy = d[1] / len, uz = d[2] / len, hl = sqrtf(ux * ux + uz * uz);
             float off = (float)((int)(rnd_ms(&s->rng) % 200u) - 100);
             if (hl > 0) {
@@ -2480,7 +2438,7 @@ static void gbl_ams_scan(msim *s, int u)
     combat_unit *cu = u < 0 ? &s->player_unit : &s->units[u];
     float c[3], d;
     int k, q;
-    if (!sim_game_gbl() || cu->destroyed || cu->shutdown || cu->offline) return;
+    if (cu->destroyed || cu->shutdown || cu->offline) return;
     for (k = 0; k < cu->weapon_count; k++) {
         combat_weapon *cw = &cu->weapons[k];
         if (!combat_weapon_is_ams(cw->weapon) || cw->state != CW_READY) continue;
@@ -2488,7 +2446,7 @@ static void gbl_ams_scan(msim *s, int u)
         for (q = 0; q < s->shot_count; q++)
             if (ams_threat(s, u, c, &s->shots[q], &d) == 2) {
                 cw->state = CW_FIRING;
-                cw->shots = sim_weapons_gbl[cw->weapon].per_volley;
+                cw->shots = sim_weapons[cw->weapon].per_volley;
                 cw->t = 0; cw->t10 = 0;
                 cw->homing = -2;
                 break;
@@ -2506,7 +2464,6 @@ static void gbl_ams_bursts(msim *s, int u)
     combat_unit *cu = u < 0 ? &s->player_unit : &s->units[u];
     float c[3], d;
     int k, q;
-    if (!sim_game_gbl()) return;
     for (k = 0; k < cu->weapon_count; k++) {
         combat_weapon *cw = &cu->weapons[k];
         if (!combat_weapon_is_ams(cw->weapon)) { continue; }
@@ -2541,7 +2498,6 @@ static void gbl_ams_bursts(msim *s, int u)
 int msim_toggle_ams(msim *s)
 {
     int k, r = 0;
-    if (!sim_game_gbl()) return 0;
     for (k = 0; k < s->player_unit.weapon_count; k++) {
         combat_weapon *cw = &s->player_unit.weapons[k];
         if (!combat_weapon_is_ams(cw->weapon)) continue;
@@ -2554,7 +2510,7 @@ int msim_toggle_ams(msim *s)
  * (+0x44 |= 0x80c0, the timer 0) - no range or aim window */
 static int gbl_narc_lock(const msim *s, int wid, int target)
 {
-    if (!sim_game_gbl() || wid < 0 || !msim_weapon_guided(wid) || target < -1 || target >= s->actor_count || MSIM_IS_THING(target)) return 0;
+    if (wid < 0 || !msim_weapon_guided(wid) || target < -1 || target >= s->actor_count || MSIM_IS_THING(target)) return 0;
     if (target == -1) return s->player_unit.narc && !s->player_unit.destroyed;
     return s->armed[target] && s->units[target].narc && !s->units[target].destroyed;
 }
@@ -2804,7 +2760,7 @@ static void missile_warning(msim *s, int t, int lv, int shooter)
     v.heat = s->units[t].heat;
     v.pilot_level = s->actors[t].ai_level >= 1 && s->actors[t].ai_level <= 4 ? s->actors[t].ai_level : 1;
     c.s = s; c.i = t;
-    if (sim_game_gbl()) {
+    {
         float rel = 0.0f;
         if (shooter >= 0 && shooter < s->actor_count) {
             float dx = (float)(s->actors[shooter].mech.origin[0] - s->actors[t].mech.origin[0]);
@@ -2812,9 +2768,7 @@ static void missile_warning(msim *s, int t, int lv, int shooter)
             rel = wrap180(atan2f(dx, dz) * 180.0f / 3.14159265f - s->actors[t].mech.heading);
         }
         ai_missile_warning_gbl(&s->minds[t], &v, lv, rel, side_free, &c);
-        return;
     }
-    ai_missile_warning(&s->minds[t], &v, lv, side_free, &c);
 }
 
 static int shot_objects(msim *s, const float o[3], const float dv[3], float *tb, int *part);
@@ -3176,14 +3130,9 @@ static void combat_step(msim *s, float dt)
                         memcpy(ns->aim_o, s->player_eye_ok ? s->player_eye : from, sizeof ns->aim_o);
                         ns->aim_d[0] = sinf(ay2) * cosf(ap2); ns->aim_d[1] = sinf(ap2); ns->aim_d[2] = cosf(ay2) * cosf(ap2);
                     }
-                    if (tgt_ok && (msim_weapon_guided(w) || w == 0x15)) {
-                        /* 0x10020ac0 (from 0x1004397b): the player (level 1) launching at its target - in its view: within
-                         * 15 degrees of the aim - warns it */
-                        float off = wrap180(atan2f(dx, dz) * 180.0f / 3.14159265f - s->player_aim_yaw);
-                        /* GBL: never - DOS sets the shooter's level bits (0x2c970) only for computer-run units, so the
-                         * player's shots never pass 0x2e750's first test (DOSBox probe of GBL MW2.EXE, BASSSCN1) */
-                        if (fabsf(off) < 15.0f && !sim_game_gbl()) missile_warning(s, e, 1, -1);
-                    }
+                    /* (the player's launch at its target warns it in the base engine, 0x10020ac0; GBL never - DOS sets the
+                     * shooter's level bits (0x2c970) only for computer-run units, so the player's shots never pass
+                     * 0x2e750's first test (DOSBox probe of GBL MW2.EXE, BASSSCN1)) */
                     s->shot_loc = loc;
                     if (s->on_shot) s->on_shot(s->shot_user, w, -1, first, src[0], src[2]);
                     if (first && !s->no_player_muzzle)
@@ -3206,7 +3155,7 @@ static void combat_step(msim *s, float dt)
         /* the engine moves and tests a projectile every tick (0x10044f60: the tick's segment against the collision list) */
         for (sub = 0; sub < nsub && hit_unit == -2; sub++) {
             o[0] = sh->x; o[1] = sh->y; o[2] = sh->z;
-            if (sh->prox && (sh->homing != -2 || sim_game_gbl())) {
+            if (sh->prox) {
                 /* 0x10044f60: a projectile flagged by the guidance (+0x38 & 0x8000) skips the collision test and hits its
                  * target where it is (the unit's own object, 0x1000f760: its root part's location) */
                 int tg = sh->homing;
@@ -3228,7 +3177,7 @@ static void combat_step(msim *s, float dt)
                     dv[0] = dv[1] = dv[2] = 0;
                     break;
                 }
-                if (sim_game_gbl() && tg == -2) {
+                if (tg == -2) {
                     /* GBL 0x516b0: the flag (+0x3d & 0x80 - the guidance's 1 m, or an AMS intercept, 0x54bb0) with no target
                      * class: it ends where it is, its effect with no hit flags (the missile's own burst) */
                     float hp3[3] = {sh->x, sh->y, sh->z};
@@ -4148,7 +4097,6 @@ static float drive_servo(float cur, float tgt, float T, float ticks)
  * rule at 30 fps: 14 / 27 / 50 / 63 / 72 / 80 / 86 / 88 (T 90.5 throughout would reach only ~64 at 1 s). The velocity is
  * kept along the heading
  * (the engine's vector lags the heading by the same 45-tick rule in a turn - not modelled). */
-int msim_dos_int = 0;
 /* The DOS edition's throttle servo (MW2.EXE 0x49b80, set up by 0x49b40 from 0x266e0): the same rule in integers - c[0x13]
  * in 16.16 with the stop level 0x400 and full 0x400 over it (the units here: 1/1024 of full), tau = chop(0.2 x 182) = 36
  * (0x49b49 x 182.0 at 0x9342c, 0x5c3c2 chop), step = (frame ticks x (target - value)) / 36 by imul / idiv (toward zero),
@@ -4172,9 +4120,9 @@ void msim_drive_step(float *thr, float *spd, float *vel, float thr_target, float
     float c10;
     if (!drive) thr_target = 0;
     /* DOS: tau 36 / 0x5b = 91 ticks (0x266e0 chop(0.2 x 182), 0x27f.. 0x5b); the 3Dfx DLL 36.2 / 90.5 (x 181) */
-    *thr = msim_dos_int ? dos_thr_servo(*thr, thr_target, ticks) : drive_servo(*thr, thr_target, 36.2f, ticks);
+    *thr = dos_thr_servo(*thr, thr_target, ticks);
     c10 = (!drive || fabsf(*thr) < 1.0f / 32.0f) ? 0.0f : *thr * top * (*thr < 0 ? 0.5f : 1.0f) * rev;
-    *spd = drive_servo(*spd, c10, slow ? (msim_dos_int ? 91.0f : 90.5f) : (msim_dos_int ? 36.0f : 36.2f), ticks);
+    *spd = drive_servo(*spd, c10, slow ? 91.0f : 36.0f, ticks);
     *vel += (*spd - *vel) * (ticks < 45.0f ? ticks / 45.0f : 1.0f);
 }
 /* DOS MW2.EXE keeps c[0x22] as an integer (cm/tick per 1/65536 of throttle over the stop level 0x400): walk MP x
@@ -4915,7 +4863,7 @@ static void avoid_obstacles(msim *s, int i, ai_mind *m, float goal_bearing, floa
          * west; DOSBox: it turns tightly and heads off south-east) */
         float h = ac->mech.heading * 3.14159265f / 180.0f, a = s->across ? s->across[i] : 0.0f;
         float vx = fabsf((sinf(h) * m->speed + cosf(h) * a) / 182.0f), vz = fabsf((cosf(h) * m->speed - sinf(h) * a) / 182.0f);
-        float f = ((vx > vz ? vx : vz) * 4.0f + (vx > vz ? vz : vx)) * 0.25f * (msim_dos_int ? 65536.0f / 500000.0f : 0.12987013f);
+        float f = ((vx > vz ? vx : vz) * 4.0f + (vx > vz ? vz : vx)) * 0.25f * (65536.0f / 500000.0f);
         if (ac->unit_class != 1) f *= 0.5f;   /* 0x100201c0: the unit record's class (+0) other than 1 - vehicles - probes half as far */
         s->avoid_len[i] = f < 0.3f ? 0.3f : f;
     }
@@ -4928,7 +4876,7 @@ static void avoid_obstacles(msim *s, int i, ai_mind *m, float goal_bearing, floa
             /* the DOS edition's probe (DOS 0x2db80 serves the AI and the player alike: 0x2df30 -> 0x1c3f0 -> 0x3a745) has the
              * DOS broad phase (dos_broad_reject) in the DOS look; the 3D editions' AI the float one (0x100201c0 ->
              * 0x100103e0 -> 0x10029db0) */
-            int climb, hit = probe_engine_ex(s, i, p0, p1, msim_dos_int, &climb, &ox, &oz);
+            int climb, hit = probe_engine_ex(s, i, p0, p1, 1, &climb, &ox, &oz);
             if (!hit) {
                 if (step == 0 && fabsf(wrap180(goal_bearing - ac->mech.heading)) <= 1.0f) side = 0;
                 if (step == 0 && side != 0) {
@@ -4941,7 +4889,7 @@ static void avoid_obstacles(msim *s, int i, ai_mind *m, float goal_bearing, floa
                     float q0[3] = {x + cosf(hr) * off, yc, z - sinf(hr) * off}, q1[3];
                     int bclimb;
                     q1[0] = q0[0] + sinf(bh) * Lb; q1[1] = yc; q1[2] = q0[2] + cosf(bh) * Lb;
-                    if (probe_engine_ex(s, i, q0, q1, msim_dos_int, &bclimb, &ox, &oz) && !bclimb) accum += (float)side * 409.6f;
+                    if (probe_engine_ex(s, i, q0, q1, 1, &bclimb, &ox, &oz) && !bclimb) accum += (float)side * 409.6f;
                 }
                 break;
             }

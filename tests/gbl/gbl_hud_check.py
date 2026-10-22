@@ -3,7 +3,7 @@
 
     python3 tests/gbl/gbl_hud_check.py [GBL_GAME_DIR]      (default /home/claude/GBL-game: install/ = the GBL files)
 
-Runs glview headless with MW2_GAME=gbl on BASSSCN1 and checks, from the TEST ONLY hooks in tools/glview.c:
+Runs glview headless on BASSSCN1 and checks, from the TEST ONLY hooks in tools/glview.c:
   - MW2_WEAPON_ORDER: a Dire Wolf DRW00USR (14 weapons) cycles row by row, left then right, over GBL's 7-row columns
     (windows 3-9 / 10-16, GBL MW2.EXE 0x32be0) and never stops on the AMS (0x53af0: table flags +0x08 bit 4) - the
     order DOSBox shows (/home/claude/gbl/ref/K_dw_c*.png);
@@ -46,7 +46,7 @@ def userstar(path, skel, mek, bwd_id, mek_id):
 
 def run(inst, extra):
     e = {k: v for k, v in os.environ.items() if not k.startswith('MW2_')}
-    e.update({'MW2_INSTALL_DIR': inst, 'MW2_CD_DIR': os.path.join(GAME, 'cd'), 'MW2_CD_DATA': 'GBL', 'MW2_GAME': 'gbl',
+    e.update({'MW2_INSTALL_DIR': inst, 'MW2_CD_DIR': os.path.join(GAME, 'cd'), 'MW2_CD_DATA': 'GBL',
               'MW2_EDITION': 'dos', 'SDL_VIDEODRIVER': 'offscreen', 'SDL_AUDIODRIVER': 'dummy', 'MW2_NO_STARTUP': '1',
               'MW2_SIZE': '640x480', 'MW2_AUTOPILOT': '1.5,0,-999,0,%s,1' % os.path.join(inst, 'final.ppm')})
     e.update(extra)

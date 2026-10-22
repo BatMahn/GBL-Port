@@ -1,7 +1,7 @@
 /*
  * combat.h - weapons, damage and heat for mechs built from their MEK loadouts.
  *
- * FROM THE GAME (3dfx MW2.DLL; see ASSUMPTIONS.md):
+ * FROM THE GAME (3dfx MW2.DLL; see docs/engine/ASSUMPTIONS.md):
  *   - weapon behaviour from the simulation's own weapon table (wtable.h): per-weapon state
  *     machine (recycle `refire` ticks -> ready -> volley of `per_volley` projectiles, one
  *     every `interval` ticks), damage and heat per projectile, range = speed x life
@@ -149,8 +149,8 @@ typedef struct {
     uint16_t      rating;           /* loadout rating, object +0x150 (0x10041c80; group member choice 0x10014920) */
     int           jets;             /* jump MP (c[0x31]) */
     float         jet_ddy;          /* thrust, cm/tick^2: jump MP / walk MP x 0.1184 (c[0x3b]) */
-    float         jet_fuel;         /* ticks, max combat_jet_fuel_max (c[0x30]); burns 1/tick, recharges 1/4 per tick */
-    float         jet_refill_acc;   /* DOS refill (combat_jet_refill_dos): the 30 fps frames not yet taken, in frames */
+    float         jet_fuel;         /* ticks, max COMBAT_JET_FUEL_MAX (c[0x30]); burns 1/tick, recharges a tick per 30 fps frame */
+    float         jet_refill_acc;   /* the DOS refill: the 30 fps frames not yet taken, in frames */
     float         y, vy;            /* height (cm, absolute) and vertical speed (cm/tick) */
     float         ground;           /* terrain height under the unit (cm), set by the sim each step */
     float         landed_vy;        /* the vertical speed (cm/tick, < 0) it touched down with this step from a fall or jump, else 0 */
@@ -181,9 +181,9 @@ void combat_set_planet(const combat_planet *p);
  * 0x100171d0 applies no damage to anyone (weapon hits, splash, collisions, falls) and 0x10015e10 (BlowAmmo) does nothing.
  * The sim sets it; 1 by default (tools) */
 extern int combat_damage_live;
-extern int combat_ct_split;
-extern int combat_jet_refill_dos;  /* 1: the DOS look's refill - whole ticks >> 2 a 30 fps frame (0x27c63); 0: ticks / 4 */
-extern float combat_jet_fuel_max;   /* the full tank (ticks): 1810 (3Dfx 0x712), DOS 1820 (0x71c) - set by edition before the units load */
+/* the full jet tank, c[0x30] (controller +0xc0) in ticks: DOS MW2.EXE 0x71c = 1820 everywhere (0x4ce84 at load,
+ * 0x27b84 / 0x27c57 / 0x27c7d, the bar 0x314b9) */
+#define COMBAT_JET_FUEL_MAX 1820.0f
 /* damage at a location with no weapon (area damage 0x10046700 -> 0x100171d0): front armour, the CT spread as for a hit */
 void combat_damage_at(combat_unit *t, float dmg, int loc, unsigned *rng);   /* a CT hit spread over rand(n) locations from 2: 3 (3D editions, default) or 2 (DOS) */
 /* TOGGLE_AUTOEJECT (engine DAT_1024bfbc, default off; one switch for every unit): an ammunition explosion (0x100167b0)

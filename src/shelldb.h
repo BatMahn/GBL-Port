@@ -1,6 +1,6 @@
 /*
  * shelldb.h - the MW2 shell's data: DATABASE.MW2 / ARCH*.MW2 containers, their LZSS
- * compression, and PCX images. See docs/SHELL.md.
+ * compression, and PCX images. See the base shell (MW2SHELL.EXE).
  */
 #ifndef MW2_SHELLDB_H
 #define MW2_SHELLDB_H

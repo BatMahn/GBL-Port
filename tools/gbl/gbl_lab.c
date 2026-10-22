@@ -2,10 +2,10 @@
  * Legacy. Spec: docs/gbl/D_ia_mechlab.md (addresses are GBL MW2SHELL.EXE VAs; re/shellgbl_decomp.c). DOSBox references:
  * /home/claude/gbl/ref/D_ia*.png, D2_*.png.
  *
- * Reused from the base shell (tools/mw2shell.c): the Mech Lab editor model (medit, ed_* helpers, mek_masses, the engine
+ * Kept from the base shell (tools/gbl/gbl_common.c): the Mech Lab editor model (medit, ed_* helpers, mek_masses, the engine
  * table, armour rules), shell_dialog (FUN_00027a40), the fonts. GBL's own here: the screens' clip / hotspot layouts, the
- * 32-row mech table use, the 35-row weapon table (the four new weapons 31-34 come from a local table - the port's
- * mek_weapons[] / src/wtable.h stop at 30), the 14-weapon limit, the variant slots (200 x 13 bytes at 0xacfdc).
+ * 32-row mech table use, the 35-row weapon table (the four new weapons 31-34 come from a local table - the sim's
+ * base table stops at 30), the 14-weapon limit, the variant slots (200 x 13 bytes at 0xacfdc).
  *
  * The clips use the core's gs_* slots (which animate SHP clips, anchor 0x80 clips at their bottom centre and blank empty
  * SHP shapes, as FUN_0003ca50 / FUN_0003d0c0 do).

@@ -1,15 +1,8 @@
 /*
- * tex.h - texture (CEL resource) decoding for the 3D-accelerated editions.
- *
- * Same artwork, four encodings (cross-checked texel by texel between editions):
- *   TEX_ATI     u16 w, u16 h, ARGB1555, rows. Alpha bit 1 = opaque. All textures.
- *               Best quality copy: keeps 5 bits per channel everywhere.
- *   TEX_3DFX    u16 w, u16 h, rows; ARGB4444 when the texture has transparency,
- *               RGB555 when opaque (688 vs 635 textures; format isn't stored, so
- *               the caller must say which). S3's textures are byte-identical.
- *   TEX_PVR     16-byte header "PT..", Morton-twiddled ARGB4444, alpha inverted
- *               (0 = opaque); some records hold full mipmap chains.
- * About 73 explosion/effect frames use an encoding not yet decoded.
+ * tex.h - texture (CEL resource) decoding: the DOS GBL MW2.PRJ's palette-indexed CELs and the Titanium Edition's
+ * 16-bit build's textures.
+ *   TEX_4444    u16 w, u16 h, w x h ARGB4444 rows (the 3Dfx editions' effect-frame encoding: the decoder the TITANIUM
+ *               look's effect frames fall back to for the Titanium archive's plain records, glview fx_texture)
  */
 #ifndef MW2_TEX_H
 #define MW2_TEX_H
@@ -17,11 +10,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-enum { TEX_ATI, TEX_3DFX_555, TEX_3DFX_4444, TEX_PVR, TEX_DOS, TEX_MGA, TEX_TITANIUM };
-/* TEX_MGA: the Matrox Mystique edition: u16 w, u16 h, RGB555 with bit 15 = opaque (0x0000 transparent - checked against
- * the ATi copy: identical colours, keyed texels exactly the ATi's transparent ones); the ground textures are 256 x 256. The
- * engine uploads every texture as a 16- or 256-colour palette (0x1005f560): up to 255 colours kept, else masked 0x7BDE,
- * else clustered by nearest colour as a running mean - reproduced here. */
+enum { TEX_4444, TEX_DOS, TEX_TITANIUM };
 /* TEX_TITANIUM: the Titanium edition's 16-bit build (1998, Install/16bit/MW2.PRJ; engine mercsw.dll, renderer plugins
  * such as plugin/dx5draw.dll): "1.2x", u16 type, u16 w, u16 h, u16 n, n x 4-byte palette entries (B, G, R, A in memory:
  * the dword 0xAARRGGBB), w x h 8-bit indices. Only these records are textures: the engine's loader (mercsw 0x10002867)

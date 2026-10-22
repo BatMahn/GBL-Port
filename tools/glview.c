@@ -1,5 +1,7 @@
-/* glview - interactive viewer for the enhanced (3D-edition) look. SDL2 + OpenGL 3.3 core.
- *   glview MODELS.PRJ TEXTURES.PRJ ati|3dfx [RECORD] [MISSION]
+/* glview - Ghost Bear's Legacy's simulation (gbl --sim) and viewer. SDL2 + OpenGL 3.3 core.
+ *   glview MW2.PRJ TEXTURES.PRJ dos|titanium [RECORD] [MISSION]
+ *   (dos: the DOS GBL MW2.PRJ twice - the DOS look, or ENHANCED with MW2_EDITION=enhanced; titanium: the Titanium
+ *   16-bit MW2.PRJ as TEXTURES.PRJ with MW2_TEXTURES=titanium - the TITANIUM look)
  *   RECORD "@" = walk/fly the mission's world (W toggles world <-> mech view)
  *   World view: WASD move, mouse drag look, Q/E down/up, Shift faster
  *
@@ -17,8 +19,8 @@
  * Alt+Enter: fullscreen.
  * Testing: MW2_AUTOPILOT="seconds,throttle,twist,fire,out.ppm[,cockpit]" holds those
  * controls (simulated in 1/30 s steps), writes the last frame and exits.
- * [ ]: fog density -/+ (0 = off)       Ctrl+W: world <-> mech view      Esc: quit (in a mission: the MAIN MENU)
- * Sky/ground/fog: MW2_SKYGND=3dfx skygnd.par, MW2_SKYGND_FOG=PowerVR skygnd.par
+ * Ctrl+W: world <-> mech view      Esc: quit (in a mission: the MAIN MENU)
+ * Sky / fog: MW2_SKYGND = the Titanium SKYGND.PAR (TITANIUM), MW2_SKYGND_FOG = the same file (ENHANCED's fog)
  * Any window size or aspect ratio; wider screens see more to the sides.
  */
 #if defined(__APPLE__)
@@ -72,11 +74,11 @@ static int        g_win_cols = 640;      /* and its width */
 static float      g_hp[256][4];          /* the HUD palette's colours (hud_mission_palette) */
 #define HP(i) ((const float *)g_hp[(i) & 0xff])
 #define HUD_BEGIN(hd, w, h) (g_render_w == 320 && g_lr_fbo[0] ? hud_begin_stretched(hd, w, h) : hud_begin(hd, w, h))
-/* the port's HUD layout (mw2port.cfg hud_layout=, the GRAPHICS page's HUD layout; not the original's - it drew the 4:3
+/* the port's HUD layout (gblport.cfg hud_layout=, the GRAPHICS page's HUD layout; not the original's - it drew the 4:3
  * layout only): wide (1, the default) puts the left-hand instruments at the window's left edge and the right-hand ones
  * at its right edge when the window is wider than 4:3 (hud_side); original (0) keeps the whole HUD in the 4:3 middle */
 static int        g_hud_wide = 1;
-/* the port's DOS shading (mw2port.cfg dos_shading=, the GRAPHICS page's DOS shading in a DOS mission; not the original's):
+/* the port's DOS shading (gblport.cfg dos_shading=, the GRAPHICS page's DOS shading in a DOS mission; not the original's):
  * 0 dithered (the default: the Gouraud polygons and the sky's haze band stepped and dithered as MW2.EXE 0x59e77 drew
  * them), 1 smooth (their colours blended) */
 static int        g_dos_sky_smooth;
@@ -131,7 +133,7 @@ static void key_ramp(key_ramp_t *r, int plus, int minus, int shift, int delta, f
     }
 }
 static int        g_lite_level;   /* the planet's LITE ambient level (<4 letters>PLT1, payload +0x14) */
-static int        g_render_w, g_render_h;   /* MW2PORT.CFG render=: 0 native, else the original's 320x200 / 640x480 / 1024x768 */
+static int        g_render_w, g_render_h;   /* gblport.cfg render=: 0 native, else the original's 320x200 / 640x480 / 1024x768 */
 /* the full-width bars: the set's own at the original resolutions; drawing natively between 480 and 768 lines the K
  * bars, so that they still span the wider 4:3 area at 1:1 pixels (port) */
 static const char *HB(const char *base)
@@ -587,8 +589,8 @@ static texture *fx_texture(int cel)
             prj_record_free(&tr);
             if (ok) { prj_record_free(&r); return t; }
         }
-        /* ATi: one format; 3dfx/S3: effect frames carry transparency (ARGB4444) */
-        if (tex_decode(r.data, r.size, g_fx_ati == 1 ? TEX_ATI : g_fx_ati == 2 ? TEX_PVR : g_fx_ati == 3 ? TEX_DOS : g_fx_ati == 4 ? TEX_MGA : TEX_3DFX_4444, t) != 0) t->rgba = NULL;
+        /* DOS: the palette-indexed CELs; the Titanium archive's other records: ARGB4444 (tex.h TEX_4444) */
+        if (tex_decode(r.data, r.size, g_fx_ati == 3 ? TEX_DOS : TEX_4444, t) != 0) t->rgba = NULL;
         else if (g_fx_ati == 3) {   /* DOS: the effect frames in the mission's palette (index 0xff transparent) */
             size_t q;
             for (q = 0; q < (size_t)t->w * (size_t)t->h; q++) {
@@ -608,7 +610,7 @@ static texture *fx_texture(int cel)
  * (M_bass_ie1): the flakes dark red. mw2: unchanged (the same routine; left as it was) */
 static void ie_world_colour(mech3d_part *p)
 {
-    if (sim_game_gbl() && !p->wire_dmg && !p->wire_hi && !(p->objtype & 0x700)) p->wire_dmg = 4;
+    if (!p->wire_dmg && !p->wire_hi && !(p->objtype & 0x700)) p->wire_dmg = 4;
 }
 
 static int view_in_cockpit(void);   /* VIEW_IN_COCKPIT (DAT_1024e678, the engine's halve-in-the-cockpit flag) */
@@ -857,19 +859,10 @@ static float g_proj_len[3];
  * vertices scaled by the OBJ scale at load, 0x100420b0 -> 0x10042140 / DOS 0x501a9) */
 static float g_proj_off[3];
 static int   g_dos_lasers;
-static int   g_tex_kind;   /* 0 3Dfx / S3, 1 ATi, 2 PowerVR, 3 DOS, 4 Matrox Mystique */
-static int   g_edition;    /* PORTCFG_ED_* from MW2_EDITION (the shell's RENDERER choice) */   /* MW2_DOS_LASERS=1: the DOS edition's green balls instead of the 3D editions' bolts */   /* LASER1-3 model lengths (z extent), cm */
-static int   g_dos_tc;     /* gbl ENHANCED (MW2_EDITION=enhanced with the DOS archive, MW2_GAME=gbl): the DOS renderer in true
-                            * colour with the Titanium SKYGND.PAR fog (glr_view.dos_tc); g_edition stays DOS */
-static int   g_texset;     /* PORTCFG_TX_* from MW2_TEXTURES (the shell's TEXTURES choice; TITANIUM: c3d_ti is open) */
-/* Does the renderer draw fog? The PowerVR edition (its sgl fog) and the enhanced mix (which takes it); the 3Dfx, ATi,
- * S3 and Mystique editions draw none (no fog file). With the Titanium textures that renderer draws the Titanium fog
- * (its SKYGND.PAR colours and depths, made for its sky dome) or none. */
-static int look_fog(int ed) { return ed == PORTCFG_ED_PVR || ed == PORTCFG_ED_ENHANCED; }
-/* the simulation's DOS rules (the jet tank, the CT damage split, the self-destruct, the integer throttle servo, the
- * ejection): the DOS edition's - and in gbl always, whatever the look (Mike's rule: the DOS game is the reference for all
- * behaviour; the ENHANCED / TITANIUM looks only draw it differently) */
-static int sim_dos_rules(void) { return g_edition == PORTCFG_ED_DOS || sim_game_gbl(); }
+static int   g_tex_kind;   /* the texture archive's kind (the command line's): 3 "dos" - the DOS GBL MW2.PRJ, the DOS and
+                            * ENHANCED looks; 5 "titanium" - the Titanium archive, the TITANIUM look */
+static int   g_dos_tc;     /* the ENHANCED look (MW2_EDITION=enhanced with the DOS archive): the DOS renderer in true colour
+                            * with the Titanium SKYGND.PAR fog (glr_view.dos_tc) */
 static void enhanced_fog(const char *mission, glr_view *v);
 static mech3d_part g_proj[9];   /* projectile models: LASER1-3, MISSILE1, BULLET, PPCSHOT1, MISSILE2; debris CHUNKER1-2 */
 static float     g_proj_scale[7][3];   /* the pool object's OBJ scale (x, y, z) for slots 0-6 (MW2_SHT1) */
@@ -1303,7 +1296,6 @@ static void target_upkeep(void)
  *    end flag DAT_1024c568 (msim: eject_at). The mech stays as it stood (no death sequence, no wreck); the HUD is gone
  *    (DOSBox), the message lines stay. */
 static int     g_paused;
-static int32_t g_sd_at = -1;                       /* the self-destruct's deadline (sim ms; -1 none) */
 static void player_eject(int by_key)   /* 0x100174f0 */
 {
     combat_unit *pu = &g_sim.player_unit;
@@ -1395,7 +1387,7 @@ static void player_messages(void)
      * 0); the 3Dfx 0x10015f50 dropped the call (only 0x100161cf message 0). DOSBox YELLSCN1 (held group fire, SB16
      * via the AVI): MECOVHW1 at the warning AND 1.2 s later at the sequence (shutdown 6.0 s after the second) -
      * so the DOS look plays both, the 3D looks the 3Dfx rule */
-    if (pu->heat_warning) { hud_message_v("Heat level critical", 64); if ((g_tex_kind == 3 || sim_game_gbl()) && g_sfx) sfx_play(g_sfx, 0xe9, SFX_V64, 0.0f); g_sim.player_unit.heat_warning = 0; }
+    if (pu->heat_warning) { hud_message_v("Heat level critical", 64); if (g_sfx) sfx_play(g_sfx, 0xe9, SFX_V64, 0.0f); g_sim.player_unit.heat_warning = 0; }
     if (pu->auto_shutdown) { hud_message_v("Shutting down", 14); g_sim.player_unit.auto_shutdown = 0; }
     /* 0x10016175: with message 3 the overheat alarm MECOVHW1 0xe9 (0x10032b60: edx 0x64 volume, pan 0x40 centre,
      * 0x50 the channel priority; latch 0x1000, cleared below 65 with no sequence pending - the same edge) */
@@ -1448,7 +1440,6 @@ static void player_upkeep(void)
 {
     static int last_ej, last_out;
     combat_unit *pu = &g_sim.player_unit;
-    if (g_sd_at >= 0 && g_sim.now > g_sd_at) { g_sd_at = -1; player_eject(0); }
     if (pu->ejected != last_ej) {
         if (pu->ejected == 1) hud_message_v("Ejecting", 12);
         else if (pu->ejected == 2) hud_message_v("Atmosphere hostile : ejection aborted", 63);
@@ -2205,7 +2196,7 @@ static void hud_bar(float x, float y, float w, const float base[4], const float 
  * rect 13 - base DOS 0x32580 / 3Dfx 0x1001dcc0, viewer window 0xfe174 = slot 13; GBL 7: rects 3-9 / 10-16, the viewer
  * rect 17 - GBL MW2.EXE 0x32be0 (14 weapons, constants 10 / 0x10 / 0x11), 0x330d0 (29 windows; the viewer's handler
  * 0x305f0 on slot 17, 0x10fae0); GBL's CPIT MW2MECH has the 19 rects to match) */
-#define HUD_WROWS      (sim_game_gbl() ? 7 : 5)
+#define HUD_WROWS      7
 #define HUD_WMAX       (2 * HUD_WROWS)        /* weapons the list shows: base 10, GBL 14 */
 #define HUD_WRIGHT     (3 + HUD_WROWS)        /* the right column's first window: base 8, GBL 10 */
 #define HUD_WEND       (3 + 2 * HUD_WROWS)    /* one past the last window: base 13, GBL 17 */
@@ -3066,9 +3057,9 @@ static void cc_draw(void)
  *   FLEE TO WINDOWS 0x10264828: "Confirm your cowardice", 1 Accept -> 0x100642e0: leave the game
  *   GRAPHICS 0x10265570: Textured Sky, Textured Ground (Off / On; off = flat in the texture's average colour,
  *            0x10027c80 / 0x1002d330), Resolution 800x600 (No / Yes; its commit is empty) - the port: Renderer and
- *            Textures in its place (the shell's RENDERER / TEXTURES) and HUD layout (Wide / Original: mw2port.cfg
+ *            Textures in its place (the shell's RENDERER / TEXTURES) and HUD layout (Wide / Original: gblport.cfg
  *            hud_layout=, the port's own; Accept stays on the sixth row). In a DOS mission the first row is the port's
- *            DOS shading (Dithered / Smooth: mw2port.cfg dos_shading=) - Textured Sky has nothing to switch there (the DOS look
+ *            DOS shading (Dithered / Smooth: gblport.cfg dos_shading=) - Textured Sky has nothing to switch there (the DOS look
  *            fills the sky flat at the horizon, 0x3c000, and draws no sky texture)
  *   SET AUDIO VOLUME 0x10265290: Music, Sound Effects, Voice - sliders 0..1 in 0x199a steps (0x10064780), applied as
  *            they move (0x10031960), restored by Esc (0x10031b50)
@@ -3101,18 +3092,16 @@ static const mm_page MM_PAGE[MP_COUNT] = {
                      {MI_VAL, "Textures", MV_TEXSET}, {MI_VAL, "HUD layout", MV_HUDLAYOUT}, {MI_ACCEPT, "Accept (Esc to cancel)", 0}}},
 };
 static const char *const MM_OFFON[2] = {"Off", "On"}, *const MM_LOWHIGH[2] = {"Low", "High"};
-static const char *const MM_ED_TEXT[PORTCFG_ED_COUNT] = {"Enhanced", "DOS", "3Dfx", "ATi", "S3", "PowerVR", "Matrox"};
 static const char *const MM_TX_TEXT[PORTCFG_TX_COUNT] = {"Original", "Titanium"};
 static const char *const MM_HUD_TEXT[2] = {"Wide", "Original"};
 static const char *const MM_DOSSKY_TEXT[2] = {"Dithered", "Smooth"};
 static int  g_mm_stack[8], g_mm_depth;          /* open pages; empty = closed */
 static int  g_mm_sel;                           /* the chosen item of the top page */
 static int  g_mm_v[MV_COUNT], g_mm_old[MV_COUNT];   /* the pages' values (sliders 0..0x10000), as opened */
-static int  g_mm_eds[PORTCFG_ED_COUNT], g_mm_ned = -1;   /* the renderers the Renderer item offers */
-static int  g_mm_tx_lock = -1;                  /* Textures locked to Original: a DOS mission, or no titanium/ folder */
+static int  g_mm_eds[PORTCFG_GBL_COUNT], g_mm_ned = -1;   /* the looks the Renderer item offers */
 static int  g_mm_vol[3] = {-1, -1, -1};         /* music, effects, voice in force (16.16; -1 = not read yet) */
-static int  g_mm_ed_req = -1, g_mm_tx_req = -1, g_mm_world_dirty, g_mm_quit;
-/* gbl: the Renderer item offers gbl's looks (portcfg.h PORTCFG_GBL_*: DOS, Enhanced, Titanium - Titanium with titanium/);
+static int  g_mm_world_dirty, g_mm_quit;
+/* the Renderer item offers gbl's looks (portcfg.h PORTCFG_GBL_*: DOS, Enhanced, Titanium - Titanium with titanium/);
  * DOS <-> Enhanced switch at once (the same archive and renderer), a change to or from Titanium (another texture
  * archive and renderer path) is kept for the next mission (gblport.cfg renderer=) */
 static int  g_mm_gbl_req = -1;
@@ -3162,16 +3151,14 @@ static void mm_apply_volumes(const int *mus_fx_vo)
     if (g_cd) { int v = mus_fx_vo[0] * 255 / 0x10000; sfx_lock(g_sfx); cdaudio_set_volume(g_cd, (uint8_t)v, (uint8_t)v); sfx_unlock(g_sfx); }
     g_voice_off = mus_fx_vo[2] <= 0;
 }
-static int mm_value_count(int mv) { return mv == MV_VIDEO ? (g_mm_ned > 0 ? g_mm_ned : 1) : mv == MV_TEXSET && g_mm_tx_lock ? 1 : 2; }
-static int gbl_saved_look = -1;   /* gbl: a Titanium change kept for the next mission (the menu shows it) */
-/* an item that can't change here (the port's Textures when locked): drawn dim, passed over by the arrows */
-static int mm_locked(const mm_item *it) { return it->type == MI_VAL && it->arg == MV_TEXSET && g_mm_tx_lock; }
+static int mm_value_count(int mv) { return mv == MV_VIDEO ? (g_mm_ned > 0 ? g_mm_ned : 1) : mv == MV_TEXSET ? 1 : 2; }
+static int gbl_saved_look = -1;   /* a Titanium change kept for the next mission (the menu shows it) */
+/* an item that can't change here (Textures: it follows Renderer): drawn dim, passed over by the arrows */
+static int mm_locked(const mm_item *it) { return it->type == MI_VAL && it->arg == MV_TEXSET; }
 static const char *mm_value_text(int mv)
 {
-    if (mv == MV_VIDEO && sim_game_gbl()) return MM_GBL_TEXT[g_mm_ned > 0 ? g_mm_eds[g_mm_v[mv]] : gbl_cur_look()];
-    if (mv == MV_VIDEO) return MM_ED_TEXT[g_mm_ned > 0 ? g_mm_eds[g_mm_v[mv]] : g_edition];
-    if (mv == MV_TEXSET && sim_game_gbl()) return MM_TX_TEXT[g_mm_ned > 0 && g_mm_eds[g_mm_v[MV_VIDEO]] == PORTCFG_GBL_TITANIUM ? 1 : 0];   /* (follows Renderer) */
-    if (mv == MV_TEXSET) return MM_TX_TEXT[g_mm_v[mv] ? 1 : 0];
+    if (mv == MV_VIDEO) return MM_GBL_TEXT[g_mm_ned > 0 ? g_mm_eds[g_mm_v[mv]] : gbl_cur_look()];
+    if (mv == MV_TEXSET) return MM_TX_TEXT[g_mm_ned > 0 && g_mm_eds[g_mm_v[MV_VIDEO]] == PORTCFG_GBL_TITANIUM ? 1 : 0];   /* (follows Renderer) */
     if (mv == MV_HUDLAYOUT) return MM_HUD_TEXT[g_mm_v[mv] ? 1 : 0];
     if (mv == MV_DOSSKY) return MM_DOSSKY_TEXT[g_mm_v[mv] ? 1 : 0];
     return (mv == MV_DETAIL || mv == MV_DENSITY ? MM_LOWHIGH : MM_OFFON)[g_mm_v[mv] ? 1 : 0];
@@ -3184,32 +3171,16 @@ static void mm_load_page(int pg)
         g_mm_v[MV_DOSSKY] = g_dos_sky_smooth;
         g_mm_v[MV_SKY] = !(g_view && g_view->flat_sky);
         g_mm_v[MV_GROUND] = !(g_view && g_view->flat_ground);
-        if (g_mm_ned < 0 && sim_game_gbl()) {   /* gbl: its looks whose files are present */
+        if (g_mm_ned < 0) {   /* the looks whose files are present */
             portcfg pc;
             char *bp = SDL_GetBasePath();
             portcfg_load(NULL, &pc); portcfg_resolve(&pc, bp, NULL); SDL_free(bp);
             g_mm_ned = 0;
             for (k = 0; k < PORTCFG_GBL_COUNT; k++) if (k == gbl_cur_look() || portcfg_gbl_look_ok(&pc, k)) g_mm_eds[g_mm_ned++] = k;
-            g_mm_tx_lock = 1;   /* Textures follows Renderer */
-        }
-        if (g_mm_ned < 0) {   /* the 3D editions whose files are present (none to switch to in a DOS mission) */
-            portcfg pc;
-            char a[PORTCFG_PATH], b[PORTCFG_PATH], c[PORTCFG_PATH], d[PORTCFG_PATH], e[PORTCFG_PATH], *bp = SDL_GetBasePath();
-            portcfg_load(NULL, &pc); portcfg_resolve(&pc, bp, NULL); SDL_free(bp);
-            g_mm_ned = 0;
-            if (g_tex_kind != 3)
-                for (k = 0; k < PORTCFG_ED_COUNT; k++)
-                    if (k != PORTCFG_ED_DOS && (k == g_edition || portcfg_edition(&pc, k, a, b, c, d, e) == 0)) g_mm_eds[g_mm_ned++] = k;
         }
         g_mm_v[MV_VIDEO] = 0;
-        for (k = 0; k < g_mm_ned; k++) if (g_mm_eds[k] == (sim_game_gbl() ? (gbl_saved_look >= 0 ? gbl_saved_look : gbl_cur_look()) : g_edition)) g_mm_v[MV_VIDEO] = k;
-        if (g_mm_tx_lock < 0) {   /* the Titanium textures: not in a DOS mission, only with the titanium/ folder */
-            portcfg pc;
-            char *bp = SDL_GetBasePath();
-            portcfg_load(NULL, &pc); portcfg_resolve(&pc, bp, NULL); SDL_free(bp);
-            g_mm_tx_lock = g_tex_kind == 3 || !portcfg_texset_ok(&pc, g_edition, PORTCFG_TX_TITANIUM);
-        }
-        g_mm_v[MV_TEXSET] = g_texset == PORTCFG_TX_TITANIUM && !g_mm_tx_lock;
+        for (k = 0; k < g_mm_ned; k++) if (g_mm_eds[k] == (gbl_saved_look >= 0 ? gbl_saved_look : gbl_cur_look())) g_mm_v[MV_VIDEO] = k;
+        g_mm_v[MV_TEXSET] = 0;   /* (Textures follows Renderer) */
         g_mm_v[MV_HUDLAYOUT] = !g_hud_wide;
     } else if (pg == MP_AUDIO) {
         if (g_mm_vol[0] < 0) mm_read_volumes();
@@ -3226,17 +3197,15 @@ static void mm_commit_page(int pg)
 {
     if (pg == MP_GRAPHICS || pg == MP_GRAPHICS_DOS) {
         if (g_view) { g_view->flat_sky = !g_mm_v[MV_SKY]; g_view->flat_ground = !g_mm_v[MV_GROUND]; }
-        if (sim_game_gbl()) { if (g_mm_ned > 0 && g_mm_v[MV_VIDEO] != g_mm_old[MV_VIDEO]) g_mm_gbl_req = g_mm_eds[g_mm_v[MV_VIDEO]]; }
-        else if (g_mm_ned > 0 && g_mm_eds[g_mm_v[MV_VIDEO]] != g_edition) g_mm_ed_req = g_mm_eds[g_mm_v[MV_VIDEO]];
-        if (!sim_game_gbl() && !g_mm_tx_lock && g_mm_v[MV_TEXSET] != (g_texset == PORTCFG_TX_TITANIUM)) g_mm_tx_req = g_mm_v[MV_TEXSET] ? PORTCFG_TX_TITANIUM : PORTCFG_TX_ORIGINAL;
-        if (g_mm_v[MV_HUDLAYOUT] != !g_hud_wide) {   /* at once, and kept in mw2port.cfg (the file's own values) */
+        if (g_mm_ned > 0 && g_mm_v[MV_VIDEO] != g_mm_old[MV_VIDEO]) g_mm_gbl_req = g_mm_eds[g_mm_v[MV_VIDEO]];
+        if (g_mm_v[MV_HUDLAYOUT] != !g_hud_wide) {   /* at once, and kept in gblport.cfg (the file's own values) */
             portcfg raw;
             g_hud_wide = !g_mm_v[MV_HUDLAYOUT];
             portcfg_load(NULL, &raw);
             raw.hud_original = !g_hud_wide;
             portcfg_save(NULL, &raw);
         }
-        if (g_mm_v[MV_DOSSKY] != g_dos_sky_smooth) {   /* the same: at once and in mw2port.cfg (dos_shading=) */
+        if (g_mm_v[MV_DOSSKY] != g_dos_sky_smooth) {   /* the same: at once and in gblport.cfg (dos_shading=) */
             portcfg raw;
             g_dos_sky_smooth = g_mm_v[MV_DOSSKY];
             portcfg_load(NULL, &raw);
@@ -3425,12 +3394,9 @@ static int load(glr *r, prj_archive *ma, prj_archive *ta, int ati, const char *r
         world3d_actors(ma, scene, &g_actors, &g_actor_count);   /* posable, drawn on the actor layer */
         load_view_far(ma, scene);
         g_exit_fade_t0 = -1;
-        combat_jet_fuel_max = sim_dos_rules() ? 1820.0f : 1810.0f;   /* the full jet tank: DOS 0x71c (0x4ce84), 3Dfx 0x712 */
-        combat_jet_refill_dos = sim_dos_rules();   /* DOS: whole ticks >> 2 a 30 fps frame (0x27c63) */
         g_sim_ok = msim_init(&g_sim, ma, scene, g_actors, g_actor_count) == 0;
         if (g_sim_ok && !g_drop_tex) music_start(g_sim.music_track);   /* with the drop screen: when it fades (main loop) */
         g_sim.log = sim_log;
-        g_sim.dos_end = g_sim.sd_at_once = sim_dos_rules(); combat_ct_split = sim_dos_rules() ? 2 : 3; msim_dos_int = sim_dos_rules();   /* an AI self-destruct: DOS at once, 3D editions 0x16a ticks on; DOS: the integer throttle servo (0x49b80) */
         g_sim.on_message = cc_message;                 /* lancemate acknowledgements on the message bar, with voice */
         if (getenv("MW2_CC_PAGE")) g_cc_page = atoi(getenv("MW2_CC_PAGE"));   /* tests: open a COMMAND COMPUTER page */
         g_sim.on_shot = on_shot;
@@ -3627,7 +3593,7 @@ static int load(glr *r, prj_archive *ma, prj_archive *ta, int ati, const char *r
                     }
                 }
             }
-            {   /* torso twist limit from the mech's MGEO record (inferred field; see ASSUMPTIONS.md) */
+            {   /* torso twist limit from the mech's MGEO record (inferred field; see docs/engine/ASSUMPTIONS.md) */
                 prj_record mg;
                 if (prj_read_named(ma, "MGEO", g_sim.player_skel, &mg) == PRJ_OK) {
                     if (mg.size >= 24)
@@ -3676,9 +3642,9 @@ static int load(glr *r, prj_archive *ma, prj_archive *ta, int ati, const char *r
     /* the ambient term: LITE level x 3/256 (PowerVR 0x100607d0: sgl ambient = render-config +0x2a x 0.01171875 x the
      * light colour; the fog colour's ambient term is the same value) */
     if (g_view && g_world && g_lite_level > 0) g_view->ambient = (float)g_lite_level * 3.0f / 256.0f;
-    if (g_view) c3d_environment(r, &g_scene, mission, g_view, -1.0f);
+    if (g_view) c3d_environment(r, &g_scene, mission, g_view);
     if (g_view && c3d_ti && ati != 3) {   /* the Titanium textures */
-        c3d_ti_environment(r, &g_scene, mission, g_view, look_fog(g_edition));
+        c3d_ti_environment(r, &g_scene, mission, g_view, 1);
         printf("titanium: %d textures from the Titanium archive, %d from the mission's texture archive\n", c3d_ti_hits, c3d_ti_miss);
         if (g_world) { ti_world_attach(&m); glr_set_mech(r, &m, (const uint8_t (*)[3])g_scene.palette, g_scene.slot, camo, clan); }
         else {   /* the single-mech viewer: the record's Titanium model (its own meshes and skeleton offsets, the same ANIM)
@@ -3702,7 +3668,6 @@ static int load(glr *r, prj_archive *ma, prj_archive *ta, int ati, const char *r
         gndp = (uint32_t)g_scene.palette[0xef][0] | ((uint32_t)g_scene.palette[0xef][1] << 8) | ((uint32_t)g_scene.palette[0xef][2] << 16) | 0xff000000u;
         skyt.w = skyt.h = gndt.w = gndt.h = 1; skyt.rgba = &skyp; gndt.rgba = &gndp;
         glr_set_environment(r, &gndt, &skyt, 1.0f, 1.0f);
-        g_view->fog_density = 0;
         g_view->sky_color[0] = g_scene.palette[0xe0][0] / 255.0f; g_view->sky_color[1] = g_scene.palette[0xe0][1] / 255.0f; g_view->sky_color[2] = g_scene.palette[0xe0][2] / 255.0f;
         g_view->dos_lpos[0] = g_dos_lite[0]; g_view->dos_lpos[1] = g_dos_lite[1]; g_view->dos_lpos[2] = g_dos_lite[2];
         g_view->dos_amb = g_dos_lite[3]; g_view->dos_dir = (int)g_dos_lite[4]; g_view->dos_fogdist = g_dos_lite[5];
@@ -3768,38 +3733,15 @@ static void enhanced_fog(const char *mission, glr_view *v)
  * in-game Renderer / Textures) */
 static void edition_look(glr_view *v)
 {
-    v->tex_min = v->tex_mag = v->env_min = v->env_mag = 0; v->mga_mip = 0;
+    v->tex_min = v->tex_mag = v->env_min = v->env_mag = 0;
     /* the 3D editions' laser bolts by default (user choice); MW2_DOS_LASERS=1: glowing balls (a port option). The DOS
      * edition draws its own LASER1-3 objects (DOS MW2_SHT1: scale 3, 3, 12; Gouraud vertices a 33 / 37, 13 / 15, 45 / 47 -
      * all under 48, so drawn as those palette indices unscaled, 0x3bb80) like any object */
     g_dos_lasers = getenv("MW2_DOS_LASERS") != NULL;
-    /* each edition's texture filtering (traced in its renderer DLL):
-     *   3Dfx  guTexAllocateMemory(min = mag = bilinear, GR_MIPMAP_NEAREST_DITHER): linear, nearest mip
-     *   ATi   "Filter Textures" on (the default): C3D_ETFILT_MINPNT_MAG2BY2 - point minification, bilinear magnification,
-     *         no mips (off: point)
-     *   S3    "Filter Textures" on (default): TEX4TPP - bilinear without mips; the sky and ground with mips (M4TPP)
-     *   PVR   bilinear by the driver (no filter call in the game); mips taken as nearest
-     *   DOS   texel indices, point sampled (glr forces it) */
-    if (g_edition == PORTCFG_ED_3DFX || g_edition == PORTCFG_ED_PVR) { v->tex_min = GL_LINEAR_MIPMAP_NEAREST; v->tex_mag = GL_LINEAR; }
-    else if (g_edition == PORTCFG_ED_ATI) { v->tex_min = GL_NEAREST; v->tex_mag = GL_LINEAR; }
-    else if (g_edition == PORTCFG_ED_S3) { v->tex_min = GL_LINEAR; v->tex_mag = GL_LINEAR; v->env_min = GL_LINEAR_MIPMAP_NEAREST; v->env_mag = GL_LINEAR; }
-    else if (g_edition == PORTCFG_ED_MGA) {
-        /* Matrox Mystique (MW2.DLL, Msi95): no filtering at all ("Filter Textures" is a dead option, 0x1005fca0 = ret);
-         * the ground alone has mips - 2x2 box levels picked per triangle by view depth (2500 / 5000 / 15000 cm, from
-         * MYSTIQUE.PAR: thresholds x MIPmaxZ), the sky one level */
-        v->tex_min = GL_NEAREST; v->tex_mag = GL_NEAREST; v->env_min = GL_NEAREST_MIPMAP_NEAREST; v->env_mag = GL_NEAREST; v->mga_mip = 1;
-    }
-    /* (the Titanium edition's own filtering - dx5draw 0x100034a0 D3DFILTER_LINEAR, no mips 0x100056ae - belongs to its
-     * renderer plugins, not a renderer here: with TEXTURES TITANIUM the chosen renderer's filtering applies) */
-    /* the PowerVR fog's veil over the sky: with the PowerVR edition and the enhanced mix (which takes its fog); not over
-     * the Titanium sky dome (drawn unfogged, mercsw) */
-    v->pvr_veil = (g_edition == PORTCFG_ED_PVR || g_edition == PORTCFG_ED_ENHANCED) && !c3d_ti;
-    if (sim_game_gbl()) {
-        v->pvr_veil = 0;   /* gbl: no PowerVR look */
-        /* TITANIUM (the Direct3D plugin dx5draw.dll, GBL's only Titanium renderer): D3DRENDERSTATE_TEXTUREMAG / MIN =
-         * D3DFILTER_LINEAR, no mipmaps (dx5draw 0x100034a0, 0x100056ae; see agents/M/M_notes.md) */
-        if (c3d_ti && g_tex_kind != 3) { v->tex_min = GL_LINEAR; v->tex_mag = GL_LINEAR; v->env_min = GL_LINEAR; v->env_mag = GL_LINEAR; }
-    }
+    /* the DOS look: texel indices, point sampled (glr forces it). TITANIUM (the Direct3D plugin dx5draw.dll, GBL's only
+     * Titanium renderer): D3DRENDERSTATE_TEXTUREMAG / MIN = D3DFILTER_LINEAR, no mipmaps (dx5draw 0x100034a0,
+     * 0x100056ae; see agents/M/M_notes.md) */
+    if (c3d_ti && g_tex_kind != 3) { v->tex_min = GL_LINEAR; v->tex_mag = GL_LINEAR; v->env_min = GL_LINEAR; v->env_mag = GL_LINEAR; }
     /* the Titanium textures: the effect frames (textures of type > 0, with their alpha) alpha-blended - the engine picks
      * Render type 8 by the texture's type (mercsw 0x1000131e; dx5draw 0x100044ff), whatever the plugin */
     v->fx_blend = c3d_ti != NULL;
@@ -3824,14 +3766,7 @@ static int titanium_open(int on)
     c3d_ti_hits = c3d_ti_miss = 0;
     return 0;
 }
-/* the effect frames decoded so far (their archive changed): decoded again on use */
-static void fx_flush(void)
-{
-    int k;
-    for (k = 0; k < 4096; k++) if (g_fxtex[k]) { tex_free(g_fxtex[k]); free(g_fxtex[k]); g_fxtex[k] = NULL; }
-}
-
-/* gbl's in-game Renderer (see g_mm_gbl_req): saved as gblport.cfg renderer= for the next missions; DOS <-> Enhanced at
+/* the in-game Renderer (see g_mm_gbl_req): saved as gblport.cfg renderer= for the next missions; DOS <-> Enhanced at
  * once (glr_view.dos_tc and the Titanium SKYGND.PAR fog on / off); to or from Titanium from the next mission (a message) */
 static void gbl_switch_look(glr *r, glr_view *v, int look, const char *mission)
 {
@@ -3861,55 +3796,6 @@ static void gbl_switch_look(glr *r, glr_view *v, int look, const char *mission)
         hud_message_v(look == PORTCFG_GBL_TITANIUM ? "Titanium look from the next mission" : look == PORTCFG_GBL_ENHANCED ? "Enhanced look from the next mission" : "DOS look from the next mission", 0);
         printf("video mode: gbl %s from the next mission\n", PORTCFG_GBL_NAME[look]);
     }
-}
-
-/* The in-game Renderer and Textures (the GRAPHICS menu; a port addition in place of the 3Dfx edition's "Resolution
- * 800x600", whose commit 0x10066520 -> 0x100667e0 does nothing): another 3D edition's look and / or the other texture
- * set mid-mission - the renderer's texture archive, sky file, fog and filtering, the Titanium textures, sky dome and
- * ground beside it. The mission keeps the archive it was started with for models and data (an edition's archive
- * differs in record ids, and the simulation lives on them); textures are found by name. The DOS look has its own
- * palette-indexed archive and stays a shell choice. The choice is saved as the next mission's renderer= / textures=. */
-static int switch_look(glr *r, glr_view *v, prj_archive *ma, prj_archive **ta, int *ati, const char *mission, int ed, int ts)
-{
-    static char mo[PORTCFG_PATH], tx[PORTCFG_PATH], kind[PORTCFG_PATH], sky[PORTCFG_PATH], fog[PORTCFG_PATH];
-    char err[256], *bp;
-    portcfg pc, raw;
-    prj_archive *nt;
-    int k;
-    if (ed == PORTCFG_ED_DOS || g_tex_kind == 3 || (ed == g_edition && ts == g_texset)) return -1;
-    bp = SDL_GetBasePath(); portcfg_load(NULL, &pc); portcfg_resolve(&pc, bp, NULL); SDL_free(bp);
-    if (portcfg_look(&pc, ed, ts, mo, tx, kind, sky, fog) != 0) return -1;
-    if (titanium_open(ts == PORTCFG_TX_TITANIUM) != 0) return -1;   /* (the Titanium textures: their archive beside) */
-    if (!(nt = prj_open(tx, err, sizeof err))) { fprintf(stderr, "video mode: %s\n", err); titanium_open(g_texset == PORTCFG_TX_TITANIUM); return -1; }
-    fx_flush();
-    k = strcmp(kind, "ati") == 0 ? 1 : strcmp(kind, "pvr") == 0 ? 2 : strcmp(kind, "mga") == 0 ? 4 : 0;
-    if (sky[0]) setenv("MW2_SKYGND", sky, 1); else unsetenv("MW2_SKYGND");
-    if (fog[0]) setenv("MW2_SKYGND_FOG", fog, 1); else unsetenv("MW2_SKYGND_FOG");
-    setenv("MW2_EDITION", PORTCFG_ED_NAME[ed], 1);
-    setenv("MW2_TEXTURES", PORTCFG_TX_NAME[ts], 1);
-    if (*ta != g_fx_ta) prj_close(*ta);   /* the effect frames stay with the mission's first texture archive (CEL ids) */
-    *ta = nt; *ati = k; g_tex_kind = k; g_edition = ed; g_texset = ts;
-    edition_look(v);
-    c3d_free_scene(&g_scene);
-    {   /* the texture maps (BMID) of the edition's own archive when it has one: its sky and ground can differ */
-        prj_archive *em = strcmp(mo, tx) == 0 ? nt : prj_open(mo, err, sizeof err);
-        c3d_load_scene(em ? em : ma, nt, k, mission, &g_scene);
-        if (em && em != nt) prj_close(em);
-    }
-    glr_set_bank0(r, g_scene.bank0);
-    glr_flush_textures(r);
-    glr_set_mech(r, &g_mech, (const uint8_t (*)[3])g_scene.palette, g_scene.slot, g_camo, g_clan);
-    c3d_environment(r, &g_scene, mission, v, -1.0f);
-    if (c3d_ti) c3d_ti_environment(r, &g_scene, mission, v, look_fog(ed)); else glr_set_skydome(r, NULL, g_scene.slot);
-    if (c3d_ti && g_world && g_ti_world_for != g_mech.parts) ti_world_attach(&g_mech);
-    glr_set_mech(r, &g_mech, (const uint8_t (*)[3])g_scene.palette, g_scene.slot, g_camo, g_clan);   /* (with / without the Titanium models) */
-    if (g_lite_level > 0) v->ambient = (float)g_lite_level * 3.0f / 256.0f;
-    if (c3d_ti) printf("titanium: %d textures from the Titanium archive, %d from %s\n", c3d_ti_hits, c3d_ti_miss, tx);
-    portcfg_load(NULL, &raw);   /* the file's own values (unresolved), the look changed: the next mission's */
-    raw.renderer = ed; raw.texset = ts;
-    portcfg_save(NULL, &raw);
-    printf("video mode: %s, textures %s (%s)\n", PORTCFG_ED_NAME[ed], PORTCFG_TX_NAME[ts], tx);
-    return 0;
 }
 
 /* ---- TEST ONLY (tools/sweep_walk.py): MW2_WALK_TRACE - why the player's step was refused, and what it stands on ---- */
@@ -4625,7 +4511,7 @@ static void test_frame(int w, int h)
 /* ---- end TEST ONLY ---- */
 
 /* port (not an original behaviour - the DOS game had the whole keyboard): the system's keyboard shortcuts while a
- * mission is played (mw2port.cfg system_shortcuts=block, the default | allow). macOS serves its own shortcuts
+ * mission is played (gblport.cfg system_shortcuts=block, the default | allow). macOS serves its own shortcuts
  * (Mission Control's Ctrl+Left / Ctrl+Right "Move a space", Cmd+Tab, Spotlight) before the game sees the keys. SDL's
  * keyboard grab would turn them off with CGSSetGlobalHotKeyOperatingMode, but SDL2 2.30 and SDL3 3.2 make that call
  * only when built with SDL_MAC_NO_SANDBOX, which no SDL build defines (Cocoa_SetWindowKeyboardGrab in both
@@ -4675,11 +4561,11 @@ int main(int argc, char **argv)
     int ati, mi = 0, ni = 0, camo = 0, clan = 0, running = 1, dragging = 0, msaa = 1, w, h, exit_code = 0;
     const char *rec = argc > 4 ? argv[4] : MECHS[0], *mission = argc > 5 ? argv[5] : MISSIONS[0];
 
-    if (argc < 4) { fprintf(stderr, "usage: %s MODELS.PRJ TEXTURES.PRJ ati|3dfx [RECORD MISSION]\n", argv[0]); return 2; }
+    if (argc < 4 || (strcmp(argv[3], "dos") != 0 && strcmp(argv[3], "titanium") != 0)) { fprintf(stderr, "usage: %s MW2.PRJ TEXTURES.PRJ dos|titanium [RECORD MISSION]\n", argv[0]); return 2; }
     if (!(ma = prj_open(argv[1], err, sizeof err)) || !(ta = prj_open(argv[2], err, sizeof err))) { fprintf(stderr, "%s\n", err); return 1; }
-    /* the texture archive's kind: 0 3Dfx / S3, 1 ATi, 2 PowerVR, 3 DOS (the shell passes the edition's) */
-    ati = strcmp(argv[3], "ati") == 0 ? 1 : strcmp(argv[3], "pvr") == 0 ? 2 : strcmp(argv[3], "dos") == 0 ? 3 : strcmp(argv[3], "mga") == 0 ? 4
-        : strcmp(argv[3], "titanium") == 0 ? 5 : 0;   /* (titanium: gbl's TITANIUM look - the Titanium archive's textures) */
+    /* the texture archive's kind: 3 DOS (the DOS GBL MW2.PRJ: the DOS and ENHANCED looks), 5 Titanium (the TITANIUM look:
+     * the Titanium archive's textures) - the shell passes the look's */
+    ati = strcmp(argv[3], "dos") == 0 ? 3 : 5;
     g_drop_dos = ati == 3;
     g_tex_kind = ati;
 
@@ -4692,7 +4578,7 @@ int main(int argc, char **argv)
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_FORWARD_COMPATIBLE_FLAG);
 #endif
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
-    {   /* MW2PORT.CFG (install dir): resolution desktop (native fullscreen, default) / window / WxH; aa samples.
+    {   /* gblport.cfg (install dir): resolution desktop (native fullscreen, default) / window / WxH; aa samples.
          * Tests (an explicit MW2_SIZE, or the offscreen driver) stay windowed at that size. */
         portcfg pc;
         int ww = 1280, wh = 720, flags = SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI, aa, tries;
@@ -4819,21 +4705,14 @@ int main(int argc, char **argv)
             for (q = 0; q < 8; q++) { SDL_PumpEvents(); drop_screen_draw(win); SDL_Delay(16); }
         }
     }
-    {   /* the look (the shell's Combat Variables RENDERER and TEXTURES, mw2port.cfg renderer= / textures=): known before
-         * the mission loads (the Titanium textures are taken as it does) */
+    {   /* the look (the shell's Combat Variables RENDERER, gblport.cfg renderer=): known before the mission loads (the
+         * Titanium textures are taken as it does). DOS archive: DOS, or ENHANCED with MW2_EDITION=enhanced; the Titanium
+         * archive: TITANIUM with MW2_TEXTURES=titanium and the titanium/ folder there */
         const char *e = getenv("MW2_EDITION"), *t = getenv("MW2_TEXTURES");
-        int k;
-        g_edition = g_tex_kind == 3 ? PORTCFG_ED_DOS : PORTCFG_ED_ENHANCED;
-        for (k = 0; e && k < PORTCFG_ED_COUNT; k++) if (strcmp(e, PORTCFG_ED_NAME[k]) == 0) g_edition = k;
-        if (g_tex_kind == 3) g_edition = PORTCFG_ED_DOS;   /* the DOS renderer is the DOS edition, whatever MW2_EDITION says: its
-                                                            * rules follow (CT spread rand(2), MW2.EXE 0x263c8; the self-destruct
-                                                            * at once) - the shell sets both together (portcfg_edition) */
-        /* (MW2_EDITION=titanium: the old single look - the enhanced mix with the Titanium textures) */
-        g_texset = (t && strcmp(t, "titanium") == 0) || (e && strcmp(e, "titanium") == 0) ? PORTCFG_TX_TITANIUM : PORTCFG_TX_ORIGINAL;
-        if (ati == 3 || (g_texset == PORTCFG_TX_TITANIUM && titanium_open(1) != 0)) g_texset = PORTCFG_TX_ORIGINAL;   /* (DOS; no folder) */
-        g_dos_tc = sim_game_gbl() && ati == 3 && e && strcmp(e, "enhanced") == 0 && !getenv("MW2_TEST_NO_TC");   /* gbl ENHANCED */
+        if (ati != 3 && t && strcmp(t, "titanium") == 0) titanium_open(1);
+        g_dos_tc = ati == 3 && e && strcmp(e, "enhanced") == 0 && !getenv("MW2_TEST_NO_TC");   /* ENHANCED */
     }
-    if ((r = glr_create())) glr_set_dos_ie_triangles(r, sim_game_gbl());   /* gbl: DOS image enhancement as GBL 0x39573 */
+    if ((r = glr_create())) glr_set_dos_ie_triangles(r, 1);   /* DOS image enhancement as GBL 0x39573 */
     if (!r || load(r, ma, ta, ati, rec, mission, camo, clan) != 0) return 1;
     g_sfx = sfx_create(ma);   /* NULL without an audio device: silent */
     if (g_world && g_sim_ok && !g_drop_tex) music_start(g_sim.music_track);   /* the mission was loaded before the mixer existed (with the drop screen: as it fades) */
@@ -4852,7 +4731,6 @@ int main(int argc, char **argv)
         }
     }
     g_show_objectives = getenv("MW2_SHOW_OBJECTIVES") != NULL;   /* tests: open the F12 display */
-    g_sim.dos_end = g_sim.sd_at_once = sim_dos_rules(); combat_ct_split = sim_dos_rules() ? 2 : 3; msim_dos_int = sim_dos_rules();   /* DOS: the integer throttle servo (0x49b80) */
     edition_look(&v);
     if (getenv("MW2_GROUPS")) {   /* tests: "g:w,w;g:w" e.g. "1:2,3" puts weapons 2 and 3 in group 1 */
         const char *p = getenv("MW2_GROUPS");
@@ -5179,10 +5057,9 @@ int main(int argc, char **argv)
                 }
                 else if (g_world && g_sim_ok && A("SELF_DESTRUCT")) {   /* 0x57: input +0x43, taken by 0x1001a180 in state 2 */
                     const combat_unit *pu2 = &g_sim.player_unit;
-                    if (!pu2->destroyed && !pu2->shutdown && g_sd_at < 0 && !(g_sim.now < g_sim.player_online_at && !getenv("MW2_NO_STARTUP"))) {
+                    if (!pu2->destroyed && !pu2->shutdown && !(g_sim.now < g_sim.player_online_at && !getenv("MW2_NO_STARTUP"))) {
                         hud_message_v("Self-destruct sequence initiated", 16);   /* message 4 */
-                        if (sim_dos_rules()) { player_eject(0); g_sim.player_unit.down_in_update = 1; }   /* DOS: at once, inside the unit's update (its case 4 at once: msim on_player_down) */
-                        else g_sd_at = g_sim.now + 0x16a * 1000 / 182;            /* state 7: 0x16a ticks */
+                        player_eject(0); g_sim.player_unit.down_in_update = 1;   /* DOS: at once, inside the unit's update (its case 4 at once: msim on_player_down) */
                     }
                 }
                 else if (g_world && g_sim_ok && A("EJECT")) player_eject(1);   /* 0x3b: 0x100174f0(c, 1) */
@@ -5277,8 +5154,6 @@ int main(int argc, char **argv)
                 else if (k == SDLK_SPACE && !g_world) g_walk = !g_walk;
                 else if (k == SDLK_p && !g_world) g_patrol = !g_patrol;
                 else if (k == SDLK_m && !g_world) { msaa = !msaa; if (msaa) glEnable(GL_MULTISAMPLE); else glDisable(GL_MULTISAMPLE); }
-                else if (k == SDLK_RIGHTBRACKET) v.fog_density = v.fog_density <= 0 ? 0.0001f : v.fog_density * 1.25f;
-                else if (k == SDLK_LEFTBRACKET) v.fog_density = v.fog_density < 0.00011f ? 0 : v.fog_density / 1.25f;
             }
         }
         if (reload) load(r, ma, ta, ati, rec, mission, camo, clan);
@@ -5296,7 +5171,7 @@ int main(int argc, char **argv)
             Uint32 now = SDL_GetTicks();
             float dt = aprev ? (float)(now - aprev) / 1000.0f : 0;
             if (g_auto_on) dt = g_auto_dt;
-            else {   /* the game speed (mw2port.cfg speed=, default 0.85): the original ran slower than real time on its
+            else {   /* the game speed (gblport.cfg speed=, default 0.85): the original ran slower than real time on its
                       * period hardware (a Pentium MMX), and the port's pace felt quick */
                 static float speed = -1;
                 if (speed < 0) {
@@ -5501,7 +5376,7 @@ int main(int argc, char **argv)
                      * the compass band goes on easing 12.8 -> 15.6 degrees for ~0.4 s after Period is released, and a held
                      * Keypad 5 eases it 13.8 -> 0 in ~0.7 s at 0.71 of the gap a 10.4-tick frame (1 - 10.4 / 36.2) */
                     {
-                        float k = dt * 182.0f / (msim_dos_int ? 36.0f : 36.2f);
+                        float k = dt * 182.0f / 36.0f;
                         if (k > 1.0f) k = 1.0f;
                         g_pl.twist += (g_twist_dem - g_pl.twist) * k;
                         g_pitch += (g_pitch_dem - g_pitch) * k;
@@ -6516,9 +6391,7 @@ int main(int argc, char **argv)
                     int k;
                     vdone |= 1 << idx;
                     if ((plus = strchr(nm, '+'))) *plus++ = 0;
-                    if (sim_game_gbl()) { for (k = 0; k < PORTCFG_GBL_COUNT; k++) if (strcmp(nm, PORTCFG_GBL_NAME[k]) == 0) g_mm_gbl_req = k; break; }
-                    for (k = 0; k < PORTCFG_ED_COUNT; k++) if (strcmp(nm, PORTCFG_ED_NAME[k]) == 0) g_mm_ed_req = k;
-                    for (k = 0; k < PORTCFG_TX_COUNT; k++) if (strcmp(plus ? plus : nm, PORTCFG_TX_NAME[k]) == 0) g_mm_tx_req = k;
+                    for (k = 0; k < PORTCFG_GBL_COUNT; k++) if (strcmp(nm, PORTCFG_GBL_NAME[k]) == 0) g_mm_gbl_req = k;
                     break;
                 }
                 idx++;
@@ -6526,11 +6399,7 @@ int main(int argc, char **argv)
                 if (q) q++;
             }
         }
-        if (g_mm_gbl_req >= 0) { gbl_switch_look(r, &v, g_mm_gbl_req, mission); g_mm_gbl_req = -1; }   /* gbl's Renderer */
-        if (g_mm_ed_req >= 0 || g_mm_tx_req >= 0) {   /* Renderer / Textures */
-            switch_look(r, &v, ma, &ta, &ati, mission, g_mm_ed_req >= 0 ? g_mm_ed_req : g_edition, g_mm_tx_req >= 0 ? g_mm_tx_req : g_texset);
-            g_mm_ed_req = g_mm_tx_req = -1;
-        }
+        if (g_mm_gbl_req >= 0) { gbl_switch_look(r, &v, g_mm_gbl_req, mission); g_mm_gbl_req = -1; }   /* the Renderer */
         if (g_mm_world_dirty) {   /* OBJECT DENSITY changed: the world layer again */
             glr_set_mech(r, &g_mech, (const uint8_t (*)[3])g_scene.palette, g_scene.slot, g_camo, g_clan);
             g_mm_world_dirty = 0;
@@ -6748,8 +6617,7 @@ int main(int argc, char **argv)
                 /* the editions that relit the scene per frame show it - 3Dfx, ATi, S3 (the same engine code) and DOS (0x51060
                  * moves its light to the blast); the PowerVR edition set its light once, and the enhanced mix follows it */
                 {
-                    int ed_light = g_edition == PORTCFG_ED_3DFX || g_edition == PORTCFG_ED_ATI || g_edition == PORTCFG_ED_S3 || g_edition == PORTCFG_ED_DOS ||
-                                   g_edition == PORTCFG_ED_MGA;   /* the Mystique relights per frame too (~0x1006c7a0) */
+                    int ed_light = g_tex_kind == 3;   /* the DOS archive (the DOS and ENHANCED looks) */
                     if (!(ed_light || getenv("MW2_FXLIGHT")) || getenv("MW2_NO_FXLIGHT")) bi = -1;
                 }
                 v.point_light = bi >= 0;
@@ -7007,7 +6875,7 @@ int main(int argc, char **argv)
                     one.part_count++;
                 }
                 glr_set_actors(r, &one, (const uint8_t (*)[3])g_scene.palette, g_scene.slot, g_camo, g_clan);
-                vv.solo = 1; vv.fog_density = 0; vv.wire = 0;
+                vv.solo = 1; vv.wire = 0;
                 vv.mono[0] = vv.mono[1] = vv.mono[2] = 0.0f; vv.mono[3] = 2.0f;   /* each part's tint */
                 vv.ambient = 0.35f; vv.point_light = 0;
             } else if (g_pit_first >= 0 && g_frame_layer.parts && g_pit_first < g_frame_layer.part_count) {
@@ -7424,12 +7292,11 @@ int main(int argc, char **argv)
                     float tw;
                     if (hud_dead) {   /* start-up (LAB_1001e9a0): the name alone, green, once the mission reaches its window's
                                        * time (0x1024cce8); a destroyed slot not at all */
-                        static const int APPEAR[10] = {543, 573, 603, 633, 663, 814, 784, 754, 724, 693};
                         /* GBL: the windows' times from 0x330d0's table (code 0x32aa8, slots 3-16; base DOS 0x32468 has
                          * 546 576 606 636 666 / 818 788 758 728 696 - the port's base keeps the 3Dfx edition's above) */
                         static const int APPEAR_GBL[14] = {546, 576, 606, 636, 666, 696, 726, 818, 788, 758, 728, 696, 726, 756};
                         const float *sgreen = HP(14);
-                        if (cw->state >= 0 && (float)g_sim.now * 0.182f >= (float)(sim_game_gbl() ? APPEAR_GBL[win - 3] : APPEAR[win - 3]))
+                        if (cw->state >= 0 && (float)g_sim.now * 0.182f >= (float)APPEAR_GBL[win - 3])
                             hud_text(g_hud, LX(rr[0]), LY(rr[1]), sim_weapon_name(cw->weapon), sgreen);
                         continue;
                     }
@@ -7792,7 +7659,7 @@ int main(int argc, char **argv)
                     /* engine 0x1001c750: drawn while fuel (+0xc0) >= 0; shown value eases halfway each draw; fill =
                      * fuel x (W + 1) / 0x712 capped at W in green bands (0xf), the empty part red bands (0xb) */
                     static float jshown = -1;
-                    float jf = pu->jet_fuel * (69.0f + 1.0f) / combat_jet_fuel_max;   /* DOS: / 0x71c (0x314b9) */
+                    float jf = pu->jet_fuel * (69.0f + 1.0f) / COMBAT_JET_FUEL_MAX;   /* DOS: / 0x71c (0x314b9) */
                     const float *rb3 = HP(10), *rl3 = HP(11), *rd3 = HP(9);
                     const float *gb = HP(14), *gl = HP(15), *gd = HP(13);
                     if (jf < 0) jf = 0;
@@ -7997,8 +7864,8 @@ int main(int argc, char **argv)
                      g_patrol ? "running" : "paused", combat_health(&g_sim.player_unit), (double)g_sim.player_unit.heat,
                      g_sim.player_unit.destroyed ? "  DESTROYED" : "");
         else
-        snprintf(title, sizeof title, "MW2 viewer - %s  mission %s camo %d clan %d  %dx%d  fog %.5f  %s %s", rec, mission, camo, clan, w, h,
-                 v.fog_density, v.bilinear ? "bilinear" : "point", msaa ? "MSAA" : "");
+        snprintf(title, sizeof title, "MW2 viewer - %s  mission %s camo %d clan %d  %dx%d  %s %s", rec, mission, camo, clan, w, h,
+                 v.bilinear ? "bilinear" : "point", msaa ? "MSAA" : "");
         SDL_SetWindowTitle(win, g_world ? "MechWarrior 2" : title);
     }
     if (g_world) write_results();   /* left early: the shell still gets a result */

@@ -31,39 +31,24 @@ typedef struct {
     texture *fr[GLR_SLOTS][BWD_TEXMAP_FRAMES];
 } c3d_scene;
 
-/* Textures come from `texs`. An ATi archive has one format (ARGB1555). For 3dfx/S3
- * the format per texture isn't stored; insignia (L1/L2...) are ARGB4444, the rest
- * are taken as RGB555 - right for nearly all surfaces, ATi is the exact source. */
-/* The Titanium look: its archive's textures by name first (TEX_TITANIUM), the mission's texture archive for the names it
- * lacks - it has 51 of the 418 names the 3D editions' texture maps use (effects and 17 grounds) and 597 of the ATi
- * archive's 1404 CEL names (580 of them effect frames); counts for the tests */
+/* Textures come from `texs`: the DOS archive's palette-indexed CELs (kind 3), or the Titanium archive's (kind 5, the
+ * TITANIUM look; c3d_ti is then the same archive opened beside, its hits / misses counted for the tests) */
 static prj_archive *c3d_ti;
 static int c3d_ti_hits, c3d_ti_miss;
 
-/* `alpha`: the bitmap is drawn with the engine's alpha flag (polygon flag 2) - the bank-0 billboards. The 3Dfx edition
- * stores no format: its Texus conversion reads a CEL as ARGB1555 (Glide format 0xb) for a polygon drawn without flag 2
- * and as ARGB4444 (0xc) with it (0x10067240: DAT_10265710 = (flags & 2) >> 1; 0x10066a30 -> 0x100685f0 / 0x10068710),
- * and the billboard 0x1002a8e0 always passes flag 2 (0x1002aaea: 0x1002c880 param_8 = 1 -> local_50 = 2) */
+/* `alpha`: the bitmap is drawn with the engine's alpha flag (polygon flag 2) - the bank-0 billboards (no difference to
+ * the DOS / Titanium encodings) */
 static texture *c3d_texture(prj_archive *texs, int ati, const char *name, int alpha)
 {
     prj_record r;
     texture *t = calloc(1, sizeof *t);
-    /* `ati` is the archive's texture kind: 0 3Dfx / S3, 1 ATi, 2 PowerVR, 3 DOS, 4 Matrox Mystique, 5 Titanium */
-    int enc = ati == 1 ? TEX_ATI : ati == 2 ? TEX_PVR : ati == 3 ? TEX_DOS : ati == 4 ? TEX_MGA : ati == 5 ? TEX_TITANIUM
-            : (alpha || (toupper((unsigned char)name[0]) == 'L' && isdigit((unsigned char)name[1]))) ? TEX_3DFX_4444 : TEX_3DFX_555;
+    int enc = ati == 3 ? TEX_DOS : TEX_TITANIUM;   /* `ati`: the archive's texture kind, 3 DOS, 5 Titanium */
+    (void)alpha;
     if (!t) return NULL;
-    if (c3d_ti && ati != 3 && ati != 5) {
-        if (prj_read_named(c3d_ti, "CEL", name, &r) == PRJ_OK) {
-            int ok = tex_decode(r.data, r.size, TEX_TITANIUM, t) == 0;
-            prj_record_free(&r);
-            if (ok) { c3d_ti_hits++; return t; }
-        }
-        c3d_ti_miss++;
-    }
     if (prj_read_named(texs, "CEL", name, &r) != PRJ_OK) { if (ati == 5 && c3d_ti) c3d_ti_miss++; free(t); return NULL; }
     if (tex_decode(r.data, r.size, enc, t) != 0) { free(t); t = NULL; }
     prj_record_free(&r);
-    if (ati == 5 && c3d_ti) { if (t) c3d_ti_hits++; else c3d_ti_miss++; }   /* (gbl TITANIUM: the Titanium archive is the textures archive) */
+    if (ati == 5 && c3d_ti) { if (t) c3d_ti_hits++; else c3d_ti_miss++; }   /* (TITANIUM: the Titanium archive is the textures archive) */
     return t;
 }
 
@@ -160,23 +145,17 @@ static int c3d_load_scene(prj_archive *models, prj_archive *texs, int ati, const
     }
     return 0;
 }
-/* Sky, ground and fog for a mission, the "3dfx + PowerVR fog" way:
- * tiling from MW2_SKYGND (3dfx skygnd.par), fog from MW2_SKYGND_FOG (PowerVR one).
- * Fog colour = mean of ground texture, sky texture and ambient grey (PowerVR recipe).
- * fog_override >= 0 replaces the density (per game unit). */
-static void c3d_environment(glr *r, c3d_scene *s, const char *mission, glr_view *v, float fog_override)
+/* Sky and ground for a mission: the scene's ground and sky textures, tiling from MW2_SKYGND (a skygnd.par's
+ * tile_sky= / tile_ground= / anim_rate=); the fog / sky colour = the mean of the ground texture, the sky texture and the
+ * ambient grey (the DOS and Titanium looks then set their own) */
+static void c3d_environment(glr *r, c3d_scene *s, const char *mission, glr_view *v)
 {
-    skygnd tiles, fog;
+    skygnd tiles;
     texture *g = s->slot[SKYGND_GROUND_SLOT], *sky = s->slot[SKYGND_SKY_SLOT];
     float ga[3] = {0.5f, 0.5f, 0.5f}, sa[3] = {0.5f, 0.5f, 0.5f};
     int k;
     skygnd_defaults(&tiles);
     skygnd_lookup(getenv("MW2_SKYGND"), mission, &tiles);
-    /* the PowerVR edition's sky plane repeats every 64e6 / tile_sky (0x1005ED90: q = a2 / a3), twice as often as the 3Dfx
-     * ceiling's 128e6 / tile_sky */
-    if (getenv("MW2_EDITION") && strcmp(getenv("MW2_EDITION"), "pvr") == 0) tiles.tile_sky *= 2.0f;
-    skygnd_defaults(&fog);
-    skygnd_lookup(getenv("MW2_SKYGND_FOG"), mission, &fog);
     glr_set_environment(r, g, sky, tiles.tile_sky, tiles.tile_ground);
     if (g) glr_texture_average(g, ga);
     if (sky) glr_texture_average(sky, sa);
@@ -184,7 +163,6 @@ static void c3d_environment(glr *r, c3d_scene *s, const char *mission, glr_view 
         v->fog_color[k] = (ga[k] + sa[k] + v->ambient) / 3.0f;
         v->sky_color[k] = v->fog_color[k];
     }
-    v->fog_density = fog_override >= 0 ? fog_override : (fog.has_fog ? fog.fog : 0);   /* the raw sgl_set_fog density */
     v->ti_fog[0] = 0;
     v->ti_light = 0; v->ti_dyn_n = 0;
     glr_set_titanium(r, NULL, NULL);
@@ -304,11 +282,9 @@ static void c3d_ti_environment(glr *r, c3d_scene *s, const char *mission, glr_vi
                (double)sh.lvec[0], (double)sh.lvec[1], (double)sh.lvec[2], sh.gi, sh.eye, (double)sh.range);
     }
     for (k = 0; k < 3; k++) { v->fog_color[k] = (float)c3d_ti_sg.fog[k] / 255.0f; v->sky_color[k] = (float)c3d_ti_sg.sky[k] / 255.0f; }
-    v->fog_density = 0;
     /* fog: with a renderer that fogs (glview look_fog: the PowerVR edition, the enhanced mix) the Titanium fog; else none,
      * and the clear colour is sky= as it is (the engine's Y = 0 case, 0x1006a989) - a port choice */
     v->ti_fog[0] = fog ? 1.0f : 0.0f; v->ti_fog[1] = c3d_ti_sg.dens_z; v->ti_fog[2] = 1;
-    v->pvr_veil = 0;
     /* the lights (SKYGND.PAR amb / wa / wb -> the engine's light table, 0x10053dc5..0x10053ec0): per vertex on the objects
      * (0x1002ecaa), one colour on the ground (0x1005527e: the ambient + each directional light x |its y| + each point light
      * whole) */

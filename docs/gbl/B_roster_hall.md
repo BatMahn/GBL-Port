@@ -1,7 +1,7 @@
 # B - Pilots, the Sibko roster and the Ghost Bear halls (GBL MW2SHELL.EXE)
 
 Addresses are GBL shell VAs (re/shellgbl.elf, decompile re/shellgbl_decomp.c). "base" = MW2 1995 shell as documented
-in mw2port/docs/SHELL.md. DATABASE.MW2 numbering: the code passes a 1-based index ("idx"); entry = idx - 1
+in the base shell (MW2SHELL.EXE). DATABASE.MW2 numbering: the code passes a 1-based index ("idx"); entry = idx - 1
 (shelltool numbering, `shelltool list`). Fonts: DAT_95ea8 = idx 0x1d (entry 28), DAT_95eac = idx 0x1e (entry 29),
 DAT_95eb0 = idx 0x20 (31), DAT_95eb4 = idx 0x21 (32), DAT_95ea0 = DAT_95ea4 = DAT_95eb8 = DAT_95ebc = idx 0x22
 (entry 33) (main 0x3a232-0x3a3dc; idx 0x1c is loaded into DAT_95ea4 and then overwritten - never used).
@@ -197,7 +197,7 @@ Cheat pilot names (8 strings at 0x7e80c.., stored XOR 7 and decoded in place + u
 | KNSSKB@R^ | LITTLEGUY | the same, mech count 0x1e (30) |
 | SOBPFSDOBU | THEWATCHER | roster: new pilot starts with 22 missions done (Retired); the LAUNCH OLD MISSION list shows and accepts all 22 missions |
 
-Base comparison (SHELL.md "Sibko roster"): base had 15 hotspots with 0 NEW ALLEGIANCE and two clans (records 0-9 /
+Base comparison (the base shell "Sibko roster"): base had 15 hotspots with 0 NEW ALLEGIANCE and two clans (records 0-9 /
 10-19, background slots 17 / 24), RECORD at the same x 468 with the same label / value scheme, 16 old missions in one
 column, Launch -> state 10 with no briefing. GBL: 14 hotspots (rows are 0-9), one roster, two-column 22-mission list,
 launch through the briefing, new cheats (base: FREEBIRTHTOAD / FERRARI live elsewhere; GBL has neither string).
@@ -251,7 +251,7 @@ Captures: hall 0 B_r1_hall_a/b, hovers B_r1_hover_mc1 (agbcom02 beam) / mc2 (agb
 cs / egg, click B_r1_mc_click (-> screen 5 intro "INITIALIZING UPLINK"); hall 1 B_r2_hall1_*; hall 2 B_r3b_hall2_*;
 won dialog B_r3a_won_dialog (box at (172,165) 296x150, Finale button centre ~(322,275)); B_r3a_cowardice.
 
-Base comparison (SHELL.md "Clan halls", base FUN_0001dbe0): base = one hall per clan with CADET TRAINING (-> 14),
+Base comparison (the base shell "Clan halls", base FUN_0001dbe0): base = one hall per clan with CADET TRAINING (-> 14),
 ARCHIVE HOLOPROJECTOR (-> 5 archive), READY ROOM (-> 11, or the won message -> 16 at 16 missions), REGISTER (clip
 -> 12), EXIT (top strip -> title 8). GBL: no Cadet Training, no Archive, no Ready Room in the hall; MISSION
 COMPUTER goes straight to the mission screen 5; EXIT quits to DOS through "Embrace cowardice?"; COMBAT SIMULATOR is

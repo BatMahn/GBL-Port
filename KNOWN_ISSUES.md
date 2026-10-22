@@ -1,16 +1,12 @@
 # Known issues
 
-What is still open in the port as of 2026-10-21. Technical detail, engine addresses and evidence for each item are in
-[ASSUMPTIONS.md](ASSUMPTIONS.md) under "Open items". None of these blocks play.
+What is still open in the Ghost Bear's Legacy port, in plain language.
 
-## Needs confirming
-- **macOS folder picker** - the app asks for the game folder when it isn't next to it; needs a check on the Mac.
-
-## Visuals
-- **DOS-look cockpit edges** - a few cockpit edges sit a pixel off the original.
-
-## Other
-- **macOS downloads** - the app isn't notarised: run `xattr -dr com.apple.quarantine "MechWarrior 2.app"` once (README).
-
-## Not planned
-- Rendition renderer (Titanium's `zredline.dll`).
+- **Two of the 22 new missions don't pass the automatic objective test yet:** BRANSCN1 (the lift's timing along its
+  path) and ZACKSCN1 (a limit of the test tool itself). Both can be played; the test just can't finish them unattended
+  yet.
+- **Some of GBL's new projectiles aren't drawn yet.**
+- **GBL's added cockpit-control drivers** (Cockpit Controls) don't map to INPUT.MAP yet.
+- **The PETE mission's torpedoes** may not look like the original's yet.
+- **No releases yet:** build from source. The Windows build of `gbl` is untested, and the macOS app has no icon of its
+  own yet.

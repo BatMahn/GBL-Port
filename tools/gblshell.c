@@ -2,18 +2,20 @@
  * gblshell - the MechWarrior 2: Ghost Bear's Legacy shell, rebuilt from GBL's MW2SHELL.EXE (1995 DOS expansion).
  *
  * Ghost Bear's Legacy shipped as its own program: GBL.EXE ran MW2SHELL.EXE (the menus) and MW2.EXE (the simulation) in a
- * loop. This is the port's equivalent: one executable "gbl" - the shell below, and the same simulation as MechWarrior 2
+ * loop. This is the port's equivalent: one executable "gbl" - the shell below, and with --sim the simulation
  * ("gbl --sim ...", tools/glview.c).
  *
- * The GBL shell is a modified copy of the base game's shell. This file includes the base shell (tools/mw2shell.c, in
- * library mode) for what GBL kept unchanged - fonts, text, dialogs, the cockpit controls page, the Mech Lab's editor
- * pages - and carries GBL's own screens and data. The specs it follows (addresses are GBL MW2SHELL.EXE VAs):
+ * The GBL shell is a modified copy of the base game's shell. This file includes tools/gbl/gbl_common.c for what GBL
+ * kept unchanged from it - fonts, text, dialogs, the cockpit controls editor, the Mech Lab's design editor - and carries
+ * GBL's own screens and data. The specs it follows (addresses are GBL MW2SHELL.EXE VAs):
  *   docs/GBL_SHELL.md  (frame, DATABASE map, screens, files)
  * Screens (state machine FUN_00039ec0): 1 the Ghost Bear hall, 3 debriefing, 5 Mission Computer, 7 Combat Simulator,
  * 8 title, 9 Mech Lab, 10 launch, 12 Sibko roster, 15 (no video) -> 1, 16 Bloodname roll / "mend", 17 developer egg.
  *
  * Layout of the source:
  *   tools/gblshell.c          core: DATABASE numbering, frame / input, clip slots, hotspots, pilots, stars, launch, main
+ *   tools/gbl/gbl_common.c    kept base helpers: fonts / text layer, backgrounds, videos, the sim's command line,
+ *                             mission records, the Mech Lab design editor, the Cockpit Controls editor, the dialog
  *   tools/gbl/gbl_frame.c     title, global Esc menu and its pages (Combat Variables, Hall of Honor, The Keshik, Flee)
  *   tools/gbl/gbl_pilots.c    Sibko roster (12), the halls (1), Bloodname roll (16), developer egg (17), text pager
  *   tools/gbl/gbl_campaign.c  campaign tables, Mission Computer (5), mission clip lists, debriefing (3)
@@ -23,7 +25,6 @@
  * c (left click), r (right click), k KEY (SDL key name), t TEXT, s FILE.ppm (screenshot of the frame), q (quit).
  * GBL_SCREEN=n starts on screen n (GBL_CTX context), GBL_PILOT=i preselects pilot record i. No effect when unset.
  */
-#define MW2_SHELL_LIB
 /* Files the shell writes (pilots, settings, the handoff) go to the install folder, never to the disc copy: GBL's
  * defaults (MW2SND.CFG, MW2PRM.CFG ...) are read from the disc's GBL\ folder while install/ may start empty, and
  * dp_fopen() would open an existing file where it found it. Reads are unchanged. */
@@ -31,7 +32,7 @@
 #include "datapath.h"
 static FILE *gbl_dp_fopen(const char *name, const char *mode);
 #define dp_fopen gbl_dp_fopen
-#include "mw2shell.c"
+#include "gbl/gbl_common.c"
 #undef dp_fopen
 static FILE *gbl_dp_fopen(const char *name, const char *mode)
 {
@@ -66,7 +67,8 @@ static FILE *gbl_dp_fopen(const char *name, const char *mode)
  * DATABASE.MW2 (GBL: 127 entries). GBL kept the base entries 0-9 (title .. Mech Lab backgrounds and the panel SHPs)
  * and moved the rest: 23 backgrounds instead of 21, so the cursor, fonts, video DLL and songs are +2 (base 24-72 =
  * GBL 26-74), the first WAVs +2, 15 chassis voices inserted after the base's 17 (so base 99-102 = GBL 116-119), 7 new
- * WAVs at the end. g_db_remap maps the base numbers the reused base code asks for; GBL code uses GBL numbers.
+ * WAVs at the end. gbl_db_remap maps the base numbers the kept base code (gbl_common.c shdb) asks for; GBL code uses
+ * GBL numbers.
  * (docs/GBL_SHELL.md "DATABASE.MW2") */
 static int gbl_db_remap(int e)
 {
@@ -145,7 +147,7 @@ static void gbl_script(gbl_input *in)
     }
 }
 /* text covers. Windowed, the text is not in the frame: it is queued and drawn over the frame at the display's resolution
- * (mw2shell.c draw_text). Whatever is painted into the frame over text queued before it - the Esc menu's panel over the
+ * (gbl_common.c draw_text). Whatever is painted into the frame over text queued before it - the Esc menu's panel over the
  * screen it opened on, a dialog, a filled box - must hide that text, or the screen's text shows through the panel (Mike's
  * report: the Mission Computer's briefing over the menu). gbl_text_cover(x0, y0, x1, y1) (x1 / y1 exclusive) drops the
  * queued items wholly inside the box and records the box for the items partly inside it, which gbl_present then draws
@@ -184,7 +186,7 @@ static void gbl_text_cover(int x0, int y0, int x1, int y1)
 static void gbl_text_layer(SDL_Renderer *rd)
 {
     static text_item all[256];
-    int n = g_ntext, ntt = g_ntt, i, k, kept = 0;
+    int n = g_ntext, i, k, kept = 0;
     if (!g_ntcover) { text_layer_draw(rd); return; }
     for (k = 0; k < g_ntcover; k++) if (g_tcover[k].n > n) g_tcover[k].n = n;   /* the queue was cleared since */
     memcpy(all, g_text, sizeof all);
@@ -196,8 +198,7 @@ static void gbl_text_layer(SDL_Renderer *rd)
         if (!hit) g_text[kept++] = all[i];
     }
     g_ntext = kept;
-    text_layer_draw(rd);   /* (and the TrueType items) */
-    g_ntt = 0;
+    text_layer_draw(rd);
     for (i = 0; i < n; i++) {
         SDL_Rect r[64];
         int nr = 1, a, b, c, d, j;
@@ -231,7 +232,7 @@ static void gbl_text_layer(SDL_Renderer *rd)
     }
     SDL_RenderSetClipRect(rd, NULL);
     memcpy(g_text, all, sizeof all);
-    g_ntext = n; g_ntt = ntt;
+    g_ntext = n;
 }
 static SDL_Texture *g_gvid_tx;   /* gbl_video: the frame in the videos' look (video_fx_texture), presented instead of g_fb */
 static void gbl_present(void)
@@ -590,7 +591,7 @@ static void gs_play_to_end(int i)
 /* full-screen video (FUN_0003c430: 320x200 SMK scaled; a key or a mouse button skips; returns 1 if skipped). The
  * original sets mode 13h for it (FUN_0004e4c8(200, 320) 0x3c547: the first mode table entry holding 320x200, BIOS mode
  * 0x13) and copies each frame 1:1 (SmackToScreen at 0, 0, 0x3c56b); the clip opened with only its sound-track flags
- * (0x95ecc = 0xfe00). The look: video_look() (mw2shell.c; ORIGINAL = the 640x480 stretch in g_fb) */
+ * (0x95ecc = 0xfe00). The look: video_look() (gbl_common.c; ORIGINAL = the 640x480 stretch in g_fb) */
 static int gbl_video(const char *name)
 {
     char path[1200];
@@ -1044,7 +1045,6 @@ static int gbl_launch(const char *scen, int ret_state)
     snprintf(up, sizeof up, "%s", scen);
     for (k = 0; up[k]; k++) up[k] = (char)toupper((unsigned char)up[k]);
     printf("gbl: launch %s (-b=%s -of=%s)\n", up, g_camo, GBL_FORM[g_gstar[0].formation >= 0 && g_gstar[0].formation < 6 ? g_gstar[0].formation : 0]);
-    snprintf(g_load_scene, sizeof g_load_scene, "%s", scen);
     setenv("MW2_OF", GBL_FORM[g_gstar[0].formation >= 0 && g_gstar[0].formation < 6 ? g_gstar[0].formation : 0], 1);
     if (g_gstar[1].size) setenv("MW2_OE", GBL_FORM[g_gstar[1].formation >= 0 && g_gstar[1].formation < 6 ? g_gstar[1].formation : 0], 1);
     else unsetenv("MW2_OE");
@@ -1149,13 +1149,82 @@ static int gbl_run(void)
     return 0;
 }
 
+/* ---- the game folder when none is found: the system's folder picker (port-only) ---- */
+#define PICK_PROMPT "Select your Ghost Bear's Legacy game folder (GBL-game)"
+#ifndef _WIN32
+/* one picker command through the shell: 1 a folder (out), 0 cancelled, -1 the picker is not available */
+static int run_picker(const char *cmd, char *out, size_t n)
+{
+    char line[PORTCFG_PATH];
+    size_t k;
+    int st;
+    FILE *f = popen(cmd, "r");
+    if (!f) return -1;
+    if (!fgets(line, sizeof line, f)) line[0] = 0;
+    st = pclose(f);
+    if (st == -1 || !WIFEXITED(st) || WEXITSTATUS(st) == 127 || WEXITSTATUS(st) == 255) return -1;   /* missing / no display */
+    if (WEXITSTATUS(st) != 0) return 0;   /* Cancel */
+    line[strcspn(line, "\r\n")] = 0;
+    for (k = strlen(line); k > 1 && line[k - 1] == '/'; k--) line[k - 1] = 0;   /* osascript: "/path/GBL-game/" */
+    if (!line[0]) return 0;
+    snprintf(out, n, "%s", line);
+    return 1;
+}
+#endif
+static int pick_folder(char *out, size_t n)
+{
+#ifdef _WIN32
+    return mw2_pick_folder(PICK_PROMPT, out, n);
+#else
+    static const char *const cmds[] = {
+#ifdef __APPLE__
+        "/usr/bin/osascript -e 'POSIX path of (choose folder with prompt \"Select your Ghost Bear'\\''s Legacy game folder (GBL-game)\")' 2>/dev/null",
+#else
+        "command -v zenity >/dev/null 2>&1 || exit 127; zenity --file-selection --directory --title=\"" PICK_PROMPT "\" 2>/dev/null",
+        "command -v kdialog >/dev/null 2>&1 || exit 127; kdialog --getexistingdirectory \"$HOME\" --title \"" PICK_PROMPT "\" 2>/dev/null",
+#endif
+    };
+    size_t i;
+    if (getenv("GBL_PICKER")) return run_picker(getenv("GBL_PICKER"), out, n);   /* tests: a command standing in for the picker */
+    for (i = 0; i < sizeof cmds / sizeof cmds[0]; i++) {
+        int r = run_picker(cmds[i], out, n);
+        if (r >= 0) return r;
+    }
+    return -1;
+#endif
+}
+/* No game folder found: ask for it (a wrong pick is explained and asked again). 0 with c resolved to the chosen folder;
+ * -1 cancelled or no picker. */
+static int ask_game_folder(portcfg *c, const char *exe_dir)
+{
+    char pick[PORTCFG_PATH], game[PORTCFG_PATH], m[PORTCFG_PATH + 400];
+    if (portcfg_translocated(exe_dir))
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_WARNING, "Ghost Bear's Legacy",
+            "Ghost Bear's Legacy is still in the folder it was downloaded to, so macOS runs it from a temporary copy and "
+            "it cannot see a game folder placed next to it.\n\n"
+            "Click OK and choose your GBL-game folder - it is remembered, so you only do this once.\n\n"
+            "Tip: move the app into your Applications folder (or any other folder) with Finder; after that it also finds "
+            "a GBL-game folder placed next to it.", NULL);
+    for (;;) {
+        if (pick_folder(pick, sizeof pick) != 1) return -1;
+        if (portcfg_game_in(pick, game, sizeof game)) break;
+        fprintf(stderr, "Ghost Bear's Legacy: %s is not a game folder\n", pick);
+        snprintf(m, sizeof m,
+            "%s is not a Ghost Bear's Legacy game folder.\n\n"
+            "Choose the GBL-game folder itself (the one with cd, install ... inside - see FOLDER_SETUP.md), "
+            "or the folder that holds it.", pick);
+        if (SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_WARNING, "Ghost Bear's Legacy", m, NULL) != 0) return -1;
+    }
+    c->game[0] = 0; c->install[0] = 0; c->cd[0] = 0; c->models[0] = 0; c->textures[0] = 0;
+    snprintf(c->game, sizeof c->game, "%s", game);
+    return portcfg_resolve(c, exe_dir, NULL);
+}
+
 int glview_main(int argc, char **argv);
 int main(int argc, char **argv)
 {
     char *bp;
     int headless;
-    setenv("MW2_GAME", "gbl", 1);   /* the simulation's GBL rules (sim_game_gbl: weapons, AMS, NARC, bosses) - the
-                                     * shell's Mech Lab reads the same tables */
     portcfg_set_app("gblport", "gblport.cfg", "GBL-game", "GBL");   /* (before --sim too: the sim reads and writes gblport.cfg) */
     if (argc >= 2 && strcmp(argv[1], "--sim") == 0) return glview_main(argc - 1, argv + 1);   /* the simulation */
     snprintf(g_exe_path, sizeof g_exe_path, "%s", argv[0]);
@@ -1166,12 +1235,22 @@ int main(int argc, char **argv)
     SDL_free(bp);
     portcfg_load(NULL, &g_cfg);
     if (argc >= 2) { g_cfg.game[0] = 0; g_cfg.install[0] = 0; g_cfg.cd[0] = 0; g_cfg.models[0] = 0; g_cfg.textures[0] = 0; }
-    if (portcfg_resolve(&g_cfg, g_exe_dir, argc >= 2 ? argv[1] : NULL) != 0) {
-        fprintf(stderr, "Ghost Bear's Legacy: no game folder found.\nRun:  gbl <folder>\nwhere <folder> is the GBL-game folder (cd/ = a copy of the Ghost Bear's Legacy disc, install/, music/). See FOLDER_SETUP_GBL.md.\n");
-        if (!headless) SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Ghost Bear's Legacy", "No game folder found.\n\nPut your GBL-game folder (cd/ = a copy of the Ghost Bear's Legacy disc) next to the program or in your home folder - see FOLDER_SETUP_GBL.md.", NULL);
+    if (argc < 2 && g_cfg.game[0] && !portcfg_is_game_dir(g_cfg.game)) {   /* the remembered folder is gone: look again */
+        fprintf(stderr, "Ghost Bear's Legacy: the remembered game folder %s is gone\n", g_cfg.game);
+        g_cfg.game[0] = 0; g_cfg.install[0] = 0; g_cfg.cd[0] = 0;
+    }
+    if (portcfg_resolve(&g_cfg, g_exe_dir, argc >= 2 ? argv[1] : NULL) != 0 && !(!headless && ask_game_folder(&g_cfg, g_exe_dir) == 0)) {
+        fprintf(stderr, "Ghost Bear's Legacy: no game folder found.\nRun:  gbl <folder>\nwhere <folder> is the GBL-game folder (cd/ = a copy of the Ghost Bear's Legacy disc, install/, music/). See FOLDER_SETUP.md.\n");
+        if (!headless) SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Ghost Bear's Legacy", "No game folder found.\n\nPut your GBL-game folder (cd/ = a copy of the Ghost Bear's Legacy disc) next to the program or in your home folder - see FOLDER_SETUP.md.", NULL);
         return 2;
     }
-    if (argc < 2 && !g_cfg.game[0]) portcfg_save(NULL, &g_cfg);
+    if (!headless && g_cfg.game[0] && (argc < 2 || (!getenv("MW2_CONFIG") && portcfg_is_game_dir(argv[1])))) {   /* remember the folder (found, picked or given) */
+        portcfg raw;
+        portcfg_load(NULL, &raw);
+        snprintf(raw.game, sizeof raw.game, "%s", g_cfg.game);
+        raw.install[0] = 0;
+        portcfg_save(NULL, &raw);
+    }
     /* gbl's looks (portcfg.h): DOS | ENHANCED | TITANIUM; TITANIUM needs titanium/MW2.PRJ - DOS without it */
     if (!portcfg_gbl_look_ok(&g_cfg, portcfg_gbl_look(&g_cfg))) portcfg_gbl_set_look(&g_cfg, PORTCFG_GBL_DOS);
     snprintf(g_dir, sizeof g_dir, "%s", g_cfg.install);
@@ -1182,10 +1261,9 @@ int main(int argc, char **argv)
         if (n > 4 && strcasecmp(g_cfg.cd + n - 4, ".iso") == 0) dp_add_iso_root(g_cfg.cd, "GBL");
         else { char m2[1100]; snprintf(m2, sizeof m2, "%s/GBL", g_cfg.cd); dp_add_root(m2); dp_add_root(g_cfg.cd); }
     }
-    g_db_remap = gbl_db_remap;
     if (shelldb_open(gpath("DATABASE.MW2"), &g_db)) { fprintf(stderr, "gbl: cannot open DATABASE.MW2 (%s)\n", gpath("DATABASE.MW2")); return 1; }
     g_have_dbsound = shelldb_open(gpath("SMK\\DBSOUND.MW2"), &g_dbsound) == 0 || shelldb_open(gpath("DBSOUND.MW2"), &g_dbsound) == 0;
-    /* the base screens' fonts, renumbered (g_db_remap): base 27 / 25 / 31 / 30 / 29 / 26 = GBL 29 / 27 / 33 / 32 / 31 / 28 */
+    /* the base screens' fonts, renumbered (gbl_db_remap): base 27 / 25 / 31 / 30 / 29 / 26 = GBL 29 / 27 / 33 / 32 / 31 / 28 */
     g_flabel.len = shdb(&g_db, 27, &g_flabel.d);
     g_flist.len = shdb(&g_db, 25, &g_flist.d);
     g_fthin.len = shdb(&g_db, 31, &g_fthin.d);
@@ -1202,9 +1280,9 @@ int main(int argc, char **argv)
         if (pc.mode == 0 || pc.mode == 2) wf |= SDL_WINDOW_FULLSCREEN_DESKTOP;
         g_win = SDL_CreateWindow("MechWarrior 2: Ghost Bear's Legacy", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, W * 2, H * 2, wf);
         SDL_StopTextInput();
-        g_grd = g_rd = SDL_CreateRenderer(g_win, -1, SDL_RENDERER_PRESENTVSYNC);
+        g_grd = SDL_CreateRenderer(g_win, -1, SDL_RENDERER_PRESENTVSYNC);
         SDL_RenderSetLogicalSize(g_grd, W, H);
-        g_gtx = g_tx = SDL_CreateTexture(g_grd, SDL_PIXELFORMAT_RGB24, SDL_TEXTUREACCESS_STREAMING, W, H);
+        g_gtx = SDL_CreateTexture(g_grd, SDL_PIXELFORMAT_RGB24, SDL_TEXTUREACCESS_STREAMING, W, H);
         if (!getenv("MW2_TEXT_SMOOTH")) { SDL_SetTextureScaleMode(g_gtx, SDL_ScaleModeNearest); SDL_RenderSetIntegerScale(g_grd, SDL_TRUE); }
         g_text_hires = 1;
     }

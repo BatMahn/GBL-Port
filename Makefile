@@ -1,11 +1,11 @@
-# MechWarrior 2 port - foundation modules (Linux / macOS / Windows via MinGW-w64)
+# Ghost Bear's Legacy port (Linux / macOS / Windows via MinGW-w64): `make gbl`, the tools with `make`
 CC      ?= cc
 CFLAGS  ?= -std=c99 -D_DEFAULT_SOURCE -O2 -Wall -Wextra -Wconversion
 LDLIBS  = -lpthread -lm
 UNAME_S := $(shell uname -s)
 SDL2_CONFIG ?= sdl2-config
 # Windows: MSYS2's MINGW64 shell (uname MINGW64_NT-...), or cross-compiling from Linux with
-#   make mw2 WINDOWS=1 CC=x86_64-w64-mingw32-gcc CXX=x86_64-w64-mingw32-g++ SDL2_CONFIG=/path/to/mingw/bin/sdl2-config
+#   make gbl WINDOWS=1 CC=x86_64-w64-mingw32-gcc SDL2_CONFIG=/path/to/mingw/bin/sdl2-config
 ifneq (,$(findstring MINGW,$(UNAME_S)))
   WINDOWS = 1
   ifeq ($(origin CC),default)
@@ -17,11 +17,10 @@ ifeq ($(WINDOWS),1)
   CFLAGS += -include src/wincompat.h
   LDLIBS = -lm
   GLLIB = -lopengl32
-  CXXLIB = -static-libgcc -Wl,-Bstatic -lstdc++ -lpthread -Wl,-Bdynamic   # no libstdc++ / libwinpthread DLLs to ship
   DLLIB =
   WINSRC = src/wincompat.c src/glload.c
   WINLIBS = -lole32 -lshell32   # system DLLs: the folder picker (wincompat.c mw2_pick_folder)
-  WINRES = build/mw2res.o
+  WINRES = build/gblres.o
   WINDRES ?= $(patsubst %gcc,%windres,$(CC))
 else
   DLLIB = -ldl
@@ -32,34 +31,26 @@ endif
 ifeq ($(UNAME_S),Linux)
   LDLIBS += -ldl
   GLLIB = -lGL
-  CXXLIB = -lstdc++
 endif
 ifeq ($(UNAME_S),Darwin)
   GLLIB = -framework OpenGL
-  CXXLIB = -lc++
   LDLIBS += -framework CoreFoundation -framework CoreAudio -framework AudioToolbox
 endif
 
 LIB_SRC = src/prj.c src/datapath.c src/cdaudio.c src/mek.c
-BIN     = prjtool cdtool mektool bwdtool mechview mechview3d cdrip test_port shelltool xmiplay test_titanium test_gamefolder
-GLBIN   = glshot glview mw2shell
-ifeq ($(UNAME_S),Darwin)
-  GLBIN = glview mw2shell          # glshot renders headless through EGL: Linux only
-endif
+BIN     = prjtool cdtool mektool bwdtool mechview cdrip test_port shelltool test_titanium test_gamefolder
+GLBIN   = glview
 
 all: $(BIN)
 
-# Windows: the exe's icon and version information
-build/mw2res.o: packaging/windows/mw2port.rc packaging/windows/mw2port.ico
+# Windows: the exe's version information, and its icon when packaging/windows/gblport.ico is there
+build/gblres.o: packaging/windows/gblport.rc
 	@mkdir -p build
-	$(WINDRES) -I packaging/windows $< -O coff -o $@
+	$(WINDRES) -I packaging/windows $(if $(wildcard packaging/windows/gblport.ico),-DGBL_ICON) $< -O coff -o $@
 
 build/miniaudio.o: third_party/miniaudio.c third_party/miniaudio.h
 	@mkdir -p build
 	$(CC) -O2 -w -c $< -o $@
-
-xmiplay: tools/xmiplay.c src/gusmid.c src/shelldb.c src/gusmid.h src/shelldb.h
-	$(CC) $(CFLAGS) -Isrc $(filter %.c,$^) -o $@ -lm
 
 shelltool: tools/shelltool.c src/shelldb.c src/smk.c src/shelldb.h src/smk.h
 	$(CC) $(CFLAGS) -Isrc $(filter %.c,$^) -o $@
@@ -76,48 +67,22 @@ GL3D_SRC = src/hud.c src/shp.c src/glr.c src/skygnd.c src/anim.c src/mek.c src/m
 missionsim: tools/missionsim.c src/msim.c src/fx.c src/ai.c src/combat.c src/mtbl.c src/anim.c src/mek.c src/mech3d.c src/wtb.c src/bwd.c src/prj.c src/datapath.c $(HDRS)
 	$(CC) $(CFLAGS) -Wno-conversion -Isrc $(filter %.c,$^) -o $@ -lm
 
-glshot: tools/glshot.c $(GL3D_SRC) $(HDRS)
-	$(CC) $(CFLAGS) -Wno-conversion -Isrc $(filter %.c,$^) -o $@ -lEGL -lGL -lm
-
-# the MT-32 emulator (Munt mt32emu, LGPL 2.1+): C++, built into a static library
-CXX ?= c++
-MT32_SRC = $(wildcard third_party/mt32emu/*.cpp) $(wildcard third_party/mt32emu/sha1/*.cpp) third_party/mt32emu/c_interface/c_interface.cpp third_party/mt32emu/srchelper/InternalResampler.cpp $(wildcard third_party/mt32emu/srchelper/srctools/src/*.cpp)
-MT32_OBJ = $(patsubst third_party/mt32emu/%.cpp,build/mt32emu/%.o,$(MT32_SRC))
-build/mt32emu/%.o: third_party/mt32emu/%.cpp
-	@mkdir -p $(dir $@)
-	$(CXX) -O2 -w -DMT32EMU_WITH_INTERNAL_RESAMPLER=1 -Ithird_party/mt32emu -c $< -o $@
-build/libmt32emu.a: $(MT32_OBJ)
-	$(AR) rcs $@ $^
-
-# mw2: one executable - the shell, and with --sim the simulation (glview built in, its main renamed)
-mw2: $(WINRES) build/libmt32emu.a src/mt32mid.c tools/mw2shell.c tools/glview.c src/gusmid.c src/shelldb.c src/smk.c src/vidfx.c src/lance.c src/ttext.c src/cockpitcfg.c src/sfx.c src/portcfg.c src/cdaudio.c build/miniaudio.o $(GL3D_SRC) $(WINSRC) $(HDRS)
-	$(CC) $(CFLAGS) -Wno-conversion -Isrc -Ithird_party $(filter-out -Dmain=SDL_main,$(shell $(SDL2_CONFIG) --cflags 2>/dev/null)) -DSDL_MAIN_HANDLED -c tools/glview.c -Dmain=glview_main -o build/glview_sim.o
-	$(CC) $(CFLAGS) -Wno-conversion -Isrc -Ithird_party -Ithird_party/mt32emu -DMW2_ONE_BINARY -c tools/mw2shell.c $(shell $(SDL2_CONFIG) --cflags 2>/dev/null) -o build/mw2shell_one.o
-	$(CC) $(CFLAGS) -Wno-conversion -Isrc -Ithird_party/mt32emu -c src/mt32mid.c -o build/mt32mid.o
-	$(CC) $(CFLAGS) -Wno-conversion -Isrc -Ithird_party build/mw2shell_one.o build/glview_sim.o build/mt32mid.o $(sort $(filter-out src/mt32mid.c,$(filter src/%.c,$^))) build/miniaudio.o build/libmt32emu.a $(WINRES) -o $@ $(shell $(SDL2_CONFIG) --cflags --libs 2>/dev/null) $(GLLIB) -lm -lpthread $(DLLIB) $(CXXLIB) $(WINLIBS)
 
 # gbl: MechWarrior 2: Ghost Bear's Legacy - its own executable (GBL.EXE was), the GBL shell + the same simulation
-GBL_SHELL_SRC = tools/gblshell.c tools/gbl/gbl_frame.c tools/gbl/gbl_pilots.c tools/gbl/gbl_campaign.c tools/gbl/gbl_lab.c
-# (no MIDI: GBL's shell never plays menu music, docs/gbl/A_frame.md 1.5 - built with MW2_NO_MIDI, so neither the MT-32
-# emulator nor the Gravis player nor the C++ runtime is linked; CD audio stays)
-gbl: $(WINRES) tools/mw2shell.c $(GBL_SHELL_SRC) tools/glview.c src/shelldb.c src/smk.c src/vidfx.c src/lance.c src/ttext.c src/cockpitcfg.c src/sfx.c src/portcfg.c src/cdaudio.c build/miniaudio.o $(GL3D_SRC) $(WINSRC) $(HDRS)
+# (no MIDI: GBL's shell never plays menu music, docs/gbl/A_frame.md 1.5; CD audio stays)
+GBL_SHELL_SRC = tools/gblshell.c tools/gbl/gbl_common.c tools/gbl/gbl_frame.c tools/gbl/gbl_pilots.c tools/gbl/gbl_campaign.c tools/gbl/gbl_lab.c
+gbl: $(WINRES) $(GBL_SHELL_SRC) tools/glview.c src/shelldb.c src/smk.c src/vidfx.c src/lance.c src/ttext.c src/cockpitcfg.c src/sfx.c src/portcfg.c src/cdaudio.c build/miniaudio.o $(GL3D_SRC) $(WINSRC) $(HDRS)
 	@mkdir -p build
 	$(CC) $(CFLAGS) -Wno-conversion -Isrc -Ithird_party $(filter-out -Dmain=SDL_main,$(shell $(SDL2_CONFIG) --cflags 2>/dev/null)) -DSDL_MAIN_HANDLED -c tools/glview.c -Dmain=glview_main -o build/glview_sim.o
-	$(CC) $(CFLAGS) -Wno-conversion -Wno-unused-function -Isrc -Ithird_party -Itools -DMW2_ONE_BINARY -DMW2_NO_MIDI -c tools/gblshell.c $(shell $(SDL2_CONFIG) --cflags 2>/dev/null) -o build/gblshell_one.o
+	$(CC) $(CFLAGS) -Wno-conversion -Isrc -Ithird_party -Itools -c tools/gblshell.c $(shell $(SDL2_CONFIG) --cflags 2>/dev/null) -o build/gblshell_one.o
 	$(CC) $(CFLAGS) -Wno-conversion -Isrc -Ithird_party build/gblshell_one.o build/glview_sim.o $(sort $(filter src/%.c,$^)) build/miniaudio.o $(WINRES) -o $@ $(shell $(SDL2_CONFIG) --cflags --libs 2>/dev/null) $(GLLIB) -lm -lpthread $(DLLIB) $(WINLIBS)
-
-mw2shell: build/libmt32emu.a src/mt32mid.c tools/mw2shell.c src/sfx.c src/gusmid.c src/shelldb.c src/smk.c src/vidfx.c src/lance.c src/mek.c src/prj.c src/portcfg.c src/ttext.c src/datapath.c src/shp.c src/cockpitcfg.c src/bwd.c
-	$(CC) $(CFLAGS) -Wno-conversion -Isrc -Ithird_party/mt32emu $(filter %.c,$^) build/libmt32emu.a -o $@ $(shell $(SDL2_CONFIG) --cflags --libs 2>/dev/null) -lm $(CXXLIB)
 
 glview: tools/glview.c src/sfx.c src/portcfg.c src/cdaudio.c build/miniaudio.o $(GL3D_SRC) $(HDRS)
 	$(CC) $(CFLAGS) -Wno-conversion -Isrc -Ithird_party $(filter %.c,$^) $(filter %.o,$^) -o $@ $(shell $(SDL2_CONFIG) --cflags --libs 2>/dev/null) $(GLLIB) -lm -lpthread $(DLLIB)
 
 gl: $(GLBIN)
 
-mechview3d: tools/mechview3d.c src/anim.c src/mek.c src/mech3d.c src/render.c src/tex.c src/wtb.c src/bwd.c src/prj.c src/datapath.c
-	$(CC) $(CFLAGS) -Isrc $^ -o $@ -lm
-
-mechview: tools/mechview.c src/anim.c src/mek.c src/mech3d.c src/render.c src/tex.c src/wtb.c src/bwd.c src/prj.c src/datapath.c
+mechview: tools/mechview.c src/anim.c src/mek.c src/mech3d.c src/render.c src/wtb.c src/bwd.c src/prj.c src/datapath.c
 	$(CC) $(CFLAGS) -Isrc $^ -o $@ -lm
 
 bwdtool: tools/bwdtool.c src/mtbl.c src/bwd.c src/prj.c src/datapath.c
@@ -144,64 +109,54 @@ test_cockpitcfg: tests/test_cockpitcfg.c src/cockpitcfg.c src/cockpitcfg.h
 test_inputmap: tests/test_inputmap.c tools/inputmap.h tools/inputmap_defaults.h
 	$(CC) -std=c99 -D_DEFAULT_SOURCE -Itools $$($(SDL2_CONFIG) --cflags) tests/test_inputmap.c $$($(SDL2_CONFIG) --libs) -o $@
 
-# make check MUSIC=/path/to/rip MW2=/path/to/install [ISO=/path/to/mw2cd.iso] [TITANIUM=/path/to/MW2-game/titanium]
-TITANIUM ?= $(MW2)/../MW2-game/titanium
-check: all
-	./prjtool verify $(MW2)/MW2.PRJ
-	./mektool $(MW2)/MW2.PRJ list | tail -1
-	./bwdtool $(MW2)/MW2.PRJ verify
-	./mechview $(MW2)/MW2.PRJ verify
-	MW2_INSTALL_DIR=$(MW2) ./bwdtool $(MW2)/MW2.PRJ missions | tail -1
-	./test_port $(MUSIC) $(MW2) $(ISO)
+# make check GBL=/path/to/GBL-game/install [ISO=/path/to/gbl_cd.iso] [TITANIUM=/path/to/GBL-game/titanium]
+TITANIUM ?= $(GBL)/../titanium
+check: all glview
+	./prjtool verify $(GBL)/MW2.PRJ
+	./mektool $(GBL)/MW2.PRJ list | tail -1
+	./bwdtool $(GBL)/MW2.PRJ verify
+	./mechview $(GBL)/MW2.PRJ verify
+	MW2_INSTALL_DIR=$(GBL) ./bwdtool $(GBL)/MW2.PRJ missions | tail -1
+	./test_port $(GBL) $(ISO)
 	./test_titanium $(TITANIUM)
 	./test_gamefolder
-	$(MAKE) test_inputmap && ./test_inputmap $(MW2)
-	$(MAKE) test_cockpitcfg && ./test_cockpitcfg $(MW2)
-	MW2_LAB_MASSES=1 MW2_CONFIG=/tmp/mw2check.cfg ./mw2 $(MW2) > /tmp/mw2lab.txt; r=$$?; tail -1 /tmp/mw2lab.txt; exit $$r
+	$(MAKE) test_inputmap && ./test_inputmap $(GBL)
+	$(MAKE) test_cockpitcfg && ./test_cockpitcfg $(GBL)
+	python3 tests/gbl/gbl_hud_check.py $(GBL)/..
 
 clean:
-	rm -rf build $(BIN) $(GLBIN) mw2 mw2.exe gbl gbl.exe
+	rm -rf build $(BIN) $(GLBIN) gbl gbl.exe sweep_objectives sweep_ai missionsim
 
 .PHONY: all check clean
 
 # A self-contained folder to run from anywhere: the launcher, the simulation, the font (found next to the
 # executables), the documentation. Needs SDL2 and OpenGL from the system.
-DIST = dist/mw2port
-dist: mw2
+DIST = dist/gblport
+dist: gbl
 	rm -rf $(DIST)
 	mkdir -p $(DIST)/assets/fonts
-	cp mw2 $(DIST)/
+	cp gbl $(DIST)/
 	cp assets/fonts/LiberationSans-Bold.ttf assets/fonts/README.md $(DIST)/assets/fonts/
-	cp README.md THIRD_PARTY.md $(DIST)/
-	cd dist && tar czf mw2port-linux-x86_64.tar.gz mw2port
-	@echo "dist/mw2port-linux-x86_64.tar.gz"
+	cp README.md FOLDER_SETUP.md THIRD_PARTY.md $(DIST)/
+	cd dist && tar czf gblport-linux-x86_64.tar.gz gblport
+	@echo "dist/gblport-linux-x86_64.tar.gz"
 
 # The objective sweep: every mission run headless by a perfect player (tools/sweep_objectives.c).
-# make sweep MW2=/path/to/install   (SWEEP_ARGS="-v CYANSCN1" for one scene, verbose)
+# make sweep GBL=/path/to/install   (SWEEP_ARGS="-v BASSSCN1" for one scene, verbose)
 SWEEP_SRC = tools/sweep_objectives.c src/lance.c src/msim.c src/fx.c src/ai.c src/combat.c src/mtbl.c src/anim.c src/mek.c src/mech3d.c src/wtb.c src/bwd.c src/prj.c src/datapath.c
 sweep_objectives: $(SWEEP_SRC) $(HDRS)
 	$(CC) $(CFLAGS) -Wno-conversion -Isrc $(SWEEP_SRC) -o $@ -lm
 sweep_objectives_asan: $(SWEEP_SRC) $(HDRS)
 	$(CC) -std=c99 -D_DEFAULT_SOURCE -O1 -g -Wall -Wextra -fsanitize=address,undefined -fno-omit-frame-pointer -Isrc $(SWEEP_SRC) -o $@ -lm
 sweep: sweep_objectives
-	MW2_INSTALL_DIR=$(MW2) ./sweep_objectives $(MW2)/MW2.PRJ $(SWEEP_ARGS)
+	MW2_INSTALL_DIR=$(GBL) ./sweep_objectives $(GBL)/MW2.PRJ $(SWEEP_ARGS)
 .PHONY: sweep
 
 # walking sweep (tests only): tools/sweep_walk.py drives glview (MW2_WALK_TRACE hooks); sweep_ai reports stuck AI mechs
 sweep_ai: tools/sweep_ai.c src/msim.c src/fx.c src/ai.c src/combat.c src/mtbl.c src/anim.c src/mek.c src/mech3d.c src/wtb.c src/bwd.c src/prj.c src/datapath.c $(HDRS)
 	$(CC) $(CFLAGS) -Wno-conversion -Isrc $(filter %.c,$^) -o $@ -lm
-sweep-walk: glview sweep_ai
-	python3 tools/sweep_walk.py -o /tmp/walk $(WALK_ARGS)
-	for m in $$(./bwdtool ../MW2-game/3d/models.prj missions | awk '/SCN/{print $$1}'); do MW2_INSTALL_DIR=$${MW2_INSTALL_DIR:-/tmp/gtest} ./sweep_ai ../MW2-game/3d/models.prj $$m 300 attack; done | grep aistuck
+GBL_GAME ?= ../GBL-game
+sweep-walk: glview sweep_ai bwdtool
+	GBL_GAME=$(GBL_GAME) python3 tools/sweep_walk.py -o /tmp/walk $(WALK_ARGS)
+	for m in $$(./bwdtool $(GBL_GAME)/install/MW2.PRJ missions | awk '/SCN/{print $$1}'); do MW2_INSTALL_DIR=$${MW2_INSTALL_DIR:-$(GBL_GAME)/install} ./sweep_ai $(GBL_GAME)/install/MW2.PRJ $$m 300 attack; done | grep aistuck
 .PHONY: sweep-walk
-
-# scripted in-mission action sequences, headless (tests/sequences/run_sequences.py; SEQ_ARGS="--only NAME -j 2")
-# MW2_GAME_DIR (default ../MW2-game) and MW2_GTEST (an installed game directory, default /tmp/gtest)
-test_sequences: glview
-	python3 tests/sequences/run_sequences.py --glview ./glview $(SEQ_ARGS)
-
-# the same under AddressSanitizer / UBSan (a separate binary, build/glview_asan)
-test_sequences_asan: tools/glview.c src/sfx.c src/portcfg.c src/cdaudio.c build/miniaudio.o $(GL3D_SRC) $(HDRS)
-	$(CC) -std=c99 -D_DEFAULT_SOURCE -O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined -Isrc -Ithird_party $(filter %.c,$^) $(filter %.o,$^) -o build/glview_asan $(shell $(SDL2_CONFIG) --cflags --libs 2>/dev/null) $(GLLIB) -lm -lpthread $(DLLIB)
-	ASAN_OPTIONS=detect_leaks=0 SEQ_TIME_SCALE=6 python3 tests/sequences/run_sequences.py --glview build/glview_asan $(SEQ_ARGS)
-.PHONY: test_sequences test_sequences_asan

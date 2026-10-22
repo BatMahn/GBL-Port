@@ -14,7 +14,7 @@ jobs:
         run: brew install sdl2
 
       - name: Build
-        run: make mw2
+        run: make gbl
 
       - name: Build .app bundle
         run: sh scripts/macos_app.sh
@@ -22,7 +22,7 @@ jobs:
       - name: Package
         run: |
           mkdir -p dist
-          zip -r dist/MW2-Port-${{ github.ref_name }}-macos-arm64.zip *.app
+          zip -r dist/GBL-Port-${{ github.ref_name }}-macos-arm64.zip *.app
 
       - uses: actions/upload-artifact@v4
         with:
@@ -40,15 +40,15 @@ jobs:
           sudo apt-get install -y build-essential libsdl2-dev libgl1-mesa-dev
 
       - name: Build
-        run: make mw2
+        run: make gbl
 
       - name: Package
         run: |
-          mkdir -p dist/MW2-Port
-          cp mw2 dist/MW2-Port/
-          cp -r assets dist/MW2-Port/
-          cp README.md THIRD_PARTY.md dist/MW2-Port/
-          cd dist && tar czf MW2-Port-${{ github.ref_name }}-linux-x86_64.tar.gz MW2-Port
+          mkdir -p dist/GBL-Port
+          cp gbl dist/GBL-Port/
+          cp -r assets dist/GBL-Port/
+          cp README.md FOLDER_SETUP.md THIRD_PARTY.md dist/GBL-Port/
+          cd dist && tar czf GBL-Port-${{ github.ref_name }}-linux-x86_64.tar.gz GBL-Port
 
       - uses: actions/upload-artifact@v4
         with:
@@ -60,14 +60,14 @@ jobs:
     container: fedora:latest
     steps:
       - name: Install build deps
-        run: dnf install -y git rpm-build rpmdevtools gcc gcc-c++ make SDL2-devel mesa-libGL-devel
+        run: dnf install -y git rpm-build rpmdevtools gcc make SDL2-devel mesa-libGL-devel
 
       - uses: actions/checkout@v4
 
       - name: Build RPM
         run: |
           VERSION=${GITHUB_REF_NAME#v}
-          rpmbuild -bb packaging/mw2port.spec \
+          rpmbuild -bb packaging/gblport.spec \
             --define "_sourcedir $PWD" \
             --define "_topdir $PWD/rpmbuild" \
             --define "_version $VERSION"
@@ -80,7 +80,7 @@ jobs:
           path: dist/*.rpm
 
   build-windows:
-    runs-on: ubuntu-24.04   # cross-compiled with MinGW-w64; ships SDL2.dll beside mw2.exe
+    runs-on: ubuntu-24.04   # cross-compiled with MinGW-w64; ships SDL2.dll beside gbl.exe
     env:
       SDL2_VERSION: 2.32.10
     steps:
@@ -89,7 +89,7 @@ jobs:
       - name: Install MinGW-w64 and SDL2 (MinGW development package)
         run: |
           sudo apt-get update
-          sudo apt-get install -y mingw-w64 g++-mingw-w64-x86-64 zip
+          sudo apt-get install -y mingw-w64 zip
           curl -sSfL -o sdl2.tar.gz https://github.com/libsdl-org/SDL/releases/download/release-${SDL2_VERSION}/SDL2-devel-${SDL2_VERSION}-mingw.tar.gz
           tar xzf sdl2.tar.gz
           SDL=$PWD/SDL2-${SDL2_VERSION}/x86_64-w64-mingw32
@@ -97,15 +97,15 @@ jobs:
           echo "SDL=$SDL" >> $GITHUB_ENV
 
       - name: Build
-        run: make mw2 WINDOWS=1 CC=x86_64-w64-mingw32-gcc CXX=x86_64-w64-mingw32-g++ AR=x86_64-w64-mingw32-ar SDL2_CONFIG=$SDL/bin/sdl2-config
+        run: make gbl WINDOWS=1 CC=x86_64-w64-mingw32-gcc AR=x86_64-w64-mingw32-ar SDL2_CONFIG=$SDL/bin/sdl2-config
 
       - name: Package
         run: |
-          mkdir -p dist/MW2-Port
-          cp mw2.exe $SDL/bin/SDL2.dll dist/MW2-Port/
-          cp -r assets dist/MW2-Port/
-          cp README.md FOLDER_SETUP.md THIRD_PARTY.md dist/MW2-Port/
-          cd dist && zip -r MW2-Port-${{ github.ref_name }}-windows-x64.zip MW2-Port
+          mkdir -p dist/GBL-Port
+          cp gbl.exe $SDL/bin/SDL2.dll dist/GBL-Port/
+          cp -r assets dist/GBL-Port/
+          cp README.md FOLDER_SETUP.md THIRD_PARTY.md dist/GBL-Port/
+          cd dist && zip -r GBL-Port-${{ github.ref_name }}-windows-x64.zip GBL-Port
 
       - uses: actions/upload-artifact@v4
         with:

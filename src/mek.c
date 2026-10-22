@@ -7,41 +7,6 @@
 #include <stdio.h>
 #include <string.h>
 
-const mek_weapon mek_weapons[] = {
-    /* name                      heat  dmg  unk  shrt  med  range_m  wt*100 crits ammo/t */
-    { "LRM 20",                     6,   -1,   -1,    7,   14,   1000,    500,    4,    6 },
-    { "LRM 15",                     5,   -1,   -1,    7,   14,   1000,    350,    2,    8 },
-    { "LRM 10",                     4,   -1,   -1,    7,   14,   1000,    250,    1,   12 },
-    { "LRM 5",                      2,   -1,   -1,    7,   14,   1000,    100,    1,   24 },
-    { "SRM 6",                      4,   -2,   -1,    3,    6,    497,    150,    1,   15 },
-    { "SRM 4",                      3,   -2,   -1,    3,    6,    497,    100,    1,   25 },
-    { "SRM 2",                      2,   -2,   -1,    3,    6,    497,     50,    1,   50 },
-    { "Streak SRM-6",               4,   -2,   -1,    4,    8,    497,    300,    2,   15 },
-    { "Streak SRM-4",               3,   -2,   -1,    4,    8,    497,    200,    1,   25 },
-    { "Streak SRM-2",               2,   -2,   -1,    4,    8,    497,    100,    1,   50 },
-    { "Machine Gun",                0,    2,   -1,    1,    2,    175,     25,    1,  200 },
-    { "Gauss Rifle",                1,   15,    2,    7,   15,   1820,   1200,    6,    8 },
-    { "LB 2-X AC",                  1,    2,    4,   10,   20,    800,    500,    3,   45 },
-    { "LB 5-X AC",                  1,    5,    3,    8,   15,    700,    700,    4,   20 },
-    { "LB 10-X AC",                 2,   10,   -1,    6,   12,    600,   1000,    5,   10 },
-    { "LB 20-X AC",                 6,   20,   -1,    4,    8,    450,   1200,    9,    5 },
-    { "Ultra AC/2",                 1,    2,    2,    9,   18,    700,    500,    2,   45 },
-    { "Ultra AC/5",                 1,    5,   -1,    7,   14,    600,    700,    3,   20 },
-    { "Ultra AC/10",                3,   10,   -1,    6,   12,    500,   1000,    4,   10 },
-    { "Ultra AC/20",                7,   20,   -1,    4,    8,    400,   1200,    8,    5 },
-    { "Flamer",                     3,    2,   -1,    1,    2,      3,     50,    1,    0 },
-    { "ER PPC",                    15,   15,   -1,    7,   14,    746,    600,    2,    0 },
-    { "ER Laser (Large)",          12,   10,   -1,    8,   15,   1019,    400,    1,    0 },
-    { "ER Laser (Medium)",          5,    7,   -1,    5,   10,    510,    100,    1,    0 },
-    { "ER Laser (Small)",           2,    5,   -1,    2,    4,    255,     50,    1,    0 },
-    { "Pulse Laser (Large)",       10,   10,   -1,    6,   14,    815,    600,    2,    0 },
-    { "Pulse Laser (Medium)",       4,    7,   -1,    4,    8,    408,    200,    1,    0 },
-    { "Pulse Laser (Small)",        2,    3,   -1,    2,    4,    204,    100,    1,    0 },
-    { "Narc Missile Beacon",        0,    0,   -1,    4,    8,     12,    200,    1,    0 },
-    { "Anti-Missile System",        1,    0,   -1,   -1,   -1,     -1,     50,    1,    0 },
-    { "Nuke",                       0,    0,   -1,   -1,   -1,     -1,      0,    1,    0 },
-};
-const int mek_weapon_count = (int)(sizeof mek_weapons / sizeof mek_weapons[0]);
 
 /* GBL MW2SHELL.EXE 0x80ad4 (35 x 0x28): entries 0-27 as the base; NARC, AMS and Nuke re-figured; 31-34 new */
 const mek_weapon mek_weapons_gbl[] = {
@@ -83,13 +48,8 @@ const mek_weapon mek_weapons_gbl[] = {
 };
 const int mek_weapon_count_gbl = (int)(sizeof mek_weapons_gbl / sizeof mek_weapons_gbl[0]);
 
-int sim_game_gbl(void)
-{
-    const char *g = getenv("MW2_GAME");
-    return g && (g[0] == 'g' || g[0] == 'G') && (g[1] == 'b' || g[1] == 'B') && (g[2] == 'l' || g[2] == 'L') && !g[3];
-}
-const mek_weapon *mek_weapon_table(void) { return sim_game_gbl() ? mek_weapons_gbl : mek_weapons; }
-int mek_weapon_table_count(void) { return sim_game_gbl() ? mek_weapon_count_gbl : mek_weapon_count; }
+const mek_weapon *mek_weapon_table(void) { return mek_weapons_gbl; }
+int mek_weapon_table_count(void) { return mek_weapon_count_gbl; }
 
 static const struct { uint32_t id; const char *name; } equipment[] = {
     { 5000, "MASC" },

@@ -3,8 +3,7 @@
 Ghost Bear's Legacy (GBL, 1995) shipped as its own DOS program: `GBL.EXE` (a launcher) ran `MW2SHELL.EXE` (the menus)
 and `MW2.EXE` (the simulation) in a loop - `mw2shell intro`, then { read MW2PRM.CFG, `mw2.exe <command line>`,
 `mw2shell sim` } until the shell exits with 0xff. The port's equivalent is one executable, `gbl` (`make gbl`): the GBL
-shell (`tools/gblshell.c` + `tools/gbl/*.c`) and the same simulation as MechWarrior 2 (`gbl --sim ...`, with
-`MW2_GAME=gbl` switching on GBL's simulation rules).
+shell (`tools/gblshell.c` + `tools/gbl/*.c`) and the simulation (`gbl --sim ...`).
 
 Everything was traced in GBL's own binaries (the original disc's `GBL\MW2SHELL.EXE`, `GBL\MW2.EXE`) or measured in DOSBox
 running them. Addresses are GBL VAs (Ghidra over the LE executables converted to ELF; shell code VA 0x10000 = file
@@ -28,4 +27,4 @@ disc's `GBL\` folder its executables differ only by the CD-check patches - `GBL.
 drive, a hidden `OLD_HERC.DRV` in its root (on the GBL disc itself). The port has no CD check.
 
 ## Game folder
-See `FOLDER_SETUP_GBL.md`.
+See `FOLDER_SETUP.md`.
