@@ -922,7 +922,9 @@ static void gbl_combat_variables(void)
         gbl_frame_text(28, 500, ROW_Y[13], pc.dos_sky_smooth ? "DOS SMOOTH" : "DOS DITHERED", -1);
         {   /* the port's look of the full-screen videos (portcfg videos=): OBJECT TEXTURES' right part */
             static const char *const VID_TEXT[PORTCFG_VID_COUNT] = {"FMV ORIGINAL", "FMV SMOOTH", "FMV SCANLINE", "FMV CRT", "FMV CURVED"};
+            static const char *const FIT_TEXT[PORTCFG_FIT_COUNT] = {"FMV 4:3", "FMV FILL", "FMV STRETCH"};   /* video_fit= */
             gbl_frame_text(28, 500, ROW_Y[2], VID_TEXT[pc.videos >= 0 && pc.videos < PORTCFG_VID_COUNT ? pc.videos : 0], -1);
+            gbl_frame_text(28, 500, ROW_Y[3], FIT_TEXT[pc.video_fit >= 0 && pc.video_fit < PORTCFG_FIT_COUNT ? pc.video_fit : 0], -1);
         }
         gbl_frame_logo_draw(&logo);
         for (i = 0; i < 3 && sl_shp && sl_len > 0; i++) {   /* the sliders: frame 1 the track at (335, y), frame 0 the knob */
@@ -949,8 +951,9 @@ static void gbl_combat_variables(void)
             int x = in->mx, y = in->my, fh = gtext_h(28);
             for (i = 0; i < 14; i++) {
                 if (y < ROW_Y[i] || y >= ROW_Y[i] + fh) continue;
-                if (x >= 495 && (i == 0 || i == 1 || i == 2 || i == 13)) {   /* the port's right-hand words */
+                if (x >= 495 && (i == 0 || i == 1 || i == 2 || i == 3 || i == 13)) {   /* the port's right-hand words */
                     if (i == 0) pc.hud_original ^= 1;
+                    else if (i == 3) pc.video_fit = (pc.video_fit + 1) % PORTCFG_FIT_COUNT;   /* FMV size: 4:3 / fill / stretch */
                     else if (i == 2) pc.videos = (pc.videos + 1) % PORTCFG_VID_COUNT;   /* FMV: the full-screen videos' look */
                     else if (i == 1) {   /* DISPLAY: desktop -> windowed -> the display's modes -> desktop */
                         if (pc.mode == 0) pc.mode = 1;

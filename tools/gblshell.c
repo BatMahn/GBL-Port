@@ -235,10 +235,41 @@ static void gbl_text_layer(SDL_Renderer *rd)
     g_ntext = n;
 }
 static SDL_Texture *g_gvid_tx;   /* gbl_video: the frame in the videos' look (video_fx_texture), presented instead of g_fb */
+static int g_gvid_fit = -1;       /* gbl_video: PORTCFG_FIT_* while a full-screen video plays, else -1 */
+/* a full-screen video on the whole output (the port's video_fit=): 4:3 as large as fits; FILL scales the 4:3 picture to the output's width and
+ * cuts top and bottom (or to its height, cutting the sides, on a narrower output); STRETCH widens it to the whole output */
+static void gbl_present_video(SDL_Texture *t)
+{
+    int ow = 0, oh = 0, tw = 0, th = 0;
+    SDL_Rect src;
+    SDL_RenderSetLogicalSize(g_grd, 0, 0);
+    SDL_RenderSetIntegerScale(g_grd, SDL_FALSE);
+    SDL_RenderSetViewport(g_grd, NULL);
+    SDL_GetRendererOutputSize(g_grd, &ow, &oh);
+    SDL_QueryTexture(t, NULL, NULL, &tw, &th);
+    src.x = 0; src.y = 0; src.w = tw; src.h = th;
+    if (g_gvid_fit == PORTCFG_FIT_FILL && ow > 0 && oh > 0) {
+        if ((long)ow * th > (long)oh * tw) { src.h = (int)((long)tw * oh / ow); src.y = (th - src.h) / 2; }   /* wider: cut top / bottom */
+        else { src.w = (int)((long)th * ow / oh); src.x = (tw - src.w) / 2; }                                 /* narrower: cut the sides */
+    }
+    SDL_SetTextureScaleMode(t, SDL_ScaleModeLinear);
+    SDL_RenderClear(g_grd);
+    if (g_gvid_fit == PORTCFG_FIT_43 && ow > 0 && oh > 0) {   /* the 4:3 picture as large as the output allows (the menus
+                                                             * keep whole-number scaling for their text; a video needn't) */
+        SDL_Rect d;
+        if ((long)ow * 3 > (long)oh * 4) { d.h = oh; d.w = oh * 4 / 3; } else { d.w = ow; d.h = ow * 3 / 4; }
+        d.x = (ow - d.w) / 2; d.y = (oh - d.h) / 2;
+        SDL_RenderCopy(g_grd, t, &src, &d);
+    } else SDL_RenderCopy(g_grd, t, &src, NULL);
+    if (t == g_gtx) SDL_SetTextureScaleMode(t, getenv("MW2_TEXT_SMOOTH") ? SDL_ScaleModeLinear : SDL_ScaleModeNearest);
+    SDL_RenderSetLogicalSize(g_grd, W, H);
+    if (!getenv("MW2_TEXT_SMOOTH")) SDL_RenderSetIntegerScale(g_grd, SDL_TRUE);
+}
 static void gbl_present(void)
 {
     if (!g_grd) return;
     if (!g_gvid_tx) SDL_UpdateTexture(g_gtx, NULL, g_fb, W * 3);
+    if (g_gvid_fit >= 0) { gbl_present_video(g_gvid_tx ? g_gvid_tx : g_gtx); SDL_RenderPresent(g_grd); return; }
     SDL_RenderClear(g_grd); SDL_RenderCopy(g_grd, g_gvid_tx ? g_gvid_tx : g_gtx, NULL, NULL); gbl_text_layer(g_grd);
     g_ntcover = 0;
     if (g_grab[0]) {   /* TEST ONLY (GBL_EVENTS "S file.ppm", windowed): the rendered window with its text layer */
@@ -596,7 +627,7 @@ static int gbl_video(const char *name)
 {
     char path[1200];
     smk *s;
-    int f, n, skipped = 0, look = video_look();
+    int f, n, skipped = 0, look = video_look(), fit = video_fit();
     unsigned char *snd = NULL;
     Uint32 t0;
     if (!name || !name[0]) return 0;
@@ -621,8 +652,10 @@ static int gbl_video(const char *name)
             }
         text_layer_clear();
         g_gvid_tx = video_fx_texture(g_grd, look, s);
+        g_gvid_fit = fit;
         in = gbl_frame();
         g_gvid_tx = NULL;
+        g_gvid_fit = -1;
         if (in->quit || in->lclick || in->rclick || in->key) skipped = 1;
         if (!g_headless) {
             Uint32 now = SDL_GetTicks() - t0;

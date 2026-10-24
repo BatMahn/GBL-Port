@@ -387,6 +387,16 @@ static int video_look(void)
     portcfg_load(NULL, &pc);
     return pc.videos >= 0 && pc.videos < PORTCFG_VID_COUNT ? pc.videos : PORTCFG_VID_ORIGINAL;
 }
+/* the port's video_fit= (gblport.cfg; MW2_VIDEO_FIT overrides it, tests) */
+static int video_fit(void)
+{
+    portcfg pc;
+    const char *e = getenv("MW2_VIDEO_FIT");
+    int i;
+    if (e) for (i = 0; i < PORTCFG_FIT_COUNT; i++) if (!strcmp(e, PORTCFG_FIT_NAME[i])) return i;
+    portcfg_load(NULL, &pc);
+    return pc.video_fit >= 0 && pc.video_fit < PORTCFG_FIT_COUNT ? pc.video_fit : PORTCFG_FIT_43;
+}
 /* the frame in the look, in g_vfx_tx (drawn over the whole 640x480 logical screen); NULL: draw g_fb (ORIGINAL) */
 static SDL_Texture *video_fx_texture(SDL_Renderer *rd, int look, smk *s)
 {

@@ -103,6 +103,10 @@ int portcfg_load(const char *unused, portcfg *c)
             int k;
             for (k = 0; k < PORTCFG_VID_COUNT; k++) if (strcmp(v, PORTCFG_VID_NAME[k]) == 0) c->videos = k;
         }
+        else if (strcmp(line, "video_fit") == 0) {
+            int k;
+            for (k = 0; k < PORTCFG_FIT_COUNT; k++) if (strcmp(v, PORTCFG_FIT_NAME[k]) == 0) c->video_fit = k;
+        }
         else if (strcmp(line, "renderer") == 0) {   /* dos | enhanced | titanium (anything else: DOS) */
             int e, look = PORTCFG_GBL_DOS;
             for (e = 0; e < PORTCFG_GBL_COUNT; e++) if (strcmp(v, PORTCFG_GBL_NAME[e]) == 0) look = e;
@@ -141,6 +145,7 @@ int portcfg_save(const char *unused, const portcfg *c)
     fprintf(f, "hud_layout=%s\n", c->hud_original ? "original" : "wide");
     fprintf(f, "dos_shading=%s\n", c->dos_sky_smooth ? "smooth" : "dithered");
     fprintf(f, "videos=%s\n", PORTCFG_VID_NAME[c->videos >= 0 && c->videos < PORTCFG_VID_COUNT ? c->videos : 0]);
+    fprintf(f, "video_fit=%s\n", PORTCFG_FIT_NAME[c->video_fit >= 0 && c->video_fit < PORTCFG_FIT_COUNT ? c->video_fit : 0]);
     fclose(f);
     return 0;
 }
@@ -237,6 +242,7 @@ const char *const PORTCFG_ED_NAME[PORTCFG_ED_COUNT] = {"enhanced", "dos"};
 const char *const PORTCFG_TX_NAME[PORTCFG_TX_COUNT] = {"original", "titanium"};
 const char *const PORTCFG_GBL_NAME[PORTCFG_GBL_COUNT] = {"dos", "enhanced", "titanium"};
 const char *const PORTCFG_VID_NAME[PORTCFG_VID_COUNT] = {"original", "smooth", "scanlines", "crt", "crt_curved"};
+const char *const PORTCFG_FIT_NAME[PORTCFG_FIT_COUNT] = {"4:3", "fill", "stretch"};
 
 static void cp(char *dst, const char *src) { snprintf(dst, PORTCFG_PATH, "%s", src ? src : ""); }
 

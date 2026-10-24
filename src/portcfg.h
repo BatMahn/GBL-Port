@@ -29,6 +29,9 @@
  *                          smooth: filtered scaling; scanlines: dark gaps between the lines (the interlaced look); crt:
  *                          scanlines, a soft glow and an aperture-grille mask; crt_curved: the same on a curved tube.
  *                          Combat Variables' VIDEO, src/vidfx.h)
+ *   video_fit=4:3 | fill | stretch   (the full-screen videos on a wider screen: 4:3, the default - the 4:3 picture as large
+ *                          as the screen allows; fill - the whole screen, the 4:3 picture scaled to the screen's width and cut at
+ *                          top and bottom; stretch - the whole picture widened to the screen. Combat Variables' FMV size)
  *   system_shortcuts=block | allow   (macOS: block, the default, turns the system's keyboard shortcuts - Mission
  *                          Control's Ctrl+arrows, Cmd+Tab, Spotlight - off while a mission is played with the window in
  *                          front (not in the MAIN MENU or paused); allow leaves them on. Other systems: no effect)
@@ -54,6 +57,7 @@ typedef struct {
     int  dos_sky_smooth;      /* dos_shading= (dos_sky=): 0 dithered (default, the original), 1 smooth (the DOS renderer's
                                * Gouraud polygons and haze band blended) */
     int  videos;              /* videos=: PORTCFG_VID_* (0 original, the default) */
+    int  video_fit;           /* video_fit=: PORTCFG_FIT_* (0 4:3, the default) */
 } portcfg;
 /* how a look is drawn, as the simulation is told (MW2_EDITION / MW2_TEXTURES): ENHANCED = the GL renderer in true colour
  * (ENHANCED with the DOS archive, or TITANIUM with the Titanium textures), DOS = the DOS renderer */
@@ -64,6 +68,9 @@ extern const char *const PORTCFG_TX_NAME[PORTCFG_TX_COUNT];   /* "original", "ti
 /* the full-screen videos' look (the order of vidfx.h's VIDFX_*) */
 enum { PORTCFG_VID_ORIGINAL, PORTCFG_VID_SMOOTH, PORTCFG_VID_SCANLINES, PORTCFG_VID_CRT, PORTCFG_VID_CRT_CURVED, PORTCFG_VID_COUNT };
 extern const char *const PORTCFG_VID_NAME[PORTCFG_VID_COUNT];   /* "original", "smooth", "scanlines", "crt", "crt_curved" */
+/* how the full-screen videos fill a screen wider than 4:3 */
+enum { PORTCFG_FIT_43, PORTCFG_FIT_FILL, PORTCFG_FIT_STRETCH, PORTCFG_FIT_COUNT };
+extern const char *const PORTCFG_FIT_NAME[PORTCFG_FIT_COUNT];   /* "4:3", "fill", "stretch" */
 /* A renderer's files: the archive for models and data (always the DOS GBL MW2.PRJ), the archive for textures and its
  * kind ("dos"), the sky / ground file ("") and the fog file (ENHANCED: the Titanium SKYGND.PAR when present, else "").
  * Returns 0 if the DOS archive is there (the install's, else the disc's GBL\). */

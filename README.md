@@ -100,6 +100,7 @@ file:
     aa=4                      # anti-aliasing: 0 2 4 8
     renderer=dos              # dos | enhanced | titanium
     videos=original           # original | smooth | scanlines | crt | crt_curved  (the in-game videos)
+    video_fit=4:3             # 4:3 | fill | stretch  (the in-game videos on a widescreen: fill cuts top and bottom)
     hud_layout=wide           # wide | original
     dos_shading=dithered      # dithered | smooth
 

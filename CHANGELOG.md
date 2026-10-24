@@ -22,7 +22,7 @@
   was verified in DOSBox against the original MW2.EXE. The dodge direction also follows DOS.
 - **Looks:** DOS (the default); ENHANCED (GBL's own models and textures in true colour, plus the Titanium fog);
   TITANIUM (the Titanium Edition's Direct3D look). The in-game videos have their own look: original, smooth, scanlines,
-  CRT or curved CRT.
+  CRT or curved CRT, and fill a widescreen display if you like (Combat Variables, FMV 4:3 / FILL / STRETCH).
 - **HUD:** GBL's layout, with the 14-weapon list in two 7-row columns and the target viewer bottom left.
 - **Sound:** the disc's CD audio as the music, the briefing and debriefing voices, and the menu clips' own sound. There
   is no MIDI, as in the original.
