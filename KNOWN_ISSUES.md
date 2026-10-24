@@ -8,5 +8,4 @@ What is still open in the Ghost Bear's Legacy port, in plain language.
 - **Some of GBL's new projectiles aren't drawn yet.**
 - **GBL's added cockpit-control drivers** (Cockpit Controls) don't map to INPUT.MAP yet.
 - **The PETE mission's torpedoes** may not look like the original's yet.
-- **No releases yet:** build from source. The Windows build of `gbl` is untested, and the macOS app has no icon of its
-  own yet.
+- **The Windows build is untested** on a real Windows machine (it cross-compiles cleanly).

@@ -19,8 +19,14 @@ make -C %{_sourcedir} -j$(nproc) gbl
 %install
 install -Dm755 %{_sourcedir}/gbl %{buildroot}%{_bindir}/gbl
 mkdir -p %{buildroot}%{_datadir}/gblport
+%{_datadir}/applications/gblport.desktop
+%{_datadir}/icons/hicolor/256x256/apps/gblport.png
 cp -r %{_sourcedir}/assets %{buildroot}%{_datadir}/gblport/
+install -Dm644 %{_sourcedir}/packaging/linux/gblport.desktop %{buildroot}%{_datadir}/applications/gblport.desktop
+install -Dm644 %{_sourcedir}/packaging/linux/gblport.png %{buildroot}%{_datadir}/icons/hicolor/256x256/apps/gblport.png
 
 %files
 %{_bindir}/gbl
 %{_datadir}/gblport
+%{_datadir}/applications/gblport.desktop
+%{_datadir}/icons/hicolor/256x256/apps/gblport.png

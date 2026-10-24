@@ -7,7 +7,8 @@ and Windows. You need your own copy of the game (see "Setting up the game folder
 As on DOS, Ghost Bear's Legacy is its own program: `gbl`.
 
 ## Status (2026-10-21)
-Playable from start to finish. There are no releases yet: build from source (below).
+Playable from start to finish. Tagged releases (`v*`) are built by GitHub Actions: a macOS app (Apple Silicon), a
+Debian / Ubuntu package, a Fedora RPM and a Windows zip. Or build from source (below).
 
 - **Shell:** a new shell, written from GBL's own MW2SHELL.EXE. It covers:
   - the Ghost Bear title and the Esc menu, with Combat Variables, Cockpit Controls, Hall of Honor and The Keshik
@@ -49,7 +50,8 @@ Needs a C99 compiler, make, SDL2 (development files) and OpenGL 3.3.
     Linux (Debian/Ubuntu):  sudo apt install build-essential libsdl2-dev libgl-dev
 
     make gbl                # the game: menus + missions in one program
-    sh scripts/macos_app.sh # macOS: "Ghost Bear's Legacy.app", with SDL2 bundled inside
+    sh scripts/macos_app.sh                  # macOS: "Ghost Bear's Legacy.app", with SDL2 bundled inside
+    sh packaging/linux/build_deb.sh 0.1.0    # Debian / Ubuntu: dist/gblport_0.1.0_amd64.deb
 
 Windows (64-bit, not yet tested): MSYS2's MINGW64 shell (`pacman -S make mingw-w64-x86_64-gcc mingw-w64-x86_64-SDL2`),
 then `make gbl`. Or cross-compile from Linux with the SDL2 MinGW development package:

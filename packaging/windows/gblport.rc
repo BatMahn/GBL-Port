@@ -1,5 +1,6 @@
-/* Windows resources for gbl.exe: version information, and the program icon when packaging/windows/gblport.ico exists
- * (the Makefile passes -DGBL_ICON then; no icon is shipped in the repository). */
+/* Windows resources for gbl.exe: the program icon and version information. gblport.ico: the original GBLWIN.EXE icon
+ * (group 103: 32 x 32, 16 colours) kept as is, with 16 (box-filtered) and 64 / 128 / 256 (pixel-doubled) added. The
+ * Makefile passes -DGBL_ICON when the file is there. */
 #ifdef GBL_ICON
 1 ICON "gblport.ico"
 #endif

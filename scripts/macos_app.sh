@@ -1,7 +1,7 @@
 #!/bin/sh
 # Build "Ghost Bear's Legacy.app" from a macOS build (make gbl) in the current directory (CI: the repo root).
 # Layout: the binary in Contents/MacOS, the font in Contents/Resources/assets (SDL_GetBasePath() returns
-# Contents/Resources inside a bundle; codesign rejects non-code files in Contents/MacOS), the icon (packaging/macos/gblport.icns, when it is there - none is shipped) in
+# Contents/Resources inside a bundle; codesign rejects non-code files in Contents/MacOS), the icon (packaging/macos/gblport.icns) in
 # Contents/Resources, and the SDL2 dylib the binary was linked against copied into Contents/Frameworks so the
 # app runs without Homebrew. The bundle is ad-hoc signed (codesign -s -), not notarised: a downloaded copy
 # needs  xattr -dr com.apple.quarantine "Ghost Bear's Legacy.app"  once (README).

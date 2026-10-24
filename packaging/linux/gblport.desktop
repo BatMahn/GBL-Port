@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=MechWarrior 2: Ghost Bear's Legacy
+Comment=Native port of Ghost Bear's Legacy (needs your own copy of the game)
+Exec=gbl
+Icon=gblport
+Terminal=false
+Categories=Game;ActionGame;

@@ -7,5 +7,6 @@
 | Liberation Sans Bold (assets/fonts) | the port's own settings text, matched to the original artwork | SIL Open Font License 1.1 |
 | SDL2 (system library) | window, input, audio output | zlib |
 
-Ghost Bear's Legacy's own data (archives, art, movies, voices, music) is read from your copy of the game; none of it
-is included here.
+Ghost Bear's Legacy's own data (archives, art, movies, voices, music) is read from your copy of the game. The
+exceptions, Activision's and included only for the program's icons: the original game icon (`packaging/windows/gblport.ico`,
+`packaging/linux/gblport.png`, from GBLWIN.EXE) and the macOS app icon (`packaging/macos/gblport.icns`, user-supplied).
