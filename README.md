@@ -108,6 +108,8 @@ The same choices are in the game: the global menu (Esc or the right mouse button
 the install's GAMEKEY.MAP / INPUT.MAP; set them up in COCKPIT CONTROLS, as in the original. In a mission, Esc opens the
 original's main menu and pauses the game. The `MW2_*` and `GBL_*` environment variables are for development and tests
 only.
+If the game runs slowly, start it with `MW2_PERF=1` and it prints the frame rate every 2 seconds, with where each
+frame's time goes (simulation, world, HUD, buffer swap). `MW2_PERF=2` also times the GPU.
 
 ### Input devices and the gamepad
 COCKPIT CONTROLS lists the original's twelve drivers (up to four at a time, the keyboard always). The joysticks
@@ -131,6 +133,23 @@ position: A = bottom (Cross, Switch B), B = right, X = left, Y = top. Default ma
 
 The sticks move the throttle and the torso at a rate, so the setting stays where you leave it. Change any of it in
 CUSTOM CONFIGURATION like the other devices; it is saved in INPUT.MAP and GIDDI\CONFIG00.CPC, as the original's are.
+
+### Customising controls
+The port reads the original's two control files exactly as GBL's MW2.EXE does: `GAMEKEY.MAP` (one-press commands, one
+`COMMAND key` per line) and `INPUT.MAP` (held and moved controls: `control {`, then `+ device key` / `- device key` lines,
+then `}`). They are taken from `install/` first, then from the disc copy (`cd/GBL/`), in any letter case; the log names
+the two files read (`controls: GAMEKEY.MAP <path>, INPUT.MAP <path>`). To customise, copy both from `cd/GBL/` into
+`install/` and edit the copies. COCKPIT CONTROLS rewrites INPUT.MAP only (never GAMEKEY.MAP), and only when you accept
+a changed configuration.
+
+- GAMEKEY.MAP: a key is one character (`t`, `;`, `` ` ``, `\` ...) or F1-F12, Esc, Tab, Enter, BSP, Insert, Pause, Plus,
+  Pound (`#`), with `CTRL+` / `ALT+` / `SHIFT+` in any order and case. Each key does one command - if two lines name the
+  same key, the first wins; a command may have several keys. `#` starts a comment. A misspelt command makes the game
+  ignore the rest of the file, as the original did (the log says which line).
+- INPUT.MAP: keyboard names are those of `GIDDI\KEYBOARD.DLL` (letters, `One` ... `Zero`, `Space`, `LeftShift`,
+  `LeftControl`, `Shift` / `Control` / `Alt` for either side, `GreyUpArrow` ... for the arrow keys - the plain `UpArrow`,
+  `Home`, `Insert` ... are the numeric keypad); up to 8 conditions in a block; an unknown control ends the reading.
+- In a mission every key belongs to the two files (the port's development keys need `MW2_DEBUG_KEYS=1`).
 
 ## Tests
 The tests need your own game data, which isn't in the repository:

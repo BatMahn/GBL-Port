@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 const char *const CC_LABEL[CC_CONTROLS] = {
     "Throttle ", "Chassis ", "Turret Turn", "Turret Tilt", "Eye Point ", "Eye Point ", "Eye Point ", "Recenter Torso",
@@ -23,6 +24,28 @@ const char *const CC_MAPNAME[CC_CONTROLS] = {
 static int32_t rd32(const uint8_t *p) { return (int32_t)(p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24); }
 static void wr32(uint8_t *p, uint32_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); p[2] = (uint8_t)(v >> 16); p[3] = (uint8_t)(v >> 24); }
 
+/* fopen for reading with the file name in any case (the GIDDI files keep the disc's upper case, a copy may not; a
+ * case-sensitive disk): the path as given, else its last component matched in its folder ignoring case */
+static FILE *ci_fopen(const char *path)
+{
+    FILE *f = fopen(path, "rb");
+#ifndef _WIN32
+    if (!f) {
+        char dir[1100];
+        const char *sl = strrchr(path, '/');
+        DIR *d;
+        struct dirent *e;
+        if (!sl || (size_t)(sl - path) >= sizeof dir) return NULL;
+        memcpy(dir, path, (size_t)(sl - path)); dir[sl - path] = 0;
+        if (!(d = opendir(dir[0] ? dir : "/"))) return NULL;
+        while (!f && (e = readdir(d)))
+            if (strcasecmp(e->d_name, sl + 1) == 0) { char q[1400]; snprintf(q, sizeof q, "%s/%s", dir, e->d_name); f = fopen(q, "rb"); }
+        closedir(d);
+    }
+#endif
+    return f;
+}
+
 /* the path of a file in dir by its DOS name, as stored (upper case on the disc / install) or in lower case; 0 if found */
 static int dos_path(const char *dir, const char *name, char *p, size_t cap)
 {
@@ -37,6 +60,17 @@ static int dos_path(const char *dir, const char *name, char *p, size_t cap)
     if ((f = fopen(p, "rb"))) { fclose(f); return 0; }
     snprintf(p, cap, "%s/%s", dir, name);
     if ((f = fopen(p, "rb"))) { fclose(f); return 0; }
+#ifndef _WIN32
+    {   /* any other case of the name (a copy made on a case-preserving disk) */
+        DIR *d = opendir(dir);
+        struct dirent *e;
+        int ok = -1;
+        while (d && ok < 0 && (e = readdir(d)))
+            if (strcasecmp(e->d_name, name) == 0) { snprintf(p, cap, "%s/%s", dir, e->d_name); ok = 0; }
+        if (d) closedir(d);
+        if (ok == 0) return 0;
+    }
+#endif
     return -1;
 }
 
@@ -220,7 +254,7 @@ void cc_clear(cc_config *c)
 int cc_load(cc_config *c, const char *path, const cc_drivers *dv)
 {
     uint8_t d[3872];
-    FILE *f = fopen(path, "rb");
+    FILE *f = ci_fopen(path);
     int i, l, s, map[16];
     if (!f) return -1;
     if (fread(d, 1, sizeof d, f) != sizeof d) { fclose(f); return -1; }

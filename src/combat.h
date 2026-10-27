@@ -93,14 +93,19 @@ typedef struct {
                                      * shutdown timeout, a cook-off; the DOS self-destruct): its case 4 runs the same
                                      * update, before the next frame's input handler moves the camera (msim on_player_down) */
     float         shut_ticks, over_ticks, damage_carry;
-    int           heat_warning;   /* one tick: "Heat level critical" (65-80 with a net gain; latched, 0x10015f50) */
-    int           warn_latch;     /* engine DAT_1024bfd0: the warning was given; cleared below 65 after 724 ticks */
+    int           heat_warning;   /* one tick: "Heat level critical" (GBL MW2.EXE 0x252b0: from 66 up with a net gain, 66-80
+                                   * or with a sequence pending; latched) */
+    int           warn_latch;     /* DAT_000a6670: the warning was given; cleared at 65 or below after 0x2d8 ticks */
     float         warn_ticks, heat_mark, last_ticks;   /* ticks since the warning; heat after the last tick; last tick's length */
     int           auto_shutdown;  /* one tick: the sequence shut the mech down (message 0xd "Shutting down") */
     int           restarted;      /* one tick: the heat restart (state 3 -> 0): the start-up lock runs again (msim.c) */
     int           human;          /* a human pilot: edge-triggered fire, no range check (0x100437a0) */
     uint32_t      fire_held, fire_prev, fire_edge;   /* human: weapons whose trigger is held now / last tick / newly pressed */
-    int           shutdown_pending;  /* engine flag 4: sequence started above 80, shuts down 1086 ticks later */
+    int           shutdown_pending;  /* engine flag 4: sequence started above 80, shuts down 0x444 ticks later */
+    int           alarm_latch;       /* flag 0x1000 (+0x111 bit 0x10): the sequence's alarm was given; cleared at or below 65
+                                      * with no sequence pending (GBL 0x252b0) */
+    int           seq_alarm;         /* one tick: a sequence started with the latch clear - message 3 "Shutdown sequence
+                                      * initiated" and MECOVHW1 0xe9 */
     int           override;          /* engine flag 8: the pilot overrode the shutdown */
     int           manual_down;       /* SHUTDOWN_MECH shut it down (informational: the heat restart still applies with flag 4) */
     /* Combat Variables (MW2DIF.CFG, engine block DAT_1024ac6c): the player's switches */
@@ -181,6 +186,7 @@ void combat_set_planet(const combat_planet *p);
  * 0x100171d0 applies no damage to anyone (weapon hits, splash, collisions, falls) and 0x10015e10 (BlowAmmo) does nothing.
  * The sim sets it; 1 by default (tools) */
 extern int combat_damage_live;
+extern float combat_test_wheat[64];  /* TEST ONLY (MW2_TEST_WHEAT): > 0 replaces a weapon's heat per projectile, as a patched table */
 /* the full jet tank, c[0x30] (controller +0xc0) in ticks: DOS MW2.EXE 0x71c = 1820 everywhere (0x4ce84 at load,
  * 0x27b84 / 0x27c57 / 0x27c7d, the bar 0x314b9) */
 #define COMBAT_JET_FUEL_MAX 1820.0f

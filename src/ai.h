@@ -199,6 +199,9 @@ void ai_post(ai_mind *m, int cond);
  * sidestep that way (-1 left, +1 right) is clear */
 void ai_missile_warning_gbl(ai_mind *m, const ai_view *v, int shooter_level, float shooter_rel, int (*side_free)(void *ctx, int side), void *ctx);
 /* one AI step: evaluate the current state's rules, then move per state. dt in seconds. */
+/* The nav steering (GBL 0x22ce0, the AI's and the player's autopilot): err = bearing - heading in degrees (-180..180)
+ * -> the leg input +0xc (819.2 = full), in whole degrees as DOS does */
+float ai_nav_turn(float err);
 void ai_step(const ai_library *lib, ai_mind *m, const ai_view *v, float dt);
 
 #endif

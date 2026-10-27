@@ -28,6 +28,8 @@
     X(glBlitFramebuffer, PFNGLBLITFRAMEBUFFERPROC) \
     X(glBufferData, PFNGLBUFFERDATAPROC) \
     X(glBufferSubData, PFNGLBUFFERSUBDATAPROC) \
+    X(glMapBufferRange, PFNGLMAPBUFFERRANGEPROC) \
+    X(glUnmapBuffer, PFNGLUNMAPBUFFERPROC) \
     X(glCheckFramebufferStatus, PFNGLCHECKFRAMEBUFFERSTATUSPROC) \
     X(glCompileShader, PFNGLCOMPILESHADERPROC) \
     X(glCreateProgram, PFNGLCREATEPROGRAMPROC) \
@@ -57,6 +59,7 @@
     X(glTexBuffer, PFNGLTEXBUFFERPROC) \
     X(glUniform1f, PFNGLUNIFORM1FPROC) \
     X(glUniform1i, PFNGLUNIFORM1IPROC) \
+    X(glUniform1iv, PFNGLUNIFORM1IVPROC) \
     X(glUniform2f, PFNGLUNIFORM2FPROC) \
     X(glUniform2i, PFNGLUNIFORM2IPROC) \
     X(glUniform3f, PFNGLUNIFORM3FPROC) \
@@ -82,6 +85,8 @@ MW2GL_FUNCS
 #define glBlitFramebuffer mw2gl_glBlitFramebuffer
 #define glBufferData mw2gl_glBufferData
 #define glBufferSubData mw2gl_glBufferSubData
+#define glMapBufferRange mw2gl_glMapBufferRange
+#define glUnmapBuffer mw2gl_glUnmapBuffer
 #define glCheckFramebufferStatus mw2gl_glCheckFramebufferStatus
 #define glCompileShader mw2gl_glCompileShader
 #define glCreateProgram mw2gl_glCreateProgram
@@ -111,6 +116,7 @@ MW2GL_FUNCS
 #define glTexBuffer mw2gl_glTexBuffer
 #define glUniform1f mw2gl_glUniform1f
 #define glUniform1i mw2gl_glUniform1i
+#define glUniform1iv mw2gl_glUniform1iv
 #define glUniform2f mw2gl_glUniform2f
 #define glUniform2i mw2gl_glUniform2i
 #define glUniform3f mw2gl_glUniform3f

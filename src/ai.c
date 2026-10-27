@@ -73,6 +73,22 @@ void ai_init(ai_mind *m, int order_prog)
     m->tgt = m->event_who = m->post_who = -2;
 }
 
+/* The nav steering, GBL MW2.EXE 0x22ce0 (base DOS 0x229e0, the same code): on the 16.16 error in WHOLE degrees,
+ * d = (err >> 16) % 360 (sar: floored); > 45 / < -45 -> +-0x3333333 (819.2 of 1024), else ((d << 16) / 45) x 0x3333333
+ * >> 16 rounded (shrd + adc) - an error in [0, 1) degree steers nothing and one in [-1, 0) a full degree's worth, so the
+ * autopilot settles 0-1 degree right of the nav's bearing (base DOSBox TNJ4 Alpha -> Beta: ~7 m west of the straight
+ * line from 470 m in). The 3Dfx DLL's float form (0x10013600, err x 18.2044) is not GBL's */
+float ai_nav_turn(float err)
+{
+    int d = (int)floorf(err), q;
+    long long p;
+    if (d > 0x2d) return 819.2f;
+    if (d < -0x2d) return -819.2f;
+    q = (d * 65536) / 0x2d;
+    p = (long long)q * 0x3333333;
+    return (float)((int)(p >> 16) + (int)((p >> 15) & 1)) / 65536.0f;
+}
+
 static float wrap180(float a)
 {
     while (a > 180.0f) a -= 360.0f;
@@ -633,9 +649,7 @@ void ai_step(const ai_library *lib, ai_mind *m, const ai_view *v, float dt)
         /* steering 0x10013600 */
         turn0 = m->turn;   /* as the manoeuvre left it (a start may have zeroed it) */
         err = wrap180(want - v->heading);
-        if (err > 45.0f) m->turn = 819.2f;
-        else if (err < -45.0f) m->turn = -819.2f;
-        else m->turn = err * 18.2044f;
+        m->turn = ai_nav_turn(err);   /* GBL 0x22ce0 (base DOS 0x229e0), from 0x2c7f2 / 0x2d512..0x2d6d8: whole degrees */
         if (m->state == AI_ATTACK && m->man == 3) m->turn += 450.0f * m->weave;
         if (m->state == AI_ATTACK && m->man == 11) m->turn = 0;            /* 0x1001f290 case 11: +0xc = 0 */
         /* in attack only the manoeuvre handlers steer (0x100130f0 has no state-3 case): 4 (0x1001fdd0), 5 (0x1001fe30), 11

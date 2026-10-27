@@ -187,7 +187,7 @@ static void ams_release(combat_unit *u, combat_weapon *cw, const sim_weapon *sw)
         cw->t -= (float)sw->interval;
         cw->t10 = cw->t;
         cw->shots -= n;
-        u->heat += sw->heat;
+        u->heat += combat_test_wheat[cw->weapon] > 0 ? combat_test_wheat[cw->weapon] : sw->heat;   /* TEST ONLY override */
     }
 }
 
@@ -207,7 +207,7 @@ static void release_due(combat_unit *u, combat_weapon *cw)
         cw->t -= (float)sw->interval;
         cw->t10 = cw->t;
         cw->shots--;
-        u->heat += sw->heat;
+        u->heat += combat_test_wheat[cw->weapon] > 0 ? combat_test_wheat[cw->weapon] : sw->heat;   /* TEST ONLY override */
         if (cw->shots == 0 && sw->repeat && (u->fire_held & (1u << (cw - u->weapons)))) {
             /* a repeating weapon with its trigger still held waits refire ticks and fires again */
             cw->state = CW_REPEAT;
@@ -240,6 +240,7 @@ void combat_tick(combat_unit *u, float dt)
     u->fire_edge = u->fire_held & ~u->fire_prev;
     u->fire_prev = u->fire_held;
     u->heat_warning = 0;
+    u->seq_alarm = 0;
     u->auto_shutdown = 0;
     u->restarted = 0;
     for (i = 0; i < u->weapon_count; i++) {
@@ -274,37 +275,40 @@ void combat_tick(combat_unit *u, float dt)
     if (u->heat < 0) u->heat = 0;
     u->seq_ticks += ticks;
     u->warn_ticks += ticks;
-    /* flag 4 set and not overridden: shut down 1086 ticks after the sequence began, whatever the heat now */
-    if (u->shutdown_pending && !u->override && !u->shutdown && u->seq_ticks > 1086.0f) {
-        u->shutdown = 1;
-        u->seq_ticks = 0;
-        u->auto_shutdown = 1;              /* message 0xd "Shutting down" */
-    }
-    if (u->heat > 100.0f) {
-        if (!u->invulnerable) {            /* an invulnerable player skips this branch */
-            if (!u->override) {
-                if (u->seq_ticks > 4525.0f) u->destroyed = u->down_in_update = 1;
-            } else if (ticks > 0) {
-                /* a roll per frame: 3D 0x100160c9 rand(4000 / dt) < 3 (3 in 4000 per tick); DOS 0x25115 rand(500 x dt)
-                 * == 0, which depends on the frame rate (no fixed per-tick rate to port) - the 3Dfx rate is kept */
+    /* GBL MW2.EXE 0x252b0 (base DOS 0x24f90 with the unit's fields 4 bytes on): the heat's whole part (16.16 >> 16)
+     * against 0x64 / 0x50 / 0x41, one branch a frame in this order. Unlike the 3Dfx DLL a sequence starts at 81 whatever
+     * the heat above it (a jump past 100 with flag 4 clear starts one, with message 3 and MECOVHW1 0xe9), and the 66
+     * warning (message 0 and MECOVHW1) is reached at any heat from 66 up once flag 4 is set - not only 66-80 */
+    {
+        int h = (int)u->heat;
+        if (u->shutdown_pending && !u->override && !u->shutdown && u->seq_ticks > 1092.0f) {   /* 0x253b7: > 0x444 */
+            u->shutdown = 1;
+            u->seq_ticks = 0;
+            u->auto_shutdown = 1;          /* message 0xd "Shutting down", nothing else that frame */
+        } else if (h > 100 && u->override) {
+            /* a roll per frame: DOS rand(500 x dt) == 0 (FUN_0004af60), which depends on the frame rate (no fixed per-tick
+             * rate to port) - the 3Dfx rate 3 in 4000 a tick is kept (the player's invulnerability skips it) */
+            if (!u->invulnerable && ticks > 0) {
                 u->rng = u->rng * 1103515245u + 12345u;
                 if ((float)((u->rng >> 16) & 0x7FFF) / 32768.0f < 3.0f * ticks / 4000.0f) { cook_off(u); if (u->destroyed) u->down_in_update = 1; }
             }
+        } else if (h > 100 && u->shutdown) {
+            /* shut down above 100 for more than 0x71c ticks since the shutdown: BlowAmmo (0x251e0) every frame */
+            if (!u->invulnerable && u->seq_ticks > 1820.0f) { cook_off(u); if (u->destroyed) u->down_in_update = 1; }
+        } else if (h > 80 && !u->shutdown_pending) {
+            u->shutdown_pending = 1; u->seq_ticks = 0;
+            if (!u->alarm_latch) { u->alarm_latch = 1; u->seq_alarm = 1; }   /* latch +0x111 bit 0x10 */
+        } else if (h > 65) {
+            if (!u->warn_latch && net > 0) { u->warn_latch = 1; u->warn_ticks = 0; u->heat_warning = 1; }   /* DAT_000a6670 */
+        } else if (!u->shutdown_pending) {
+            if (u->warn_latch && u->warn_ticks > 728.0f) u->warn_latch = 0;   /* 0x2d8 */
+            u->alarm_latch = 0;
+        } else {
+            /* restart 0x2d8 ticks after the shutdown (flag 4 cleared only here or by an override cooling down). Any
+             * shutdown counts, a SHUTDOWN_MECH one too: the engine has no separate manual state */
+            if (u->shutdown && u->seq_ticks > 728.0f) { u->shutdown = 0; u->shutdown_pending = 0; u->restarted = 1; u->manual_down = 0; }
+            if (u->override) { u->override = 0; u->shutdown_pending = 0; }
         }
-    } else if (u->heat > 80.0f) {
-        if (!u->shutdown_pending) { u->shutdown_pending = 1; u->seq_ticks = 0; }   /* "Shutdown sequence initiated" */
-    } else if (u->heat > 65.0f) {
-        /* "Heat level critical": once, when this frame's net gain is positive; latched */
-        if (!u->warn_latch && net > 0) { u->warn_latch = 1; u->warn_ticks = 0; u->heat_warning = 1; }
-    } else if (!u->shutdown_pending) {
-        if (u->warn_latch && u->warn_ticks > 724.0f) u->warn_latch = 0;
-    } else {
-        /* restart 724 ticks after c[0x23] (flag 4 cleared only here or by an override cooling down). Any shutdown
-         * counts, a SHUTDOWN_MECH one too: the engine has no separate manual state (0x10015f50 tests flag 4 and state
-         * 3 only), so a mech the pilot shut down during a sequence comes back up by itself - STARTUP_MECH is refused
-         * while flag 4 is set without flag 8 (0x1001adf0), so nothing else could restart it */
-        if (u->shutdown && u->seq_ticks > 724.0f) { u->shutdown = 0; u->shutdown_pending = 0; u->restarted = 1; u->manual_down = 0; }
-        if (u->override) { u->override = 0; u->shutdown_pending = 0; }
     }
     u->heat_mark = u->heat;
 }
@@ -477,6 +481,7 @@ static void apply_damage(combat_unit *t, float dmg, int rear, unsigned *rng)
 }
 
 int combat_damage_live = 1;
+float combat_test_wheat[64];   /* TEST ONLY */
 const char *combat_damage_src = "weapon";   /* TEST ONLY: what the next damage is, for MW2_DAMAGE_LOG */
 static void apply_damage_at(combat_unit *t, float dmg, int rear, int loc, unsigned *rng)
 {
