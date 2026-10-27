@@ -479,25 +479,42 @@ int msim_init(msim *s, prj_archive *a, const char *scene, world_actor *actors, i
         if (s->pl_pit_ok) mech3d_use_skeleton(&s->pl_pit, &s->pl_mech);
     }
     s->player_cockpit = 1;
-    {   /* each effect type's card radius (its geometry's +0x40: the farthest vertex, 0x100291fd) for the area damage */
-        fx_defs *fd = calloc(1, sizeof *fd);
-        if (fd && fx_load(a, fd) == 0)
-            for (i = 0; i < FX_TYPES; i++) s->fx_radius[i] = sqrtf(fd->half_w[i] * fd->half_w[i] + fd->half_h[i] * fd->half_h[i]);
-        free(fd);
+    {   /* GBL: the effect pool - the mission's own pool records (fx_load_scene: MW2_SHT1, or the scene's zackSHT1 / petesht1 /
+         * tealsht1 / MW2_SHT2 ...), as the engine loads whatever the scene includes (0x50349..: one slot per XPLO object):
+         * which types can start at all, their slots, and each slot object's radius (the area damage's reach, 0x52670) */
+        s->fxd = calloc(1, sizeof *s->fxd);
+        s->fxw = calloc(1, sizeof *s->fxw);
+        if (!s->fxd || !s->fxw || fx_load_scene(a, s->fxd, scene) != 0) { free(s->fxd); free(s->fxw); s->fxd = NULL; s->fxw = NULL; }
+        s->fx_index = -1;
     }
     {   /* GBL: the projectile pool per weapon kind - MW2_SHT1's BTHG {u16, u16 kind} objects (0x53823 takes a
                              * free slot whose kind is the weapon's +0x10; GBL's file: 11 / 11 / 11 lasers, 32 SRM, 48 LRM, 32
                              * bullets, 8 PPC, 6 gauss, 32 flamer, 8 torpedo, 5 Arrow IV, 3 NARC) */
         prj_record r;
-        if (prj_read_named(a, "BWD", "MW2_SHT1", &r) == PRJ_OK) {
-            int n = bwd_chunks(r.data, r.size, NULL, 0), q;
+        char pool[8][17];
+        int np = fx_pool_records(a, scene, pool, 8), pr;   /* the mission's pool records (the scene's includes: GBL's
+                                                            * PETESCN1 petesht1 has no Flamer / Arrow IV / NARC objects) */
+        for (pr = 0; pr < np; pr++)
+        if (prj_read_named(a, "BWD", pool[pr], &r) == PRJ_OK) {
+            int n = bwd_chunks(r.data, r.size, NULL, 0), q, got = 0;
             bwd_chunk *c = n > 0 ? calloc((size_t)n, sizeof *c) : NULL;
+            bwd_obj ob;
             if (c) {
                 bwd_chunks(r.data, r.size, c, n);
                 for (q = 0; q < n; q++)
-                    if (strcmp(c[q].tag, "BTHG") == 0 && c[q].size >= 4) {
+                    if (strcmp(c[q].tag, "OBJ") == 0) got = bwd_obj_decode(&c[q], &ob) == 0;
+                    else if (strcmp(c[q].tag, "BTHG") == 0 && c[q].size >= 4) {
                         int kd = c[q].data[2] | c[q].data[3] << 8;
-                        if (kd >= 0 && kd < 16) s->gbl_pool[kd]++;
+                        if (kd >= 0 && kd < 16) {
+                            /* the object's geometry radius (0x54730 reads *(object +0x6c) +0x40) */
+                            if (got && s->gbl_pool[kd] < 64) {
+                                const float sc[3] = {ob.scale[0] ? (float)ob.scale[0] : 1.0f, ob.scale[1] ? (float)ob.scale[1] : 1.0f, ob.scale[2] ? (float)ob.scale[2] : 1.0f};
+                                float rr = fx_model_radius(a, (int)ob.model, sc);
+                                s->pool_r[kd][s->gbl_pool[kd]] = rr > 0 ? rr : 0.0f;
+                            }
+                            s->gbl_pool[kd]++;
+                        }
+                        got = 0;
                     }
                 free(c);
             }
@@ -558,6 +575,7 @@ int msim_init(msim *s, prj_archive *a, const char *scene, world_actor *actors, i
     s->twist_limit = calloc((size_t)(count ? count : 1), sizeof *s->twist_limit);
     s->radius = calloc((size_t)(count > 0 ? count : 1), sizeof *s->radius);
     s->fly_seen = calloc((size_t)count + 1, sizeof *s->fly_seen);
+    s->scattered = calloc((size_t)count + 1, sizeof *s->scattered);
     s->centre_h = calloc((size_t)(count > 0 ? count : 1), sizeof *s->centre_h);
     for (i = 0; s->twist_limit && s->radius && s->centre_h && i < count; i++) {
         prj_record mg;
@@ -574,6 +592,42 @@ int msim_init(msim *s, prj_archive *a, const char *scene, world_actor *actors, i
                 if (hc > 0 && hc < 5000) s->centre_h[i] = (float)hc;
             }
             prj_record_free(&mg);
+        }
+    }
+    /* GBL class 2 (the skeleton's GP class: AIRCRF1D / AIRCRFTD fighters and helicopters, SUBA / SUBB / SUBD submarines,
+     * VEHICLEB / VEHICLEH hovercraft): the movement (0x26d05) ends every step with the object's y = controller +0xd0
+     * (0x278ac: `cmp $2,(class)` -> y = +0xd0) - the MGEO int[0] the MGDF chunk loads (0x500a6 -> 0x4ca90), absolute.
+     * New in GBL (the base DOS 0x26995 and the 3D editions have no such test). The unit flies level at that height: it
+     * never falls or climbs, and is "on the ground" there (its ground test's gap is never above +0xd0). ZACK's fighters
+     * 3950 m (the JumpShip's deck ~3904 m), BRON / TIM helicopters 95 m, PETE's submarines 185-250 m */
+    s->fly_y = calloc((size_t)(count > 0 ? count : 1), sizeof *s->fly_y);
+    for (i = 0; s->fly_y && i < count; i++) {
+        prj_record sr, mg;
+        s->fly_y[i] = NAN;
+        if (actors[i].unit_class != 2 || prj_read_named(a, "BWD", actors[i].skel, &sr) != PRJ_OK) continue;
+        {
+            int nc = bwd_chunks(sr.data, sr.size, NULL, 0), q;
+            bwd_chunk *cc = nc > 0 ? calloc((size_t)nc, sizeof *cc) : NULL;
+            char mgname[17] = "";
+            if (cc) {
+                bwd_chunks(sr.data, sr.size, cc, nc);
+                for (q = 0; q < nc; q++)
+                    if (strcmp(cc[q].tag, "MGDF") == 0 && cc[q].size > 2) {   /* {i16 id, name}: the MGEO record */
+                        size_t l = cc[q].size - 2 < 16 ? cc[q].size - 2 : 16;
+                        memcpy(mgname, cc[q].data + 2, l); mgname[l] = '\0';
+                    }
+                free(cc);
+            }
+            if (!mgname[0]) snprintf(mgname, sizeof mgname, "%s", actors[i].skel);
+            if (prj_read_named(a, "MGEO", mgname, &mg) == PRJ_OK) {
+                if (mg.size >= 4) s->fly_y[i] = (float)(int32_t)(mg.data[0] | (mg.data[1] << 8) | (mg.data[2] << 16) | ((uint32_t)mg.data[3] << 24));
+                prj_record_free(&mg);
+            }
+        }
+        prj_record_free(&sr);
+        if (!isnan(s->fly_y[i])) {   /* the first move frame puts it there (the GPS start's height before) */
+            s->units[i].y = s->units[i].ground = s->fly_y[i];
+            actors[i].mech.origin[1] = (int32_t)lrintf(s->fly_y[i]);
         }
     }
     {
@@ -1093,22 +1147,52 @@ static int missile_fx(int weapon)
     if (v >= 0 && ((v & 0xff) == 0x22 || (v & 0xff) == 0x23)) return 1;   /* GBL 0x52040: 0x22 / 0x23 go the missiles' way (0x52125: the 0x10b chunks too) */
     return v >= 0 && ((v & 0xff) == 3 || (v & 0xff) == 4);
 }
+static int32_t sim_ticks(const msim *s);
+/* GBL 0x52040: start an effect in the pool - the first free slot of the type whose object exists (+0x14 is 1 for every
+ * type), none when no live effect of the type is free or the type has no slot in the mission's pool records at all (a scene
+ * whose pool lacks it: zackSHT1 / petesht1 have no burning 10 / Arrow IV 35 ...), nor with neighbours of the type within
+ * 5 m (fx_spawn); an effect that follows its object (flags 1) rides the unit struck (0x39410 -> 0x1e870) for its whole
+ * time, elsewhere 0xb6 ticks. Then the front end's on_effect with fx_index = the entry. Returns the entry, -1 refused (also
+ * s->fx_refused). Without the pool loaded: on_effect decides (fx_refused) */
+static int fx_start(msim *s, int type, const float p[3])
+{
+    int fi = -1;
+    s->fx_refused = 0;
+    if (s->fxd && s->fxw) {
+        fi = fx_spawn(s->fxw, s->fxd, type, p, sim_ticks(s));
+        if (fi < 0) {
+            if (getenv("MW2_AREA_TRACE")) fprintf(stderr, "fxrefused %.2f type %d (pool slots %d)\n", s->now / 1000.0, type, type >= 0 && type < FX_TYPES ? s->fxd->slots[type] : 0);   /* TEST ONLY */
+            s->fx_refused = 1; return -1;
+        }
+        s->fxw->e[fi].has_rot = s->fx_rot_ok;
+        if (s->fx_rot_ok) memcpy(s->fxw->e[fi].rot, s->fx_rot, sizeof s->fxw->e[fi].rot);
+        if (fx_flags(type) & 1) {
+            if (s->fx_follow >= -1) s->fxw->e[fi].follow = s->fx_follow;
+            else s->fxw->e[fi].end = s->fxw->e[fi].start + 0xb6;
+        }
+    }
+    s->fx_index = fi;
+    if (s->on_effect) s->on_effect(s->shot_user, type, p);
+    s->fx_index = -1;
+    return s->fx_refused ? -1 : fi;
+}
 static void effect(msim *s, int type, const float p[3], int chunks)
 {
-    s->fx_refused = 0;
-    if (s->on_effect) s->on_effect(s->shot_user, type, p);
-    if (chunks && !s->fx_refused) spawn_debris(s, 4, p);
-    if (!s->fx_refused && type >= 0 && type < FX_TYPES && fx_damaging(type) &&
-        s->area_count < (int)(sizeof s->area / sizeof s->area[0])) {
+    int fi = fx_start(s, type, p);
+    if (s->fx_refused) return;
+    if (chunks) spawn_debris(s, 4, p);
+    if (type >= 0 && type < FX_TYPES && fx_damaging(type) && s->area_count < (int)(sizeof s->area / sizeof s->area[0])) {
         struct msim_area *a = &s->area[s->area_count++];
-        a->type = type; memcpy(a->pos, p, sizeof a->pos); a->r = s->fx_radius[type];
-        a->start = (int32_t)((int64_t)s->now * 182 / 1000);
-        a->end = a->start + fx_duration(type);
-        a->follow = -2;
-        if (fx_flags(type) & 1) {
-            /* GBL 0x52040: an effect that follows its object (flags 1: the burning one, type 10) is attached to the unit it
-             * struck (0x39410 -> 0x1e870) and lasts its full time; anything else (the ground, a structure) keeps it 0xb6
-             * ticks */
+        a->type = type; memcpy(a->pos, p, sizeof a->pos);
+        /* the reach: the slot object's geometry radius (0x52670: *(object +0x6c) +0x40) - per slot of the scene's pool */
+        a->r = fi >= 0 && s->fxw->e[fi].slot >= 0 && s->fxw->e[fi].slot < 32 ? s->fxd->radius[type][s->fxw->e[fi].slot] : 0.0f;
+        a->start = sim_ticks(s);
+        a->end = fi >= 0 ? s->fxw->e[fi].end : a->start + fx_duration(type);
+        a->follow = fi >= 0 ? s->fxw->e[fi].follow : -2;
+        if (getenv("MW2_AREA_TRACE"))   /* TEST ONLY: a damaging effect's slot and reach */
+            fprintf(stderr, "area %.2f type %d slot %d r %.0f at %.0f %.0f %.0f end +%d\n", s->now / 1000.0, type, fi >= 0 ? s->fxw->e[fi].slot : -1, (double)a->r,
+                    p[0], p[1], p[2], (int)(a->end - a->start));
+        if (fi < 0 && (fx_flags(type) & 1)) {
             if (s->fx_follow >= -1) a->follow = s->fx_follow;
             else a->end = a->start + 0xb6;
         }
@@ -1225,7 +1309,86 @@ static void blow_offs(msim *s)
         const combat_unit *cu = u < 0 ? &s->player_unit : &s->units[u];
         unsigned mask = mech3d_fly_mask(cu->loc_gone);
         if (u >= 0 && !s->armed[u]) continue;
+        if (u >= 0 && s->scattered && s->scattered[u]) continue;   /* already all flying (scatter_wrecks) */
         if (mask != s->fly_seen[u + 1]) { blow_off(s, u, mask, s->fly_seen[u + 1]); s->fly_seen[u + 1] = mask; }
+    }
+}
+
+/* A unit running into a wreck (GBL MW2.EXE 0x1fef0, the move test of every mech-controller unit - classes 1 2 4 5 6 8,
+ * the player too - in state 2 or 4, every frame, before the world test): 0x20320 walks the units; one other than itself,
+ * not yet blown apart (physics +0x110 bit 0x100), whose centre (+0x50..+0x58) is nearer the mover's new centre than the
+ * two contact radii (+0xec) - the octagonal (4 max + mid + min) / 4 of the axis offsets - is a contact, unless it is a
+ * wreck (state +0xa4 == 4): then 0x20d60 blows it apart and the move goes on as if nothing were there. 0x20d60: every
+ * node of the wreck's object tree (0x2b9c0 -> 0x2b880 with 999) with a collision entry flies off as a blown-off part does
+ * (the 128-slot pool; a node with no OBJL location (+0x16 == 0), a DUMMY (0x70) or one finding the pool full only
+ * leaves the list), +0x110 |= 0x100, and sound 0xb5 plays at the wreck. DOSBox MAROSCN1 (W_m9_*: the "palex" cheat killed
+ * the Falcon Nova standing on the hover limousine's road; at 123-125 s the limousine reaches it, the wreck flies apart
+ * and the limousine drives on). Not modelled: 0x274ec / 0x27762 (a moving wreck that hits something blows itself apart)
+ * - the port's wrecks never move. The mover's centre: a walker's feet + MGEO centre height, a GBL class 2 unit's y
+ * itself (0x278ac) */
+static float unit_centre_y(const msim *s, int k)
+{
+    if (k < 0) return s->player_unit.y + s->player_centre_h;
+    if (s->fly_y && !isnan(s->fly_y[k])) return s->units[k].y;
+    return s->units[k].y + (s->centre_h ? s->centre_h[k] : 550.0f);
+}
+static void scatter_wreck(msim *s, int k)
+{
+    const mech3d *m = &s->actors[k].mech;
+    int32_t now = (int32_t)((int64_t)s->now * 182 / 1000);
+    unsigned old = s->fly_seen ? s->fly_seen[k + 1] : 0;
+    int q, j;
+    s->scattered[k] = 1;
+    for (q = 0; q < m->part_count; q++) {
+        msim_debris *d;
+        if (m->parts[q].hidden || m->parts[q].model.object_count < 1 || mech3d_fly_loc(m, q, old)) continue;   /* gone before */
+        if (!mech3d_fly_loc(m, q, 0x1feu) || s->debris_count >= MSIM_MAX_DEBRIS) continue;   /* no location / pool full: gone */
+        d = &s->debris[s->debris_count++];   /* as blow_off (ASSUMED the same throw: 0x2b880 serves both) */
+        d->kind = 2; d->actor = k; d->part = q;
+        for (j = 0; j < 3; j++) d->p[j] = (float)m->parts[q].pos[j];
+        d->v[0] = gauss(&s->rng) * 5.5f;
+        d->v[1] = (gauss(&s->rng) + 1.0f) * 5.5f;
+        d->v[2] = gauss(&s->rng) * 5.5f;
+        for (j = 0; j < 3; j++) { d->ang[j] = 0; d->spin[j] = gauss(&s->rng) * 0.5f; }
+        d->until = now + 0xe24;
+        d->moving = 1;
+    }
+    if (s->on_sound) {
+        float p3[3] = {(float)s->actors[k].mech.origin[0], unit_centre_y(s, k), (float)s->actors[k].mech.origin[2]};
+        s->on_sound(s->shot_user, 0xb5, p3);
+    }
+    if (s->log) {
+        char line[128];
+        snprintf(line, sizeof line, "%6.1fs the wreck of %s (%s) is blown apart", (double)s->now / 1000.0, s->actors[k].name, s->actors[k].group);
+        s->log(s->log_user, line);
+    }
+}
+static void scatter_wrecks(msim *s)
+{
+    int m, k;
+    if (!s->scattered) return;
+    for (m = -1; m < s->actor_count; m++) {   /* the movers: the player and the mech-controller units up and running */
+        float p[3], r1;
+        if (m < 0) {
+            if (s->player_unit.destroyed || s->player_unit.shutdown) continue;
+            p[0] = s->player[0]; p[2] = s->player[2]; r1 = s->player_radius;
+        } else {
+            if (s->units[m].destroyed || s->units[m].shutdown || fixed_unit(&s->actors[m])) continue;
+            if (s->online_at && s->now < s->online_at[m]) continue;   /* starting up (ASSUMED not state 2 yet) */
+            p[0] = (float)s->actors[m].mech.origin[0]; p[2] = (float)s->actors[m].mech.origin[2];
+            r1 = s->radius ? s->radius[m] : 450.0f;
+        }
+        p[1] = unit_centre_y(s, m);
+        for (k = 0; k < s->actor_count; k++) {
+            float a[3], mx, mn, md, oct;
+            if (k == m || s->scattered[k] || !s->units[k].destroyed || s->units[k].intact_out || fixed_unit(&s->actors[k])) continue;
+            a[0] = fabsf((float)s->actors[k].mech.origin[0] - p[0]);
+            a[1] = fabsf(unit_centre_y(s, k) - p[1]);
+            a[2] = fabsf((float)s->actors[k].mech.origin[2] - p[2]);
+            mx = fmaxf(a[0], fmaxf(a[1], a[2])); mn = fminf(a[0], fminf(a[1], a[2])); md = a[0] + a[1] + a[2] - mx - mn;
+            oct = (4.0f * mx + md + mn) * 0.25f;
+            if (oct < r1 + (s->radius ? s->radius[k] : 450.0f)) scatter_wreck(s, k);
+        }
     }
 }
 
@@ -1414,12 +1577,27 @@ void msim_step(msim *s, int32_t dt_ms)
     int i;
     w.user = s; w.targets = cb_targets; w.finished = cb_finished; w.started = cb_started;
     s->now += dt_ms;
+    if (s->fxw) {   /* GBL 0x52670: the effect pool's lives run down; one that follows its object takes its position */
+        int k;
+        fx_update(s->fxw, sim_ticks(s));
+        for (k = 0; k < FX_LIVE; k++) {
+            fx_live *e = &s->fxw->e[k];
+            if (!e->alive || e->follow < -1) continue;
+            if (e->follow == -1) { if (!s->player_unit.destroyed) { e->pos[0] = s->player[0]; e->pos[1] = s->player_unit.y + s->player_centre_h; e->pos[2] = s->player[2]; } }
+            else if (e->follow < s->actor_count) {
+                e->pos[0] = (float)s->actors[e->follow].mech.origin[0];
+                e->pos[1] = s->units[e->follow].y + (s->centre_h ? s->centre_h[e->follow] : 550.0f);
+                e->pos[2] = (float)s->actors[e->follow].mech.origin[2];
+            }
+        }
+    }
     if (s->paths && s->world) paths_step(s);
     if (s->player_vertical) {   /* tools without their own player physics: stand the player on the terrain */
         s->player_unit.ground = msim_ground(s, s->player[0], s->player[2], s->player_unit.y + s->player_centre_h);
         combat_jets(&s->player_unit, 0, dt, &s->rng);
     }
     combat_step(s, dt);
+    scatter_wrecks(s);   /* units that ran into a wreck blow it apart */
     wrecks(s, dt_ms);
     blow_offs(s);   /* locations destroyed since the last step: their parts fly */
     debris_step(s, (float)dt_ms * 0.182f);
@@ -1838,7 +2016,8 @@ void msim_step(msim *s, int32_t dt_ms)
                                                                                    * left, right, forward, back */
             if (!firing || m->turn != 0.0f) jdir = 0;
             s->units[i].jet_forward = firing && (m->turn != 0.0f || jdir);
-            float dy_frame = fixed_unit(ac) ? 0.0f : combat_jets_dy(&s->units[i], m->jet, dt), dy_done = 0.0f, vy3 = 0.0f;
+            int flyer = s->fly_y && !isnan(s->fly_y[i]);   /* GBL class 2: level at its height (0x278ac), no vertical move */
+            float dy_frame = fixed_unit(ac) || flyer ? 0.0f : combat_jets_dy(&s->units[i], m->jet, dt), dy_done = 0.0f, vy3 = 0.0f;
             int imp3 = 0, land3 = 0;
             int cm = s->contact_acc && s->contact_hold && s->contact_hold[i] > 0;
             if (cm) s->contact_acc[i] += dt;
@@ -2039,7 +2218,10 @@ void msim_step(msim *s, int32_t dt_ms)
                 }
             }
             if (fixed_unit(ac)) s->units[i].ground = s->units[i].y;   /* 0x100219e0: no translation, no gravity */
-            else {
+            else if (flyer) {   /* GBL 0x278ac: y = controller +0xd0 after the move - grounded there (+0x78 set: the gap test
+                                 * sees it on its ground), no fall, vertical speed 0 */
+                s->units[i].y = s->units[i].ground = s->fly_y[i]; s->units[i].vy = 0; s->units[i].landed_vy = 0;
+            } else {
                 s->units[i].ground = msim_ground(s, (float)ac->mech.origin[0], (float)ac->mech.origin[2], s->units[i].y + (s->centre_h ? s->centre_h[i] : 550.0f));
                 float y3 = s->units[i].y + dy_done;
                 combat_jets(&s->units[i], m->jet, dt, &s->rng);           /* jump jets / falling, on the terrain */
@@ -2059,6 +2241,12 @@ void msim_step(msim *s, int32_t dt_ms)
             }
             if (m->jet && s->on_effect) msim_jet_flames_at(s, &ac->mech, (float)ac->mech.origin[0], s->units[i].y, (float)ac->mech.origin[2], ac->mech.heading);
             ac->mech.origin[1] = (int32_t)s->units[i].y;
+        }
+        if (getenv("MW2_TEST_KILL")) {   /* tests: "ms:actor[,actor...]" - those actors die at ms with nothing blown off
+                                          * (as the DOS "palex" cheat, GBL 0x46530 -> 0x25680 on the target: a standing wreck) */
+            const char *kp = strchr(getenv("MW2_TEST_KILL"), ':');
+            if (kp && s->now >= atoi(getenv("MW2_TEST_KILL")))
+                for (kp++; *kp; kp += strcspn(kp, ",") + (kp[strcspn(kp, ",")] != 0)) if (atoi(kp) == i) self_destruct(s, i);
         }
         if (getenv("MW2_TEST_LEG") && s->now >= atoi(getenv("MW2_TEST_LEG")) && s->armed[i] && !s->units[i].loc_gone[7]) {   /* tests: the left leg shot off */
             int q; for (q = 0; q < 80 && !s->units[i].loc_gone[7]; q++) combat_hit(&s->units[i], 11, 8, 180.0f, &s->rng);
@@ -2123,6 +2311,8 @@ void msim_step(msim *s, int32_t dt_ms)
 
 void msim_free(msim *s)
 {
+    free(s->fxd); s->fxd = NULL;
+    free(s->fxw); s->fxw = NULL;
     free(s->units);
     free(s->armed);
     free(s->height);
@@ -2130,7 +2320,7 @@ void msim_free(msim *s)
     free(s->msg_seen); s->msg_seen = NULL;
     free(s->twist_limit);
     free(s->minds);
-    free(s->cmd); free(s->online_at); free(s->radius); free(s->fly_seen); free(s->centre_h); free(s->ai_focus); free(s->ai_who); free(s->powered_down); free(s->seen_node); free(s->cmd_target); free(s->engage); free(s->mate_target); free(s->defend_leg);
+    free(s->cmd); free(s->online_at); free(s->radius); free(s->fly_seen); free(s->scattered); s->scattered = NULL; free(s->centre_h); free(s->fly_y); free(s->ai_focus); free(s->ai_who); free(s->powered_down); free(s->seen_node); free(s->cmd_target); free(s->engage); free(s->mate_target); free(s->defend_leg);
     free(s->bld);
     free(s->inspected);
     free(s->ai_lock);
@@ -2246,7 +2436,7 @@ static void muzzle(msim *s, int weapon, const float from[3], const mech3d *m, in
     if (m) { mech3d_mount_rot(m, slot, heading, s->fx_rot); s->fx_rot_ok = 1; }
     for (k = 0; k < 2; k++) {
         int t = fx_muzzle(weapon, k);
-        if (t >= 0) s->on_effect(s->shot_user, t, from);
+        if (t >= 0) fx_start(s, t, from);   /* GBL 0x52010 -> 0x52040: the pool as any effect */
     }
     s->fx_rot_ok = 0;
 }
@@ -2356,6 +2546,15 @@ static int aim_ray(msim *s, int self, const float from[3], const float dir[3], f
 }
 
 static void spawn_shot_h(msim *s, int weapon, int owner, const float from[3], const float to[3], float scatter, int homing);
+/* GBL MW2.EXE's vector length (0x40500's normalise, 0x51cd0's distance): the octagonal estimate (4 max + mid + min) / 4 of
+ * the axis offsets - a "unit" vector off the axes is up to 1 / 0.866 long (DOS integer >> 2; here as floats) */
+static float oct_len(float x, float y, float z)
+{
+    float a = fabsf(x), b = fabsf(y), c = fabsf(z), t;
+    if (a < b) { t = a; a = b; b = t; }
+    if (a < c) { t = a; a = c; c = t; }
+    return (a * 4.0f + b + c) * 0.25f;
+}
 static void spawn_shot_h(msim *s, int weapon, int owner, const float from[3], const float to[3], float scatter, int homing)
 {
     msim_shot *sh;
@@ -2365,24 +2564,30 @@ static void spawn_shot_h(msim *s, int weapon, int owner, const float from[3], co
         /* GBL 0x53823: 255 projectile slots (DAT_001657a8), each of one weapon kind (MW2_SHT1 BTHG): the projectile takes a
          * free slot of its weapon's kind - none free, none flies (the round is spent all the same) */
         int kind = combat_weapon_kind(weapon), q, live = 0;
+        uint64_t used = 0;
         if (s->shot_count >= 255 || kind < 0 || kind >= 16) return;
-        for (q = 0; q < s->shot_count; q++) if (combat_weapon_kind(s->shots[q].weapon) == kind) live++;
+        for (q = 0; q < s->shot_count; q++)
+            if (combat_weapon_kind(s->shots[q].weapon) == kind) { live++; if (s->shots[q].pool >= 0 && s->shots[q].pool < 64) used |= (uint64_t)1 << s->shots[q].pool; }
         if (live >= s->gbl_pool[kind]) return;
+        sh = &s->shots[s->shot_count];
+        for (sh->pool = 0; sh->pool < 63 && (used >> sh->pool & 1); sh->pool++) {}   /* the first free entry of the kind */
     }
     sh = &s->shots[s->shot_count++];
     d[0] = to[0] - from[0] + (frand_ms(&s->rng) - 0.5f) * 2.0f * scatter;
     d[1] = to[1] - from[1] + (frand_ms(&s->rng) - 0.5f) * 2.0f * scatter;
     d[2] = to[2] - from[2] + (frand_ms(&s->rng) - 0.5f) * 2.0f * scatter;
-    len = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+    /* GBL 0x53823: the course (aim point - mount, 0x54570) normalised by 0x40500 - the octagonal length, so a shot off the
+     * axes leaves up to 15 % faster than the table speed (+0x3c x the 16.16 "unit" vector) */
+    len = oct_len(d[0], d[1], d[2]);
     if (len < 1) len = 1;
     sh->x = from[0]; sh->y = from[1]; sh->z = from[2];
     sh->vx = d[0] / len * sp; sh->vy = d[1] / len * sp; sh->vz = d[2] / len * sp;
-    {   /* 0x10044ac0 (from 0x10043f14): a missile (table +0 type 3 / 4) leaves rand(200) - 100 cm off the mount along the
-         * level perpendicular p = (-dz, 0, dx) / |(dx, dz)| of its unit direction d, plus the same amount along the
+    {   /* 0x54730 (DOS; 3Dfx 0x10044ac0): a missile (GBL kinds 3 4 9 10 12) leaves rand(200) - 100 cm off the mount along the
+         * level perpendicular p = (-dz, 0, dx) (0x40500: octagonal) of its unit direction d, plus the same amount along the
          * engine's (d x p) with its y as written: (dy pz, dx pz + dz px, -dy px) - its flight line unchanged */
         int kind = combat_weapon_kind(weapon);
         if (kind == 3 || kind == 4 || kind == 9 || kind == 10 || kind == 12) {   /* GBL 0x53823: 3 4 9 10 12 */
-            float ux = d[0] / len, uy = d[1] / len, uz = d[2] / len, hl = sqrtf(ux * ux + uz * uz);
+            float ux = d[0] / len, uy = d[1] / len, uz = d[2] / len, hl = oct_len(ux, 0.0f, uz);
             float off = (float)((int)(rnd_ms(&s->rng) % 200u) - 100);
             if (hl > 0) {
                 float px = -uz / hl, pz = ux / hl;
@@ -2390,6 +2595,14 @@ static void spawn_shot_h(msim *s, int weapon, int owner, const float from[3], co
                 sh->y += off * (ux * pz + uz * px);
                 sh->z += off * (pz - uy * px);
             }
+        }
+        /* then, unless the weapon has flags 0x40 (the Flamer), the object - and so the projectile, 0x516b0 flies it from its
+         * object's position - is moved 2 x its pool object's geometry radius along the course (0x1e210: + unit x 2 r):
+         * lasers 13 m, missiles 4.4 m, bullets / autocannon slugs 20 m (BULLET's two objects, 0..20 m), the torpedo 6 m,
+         * Arrow IV 11 m (MW2_SHT1); the stretch from the mount is never tested for hits */
+        if (!(sim_wx(weapon) && (sim_wx(weapon)->flags & 0x40)) && kind >= 0 && kind < 16 && sh->pool >= 0 && sh->pool < 64) {
+            float L = 2.0f * s->pool_r[kind][sh->pool];
+            sh->x += d[0] / len * L; sh->y += d[1] / len * L; sh->z += d[2] / len * L;
         }
     }
     sh->life = (float)combat_weapon_life(weapon);
@@ -2786,7 +2999,7 @@ static void shot_units(msim *s, int owner, const float o[3], const float dv[3], 
         float cx, cz, ex, ez, lx, lz, len2, u, px, pz;
         if (i == owner) continue;
         if (i == -1) { if (!s->pl_mech_ok || s->player_unit.destroyed) continue; m = player_hull(s); }
-        else { if (!s->armed[i]) continue; m = &s->actors[i].mech; }
+        else { if (!s->armed[i] || (s->scattered && s->scattered[i])) continue; m = &s->actors[i].mech; }   /* a wreck blown apart: no pieces left (0x20d60) */
         cx = (float)m->origin[0]; cz = (float)m->origin[2];
         /* coarse: horizontal distance from the segment to the unit < 20 m */
         ex = dv[0]; ez = dv[2]; lx = cx - o[0]; lz = cz - o[2];
@@ -3230,7 +3443,14 @@ static void combat_step(msim *s, float dt)
                      * MGEO int[0] centre height (loader 0x100400b0; the altitude tape 0x100222e0 subtracts it back) - so the
                      * volley steers at the mech's centre (Mad Dog 5 m up), not its feet; within 100 cm (0x102485c4) it is
                      * flagged to hit it next tick. Speed is not held: turning costs speed. A target gone (unit flags 2 /
-                     * 4): acceleration 0 and +0x34 = 0 - it flies on straight, gravity no longer applied */
+                     * 4): acceleration 0 and +0x34 = 0 - it flies on straight, gravity no longer applied.
+                     * GBL (0x51660 -> 0x516b0 -> 0x51cd0, every projectile with a target class +0x38 and age +0x24 > 0 -
+                     * kinds 3 / 4 / 9 / 10 / 12 alike): the same, with both "unit" vectors and the 1 m test on the octagonal
+                     * length (4 max + mid + min) / 4 (0x40500); weapons with flags 0x10 (the Torpedo: 10 cm a tick, so the
+                     * steering is strong for its speed) ease the acceleration toward it by ticks / 0x2d8 a tick - a locked
+                     * torpedo bends down onto a lower target over 1-2 s and overshoots a little (DOSBox BASSSCN1 V_tl /
+                     * V_tn); unlocked it keeps the aim line (Torpedo drop 0). Arrow IV (flags 5) and NARC (0x85) steer
+                     * as the missiles */
                     int tg = sh->homing;
                     float tx, ty, tz, tl, vl;
                     float tq[3];
@@ -3243,8 +3463,9 @@ static void combat_step(msim *s, float dt)
                         else if (tg == -1) { tx = s->player[0]; ty = s->player_unit.y + s->player_centre_h; tz = s->player[2]; }
                         else { tx = (float)s->actors[tg].mech.origin[0]; ty = s->units[tg].y + (s->centre_h ? s->centre_h[tg] : 550.0f); tz = (float)s->actors[tg].mech.origin[2]; }
                         tx -= sh->x; ty -= sh->y; tz -= sh->z;
-                        tl = sqrtf(tx * tx + ty * ty + tz * tz); vl = sqrtf(ov[0] * ov[0] + ov[1] * ov[1] + ov[2] * ov[2]);
-                        if (tl <= 100.0f) sh->prox = 1;
+                        /* GBL 0x51cd0: both directions with the octagonal length (the distance, and 0x40500 on the velocity) */
+                        tl = oct_len(tx, ty, tz); vl = oct_len(ov[0], ov[1], ov[2]);
+                        if (tl < 101.0f) sh->prox = 1;
                         if (tl > 0 && vl > 0) {
                             const sim_weapon_gx *gx = sim_wx(sh->weapon);
                             if (gx && (gx->flags & 0x10)) {
@@ -4807,6 +5028,7 @@ static int probe_engine_ex(const msim *s, int self, const float p0[3], const flo
         *climb = ((c->type == 0 || c->type == 5) && n[1] > 0.7660444f) || (s->world->parts[c->part].objtype & 0xf0) == 0x50;
         cobj_now(s, c, box, sph);
         *ox = sph[0]; *oz = sph[2];
+        if (getenv("MW2_PROBE_TRACE")) fprintf(stderr, "probe %.2fs actor %d: world part %d %s type %d climb %d sph %.0f,%.0f,%.0f r %.0f at %.0f\n", s->now / 1000.0, self, c->part, s->world->parts[c->part].model_name, c->type, *climb, sph[0], sph[1], sph[2], sph[3], tt);   /* TEST ONLY */
     }
     if (len > 0) {   /* the units: their collision pieces in the same list - each piece a type 6 sphere (the unit's LOD objects,
                       * 0x10026430 -> 0x1000ffd0(6); DUMMY nodes, class 0x70, are left out), the probe's own unit skipped by
@@ -4818,12 +5040,14 @@ static int probe_engine_ex(const msim *s, int self, const float p0[3], const flo
             const mech3d *mq;
             int q;
             if (k == self) continue;
+            unsigned fly;
             if (k < 0) { if (!s->pl_mech_ok) continue; mq = s->pl_pit_ok && s->player_cockpit ? &s->pl_pit : &s->pl_mech; }
-            else mq = &s->actors[k].mech;
+            else { if (s->scattered && s->scattered[k]) continue; mq = &s->actors[k].mech; }   /* blown apart: out of the list (0x20d60) */
+            fly = s->fly_seen ? s->fly_seen[k + 1] : 0;   /* blown-off locations' pieces have left the list (0x10015be0 / 0x2c280) */
             for (q = 0; q < mq->part_count; q++) {
                 const mech3d_part *pp = &mq->parts[q];
                 float sph[4], e, hl;
-                if (pp->hidden || !piece_sphere(pp, sph)) continue;
+                if (pp->hidden || (fly && mech3d_fly_loc(mq, q, fly)) || !piece_sphere(pp, sph)) continue;
                 if (dos && dos_broad_reject(sph, p0, p1)) continue;
                 e = eseg_sphere(sph, &g0);
                 hl = e > 0.0f ? e : g0.len;   /* 0x100107b0: the end stays when the entry is 0 */
@@ -4849,10 +5073,16 @@ static void avoid_obstacles(msim *s, int i, ai_mind *m, float goal_bearing, floa
     world_actor *ac = &s->actors[i];
     float x = (float)ac->mech.origin[0], z = (float)ac->mech.origin[2], len, accum = 0;
     int step, side = s->avoid_side[i];
-    if (m->throttle <= 0) { s->avoid_turn[i] = 0; return; }
+    /* GBL MW2.EXE 0x2de80 (the DOS AI's scan; its callers 0x2d4e0 / 0x2d590 / 0x2d6b0 steer to the goal only when it
+     * returns 0): it returns 0 at once with no side set (+0x18e) and no throttle input; between checks it returns the
+     * remembered obstacle (+0x186, set and cleared with the side) - so while a side is set the caller does not steer and
+     * the inputs written last are held: the avoidance's turn, or, after a check that found the way clear (it returned 0
+     * then), the goal steering of that check's frame. Held for the 0x5b-tick re-check; the port had steered to the goal
+     * every frame between checks, which turned MARO's hover limousine straight back into a wreck on its road */
+    if (side == 0 && m->throttle <= 0) { s->avoid_turn[i] = 0; return; }
     s->avoid_next[i] -= dt * 182.0f;
     if (s->avoid_next[i] > 0) {
-        if (s->avoid_turn[i] != 0) { m->turn = s->avoid_turn[i]; m->throttle = s->avoid_thr[i]; }
+        if (side != 0) { m->turn = s->avoid_turn[i]; m->throttle = s->avoid_thr[i]; }
         return;
     }
     if (side == 0) {
@@ -4869,7 +5099,11 @@ static void avoid_obstacles(msim *s, int i, ai_mind *m, float goal_bearing, floa
     }
     len = s->avoid_len[i] * 5000.0f;
     {
-        float yc = s->units[i].y + (s->centre_h ? s->centre_h[i] : 550.0f), R = s->radius ? s->radius[i] : 450.0f;
+        /* the probe height: the unit's position y (0x2e230: unit +0x54) - a walker's centre (the port's feet + MGEO int[0]);
+         * a GBL class 2 unit's +0x54 is its MGEO int[0] itself (0x278ac -> 0x278d0), the port's fly_y: the hover limousine
+         * probes at 1.75 m, not 3.5 */
+        int flyer = s->fly_y && !isnan(s->fly_y[i]);
+        float yc = s->units[i].y + (flyer ? 0.0f : s->centre_h ? s->centre_h[i] : 550.0f), R = s->radius ? s->radius[i] : 450.0f;
         for (step = 0; step < 4; step++) {
             float a = (ac->mech.heading + (float)side * ANG[step]) * 3.14159265f / 180.0f, L = len * LEN[step];
             float p0[3] = {x, yc, z}, p1[3] = {x + sinf(a) * L, yc, z + cosf(a) * L}, ox = 0, oz = 0;
@@ -4910,6 +5144,9 @@ static void avoid_obstacles(msim *s, int i, ai_mind *m, float goal_bearing, floa
         if (ac->unit_class == 6) s->avoid_turn[i] = s->avoid_thr[i] = 0;   /* 0x100201c0: class 6 zeroes the output */
         m->turn = s->avoid_turn[i];
         m->throttle = s->avoid_thr[i];
+    } else if (side != 0) {   /* returned 0: the caller's goal steering of this frame, held to the next check (above) */
+        s->avoid_turn[i] = m->turn;
+        s->avoid_thr[i] = m->throttle;
     } else {
         s->avoid_turn[i] = 0;
     }
@@ -5084,7 +5321,7 @@ void msim_jet_flames_at(msim *s, const mech3d *m, float x, float y, float z, flo
     for (q = 6; q <= 7 && m; q++)
         if (mech3d_mount_world(m, q, o, heading, p) == 0) {
             mech3d_mount_rot(m, q, heading, s->fx_rot); s->fx_rot_ok = 1;   /* the jet node's orientation (0x1001bf90 -> 0x10045cc0) */
-            s->on_effect(s->shot_user, FX_JET, p); n++;
+            fx_start(s, FX_JET, p); n++;
             s->fx_rot_ok = 0;
         }
     if (!n) msim_jet_flames(s, x, y, z, heading);
@@ -5102,7 +5339,7 @@ void msim_jet_flames(msim *s, float x, float y, float z, float heading)
     s->fx_rot_ok = 1;
     for (side = -1; side <= 1; side += 2) {
         float p[3] = {x + cosf(h) * 120.0f * side, y + 50.0f, z - sinf(h) * 120.0f * side};
-        s->on_effect(s->shot_user, FX_JET, p);
+        fx_start(s, FX_JET, p);
     }
     s->fx_rot_ok = 0;
 }

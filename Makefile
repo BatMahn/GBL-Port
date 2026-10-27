@@ -121,7 +121,7 @@ check: all glview
 	./test_titanium $(TITANIUM)
 	./test_gamefolder
 	$(MAKE) test_inputmap && ./test_inputmap $(GBL)
-	$(MAKE) test_cockpitcfg && ./test_cockpitcfg $(GBL)
+	$(MAKE) test_cockpitcfg && ./test_cockpitcfg $(GBL) $(COCKPIT_REF)
 	python3 tests/gbl/gbl_hud_check.py $(GBL)/..
 
 clean:

@@ -839,64 +839,14 @@ static void db_shp(int entry, int x, int y)
     free(e);
 }
 
-/* ---- Cockpit Controls (FUN_00021020; data and the INPUT.MAP writer in src/cockpitcfg.c). Background shell image 4
- * (entry 3) above y 95 (the logo and "COCKPIT CONTROLS"), two red column rules at x 172 and 477, the thin font (31):
- * white, grey (154) and red (255,16,24), rows 11 px apart.
- * Page 1 (table 0x7c6c0): "Current Config:" (0,110), SELECT INPUT DEVICES (0,132), the drivers from (0,154) - red =
- *   selected, a click toggles; ACCEPT (0,297): the selected devices' default configs merged, INPUT.MAP written;
- *   CUSTOM CONFIGURATION (0,319): the editor; ABORT (0,440).
- * Page 2 (table 0x7a9b4): INPUT DEVICES (0,110), drivers from (0,132) (red = the one listed on the right); Current
- *   Config (0,275) and its name (8,286); RESET DEFAULTS (0,308); Load Custom 1-4 (0,330..); Save Custom 1-4 (0,385..);
- *   ACCEPT CONFIG AND EXIT (0,440); ABORT (0,462). GAME CONTROLS (176,110) and the level ("Primary Controls" ..
- *   "Quaternary Controls", centred on 370) - a click on it changes the level; from (176,132) each control: label,
- *   direction ("+/-", "L/R", ...: a click reverses), modifier at 261 ("--", "Ctrl", "Alt", "Shft": a click cycles),
- *   the binding at 285. A click on a control then on an input at the right assigns it (two-button controls take two
- *   inputs: the first then the second); right button on a control clears it. Right: the device (480,110),
- *   "Directional" (480,132) and its axes, then "Buttons" and its buttons (the keyboard's list scrolls with the wheel).
- * Layout measured on DOS captures (docs/reference/dos_cockpit_*.png); the colours of selected / current items and the
- * click behaviour inferred from the captures. */
-static cc_device g_ccdev[CC_DEVICES];
-static int g_ccsel[CC_DEVICES], g_ccsel_init;
-static char g_ccname[64] = "Default Config";
+/* ---- Cockpit Controls (FUN_00021f40, the pages in gbl_frame.c; the data and the INPUT.MAP writer in src/cockpitcfg.c):
+ * the shared drawing. Background shell image 4 (entry 3) above y 105 (the logo and "COCKPIT CONTROLS"), black below;
+ * the two red column rules at x 172 and 477 from y 120 (widgets 0x20110). */
 static int cc_colour(int r, int g, int b)
 {
     int i, best = 0, bd = 1 << 30;
     for (i = 0; i < 256; i++) { int d = abs(g_bg.pal[i][0] - r) + abs(g_bg.pal[i][1] - g) + abs(g_bg.pal[i][2] - b); if (d < bd) { bd = d; best = i; } }
     return best;
-}
-static const char *giddi_dir(void) { static char p[1100]; snprintf(p, sizeof p, "%s", gpath("GIDDI")); return p; }
-static void cc_init(void)
-{
-    FILE *f;
-    char line[256];
-    int k;
-    cc_devices(g_ccdev, giddi_dir());
-    if (g_ccsel_init) return;
-    g_ccsel_init = 1;
-    if ((f = fopen(gpath("INPUT.MAP"), "rb"))) {   /* the devices the current INPUT.MAP uses */
-        while (fgets(line, sizeof line, f)) {
-            char sg[8], dv[32];
-            if (sscanf(line, " %7s %31s", sg, dv) == 2 && (sg[0] == '+' || sg[0] == '-'))
-                for (k = 0; k < CC_DEVICES; k++) if (strcmp(dv, CC_DEVNAME[k]) == 0) g_ccsel[k] = 1;
-        }
-        fclose(f);
-    } else g_ccsel[2] = 1;
-}
-static int cc_write_inputmap(SDL_Renderer *rd, SDL_Texture *tx, int headless, const cc_config *c)
-{
-    static char out[65536];
-    size_t n = cc_generate(c, g_ccdev, g_ccsel, out, sizeof out);
-    char path[1100], bak[1100];
-    FILE *f;
-    if (!n) { shell_message(rd, tx, headless, "Error: Sim can not|handle that many controls.#Ok"); return -1; }
-    snprintf(path, sizeof path, "%s/INPUT.MAP", g_dir);
-    snprintf(bak, sizeof bak, "%s/INPUT.BAK", g_dir);
-    remove(bak);
-    rename(path, bak);                               /* input.map -> input.bak, as the original */
-    if (!(f = fopen(path, "wb")) || fwrite(out, 1, n, f) != n) { if (f) fclose(f); rename(bak, path); return -1; }
-    fclose(f);
-    shell_message(rd, tx, headless, "Cockpit Control Configured.#Ok");
-    return 0;
 }
 static smk *g_cclogo;          /* the amwlogo1 clip at (120,4), as FUN_00021020 plays it on these pages */
 static Uint32 g_cclogo_t;
@@ -914,119 +864,6 @@ static void cc_frame(int lines)
     if (lines) {
         int red = cc_colour(255, 16, 24);
         for (y = 120; y <= 470; y++) for (x = 0; x < 2; x++) memcpy(g_fb + ((size_t)y * W + (size_t)(x ? 477 : 172)) * 3, g_bg.pal[red], 3);
-    }
-}
-static void cc_present(SDL_Renderer *rd, SDL_Texture *tx)
-{
-    SDL_UpdateTexture(tx, NULL, g_fb, W * 3);
-    SDL_RenderClear(rd); SDL_RenderCopy(rd, tx, NULL, NULL); text_layer_draw(rd); SDL_RenderPresent(rd);
-    SDL_Delay(15);
-}
-static void cc_text(int x, int y, const char *t, int col) { draw_text(&g_fthin, x, y, t, (const uint8_t (*)[3])g_bg.pal, col); }
-
-static void cc_editor(SDL_Renderer *rd, SDL_Texture *tx, int headless, cc_config *cfg)
-{
-    static const char *LEVEL[4] = {"Primary Controls", "Secondary Controls", "Tertiary Controls", "Quaternary Controls"};
-    static const char *DIRL[7][2] = {{"-/+", "+/-"}, {"L/R", "R/L"}, {"L/R", "R/L"}, {"D/U", "U/D"}, {"L/R", "R/L"}, {"D/U", "U/D"}, {"I/O", "O/I"}};
-    static const char *MODL[5] = {"--", "Ctrl", "Alt", "--", "Shft"};
-    int done = 0, level = 0, shown = 2, sel = -1, half = 0, scroll = 0, k, f = 0;
-    int white = -1, grey = cc_colour(154, 154, 154), red = cc_colour(255, 16, 24);
-    char msg[64] = "";
-    while (!done) {
-        SDL_Event e;
-        const cc_device *d = &g_ccdev[shown];
-        int mx = -1, my = -1, button = 0, wheel = 0;
-        cc_frame(1);
-        cc_text(0, 110, "INPUT DEVICES", grey);
-        for (k = 0; k < CC_DEVICES; k++) cc_text(0, 132 + 11 * k, g_ccdev[k].title, k == shown ? red : g_ccsel[k] ? white : grey);   /* DOS: the selected white, others grey */
-        cc_text(0, 275, "Current Config:", grey);
-        cc_text(8, 286, cfg->name, white);
-        cc_text(0, 308, "RESET DEFAULTS", white);
-        for (k = 0; k < 4; k++) { char t[24]; snprintf(t, sizeof t, "Load Custom %d", k + 1); cc_text(0, 330 + 11 * k, t, white);
-                                  snprintf(t, sizeof t, "Save Custom %d", k + 1); cc_text(0, 385 + 11 * k, t, white); }
-        cc_text(0, 440, "ACCEPT CONFIG AND EXIT", white);
-        cc_text(0, 462, "ABORT", white);
-        cc_text(175, 110, "GAME CONTROLS", grey);
-        cc_text(367 - text_width(&g_fthin, LEVEL[level]) / 2, 110, LEVEL[level], white);
-        for (k = 0; k < CC_CONTROLS; k++) {
-            const cc_binding *b = &cfg->b[level][k];
-            char t[96];
-            int y = 132 + 11 * k, x = 175 + text_width(&g_fthin, CC_LABEL[k]);
-            cc_text(175, y, CC_LABEL[k], k == sel ? red : grey);
-            if (k <= 6) cc_text(x + 1, y, DIRL[k][(b->flags & 0x80000000u) ? 1 : 0], k == sel ? red : white);   /* 1 px after the label */
-            { const char *mt = b->device >= 0 ? MODL[b->flags & 7] : "--"; cc_text(270 - text_width(&g_fthin, mt) / 2, y, mt, white); }   /* centred on 270 */
-            cc_describe(b, g_ccdev, t, sizeof t);
-            if (k == sel && half) cc_text(285, y, "?", white);
-            else {   /* a pair: "dev a" then "/b" one pixel further (DOS capture) */
-                char *sl = b->type == 2 ? strchr(t, '/') : NULL;
-                if (sl) { *sl = 0; cc_text(285, y, t, white); cc_text(285 + text_width(&g_fthin, t) + 1, y, "/", white); cc_text(285 + text_width(&g_fthin, t) + 1 + text_width(&g_fthin, "/"), y, sl + 1, white); }
-                else cc_text(285, y, t, white);
-            }
-        }
-        cc_text(480, 110, d->title, grey);
-        {
-            int y = 132, i;
-            cc_text(480, y, "Directional", grey); y += 22;
-            for (i = 0; i < d->naxis; i++, y += 11) cc_text(480, y, d->axis[i].label, grey);
-            y = 242;
-            cc_text(480, y, "Buttons", grey); y += 22;
-            for (i = scroll; i < d->nbutton && y < 470; i++, y += 11) cc_text(480, y, d->button[i].label, grey);
-        }
-        if (msg[0]) cc_text(176, 470, msg, red);
-        f++;
-        if (headless) { if (f >= 2) done = 1; continue; }
-        while (SDL_PollEvent(&e)) {
-            if (e.type == SDL_QUIT) { done = 1; break; }
-            if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_ESCAPE) done = 1;
-            if (e.type == SDL_MOUSEWHEEL) wheel = e.wheel.y;
-            if (e.type == SDL_MOUSEBUTTONDOWN) { mx = e.button.x; my = e.button.y; button = e.button.button; }
-        }
-        if (wheel && mx < 0) { scroll -= wheel * 3; if (scroll < 0) scroll = 0; if (scroll > d->nbutton - 10) scroll = d->nbutton > 10 ? d->nbutton - 10 : 0; }
-        if (mx >= 0) {
-            int row = (my - 132) / 11;
-            msg[0] = 0;
-            if (mx < 172) {
-                if (my >= 132 && my < 132 + 11 * CC_DEVICES) { shown = row; scroll = 0; }
-                else if (my >= 308 && my < 319) { cc_merge_defaults(cfg, giddi_dir(), g_ccsel); }
-                else if (my >= 330 && my < 374) {
-                    char p[1100];
-                    snprintf(p, sizeof p, "%.1000s/CONFIG%02d.CPC", giddi_dir(), (my - 330) / 11 + 1);
-                    if (cc_load(cfg, p) == 0) snprintf(g_ccname, sizeof g_ccname, "%s", cfg->name); else snprintf(msg, sizeof msg, "No configuration saved there.");
-                } else if (my >= 385 && my < 429) {
-                    char p[1100], m[64];
-                    int n = (my - 385) / 11 + 1;
-                    snprintf(cfg->name, sizeof cfg->name, "Custom Config #%d", n);
-                    snprintf(p, sizeof p, "%.1000s/CONFIG%02d.CPC", giddi_dir(), n);
-                    if (cc_save(cfg, p) == 0) { snprintf(m, sizeof m, "Configuration %d Saved.#Ok", n); shell_message(rd, tx, headless, m); }
-                } else if (my >= 440 && my < 451) { if (cc_write_inputmap(rd, tx, headless, cfg) == 0) { snprintf(g_ccname, sizeof g_ccname, "%s", cfg->name); done = 1; } }
-                else if (my >= 462 && my < 473) done = 1;
-            } else if (mx < 477) {
-                if (my >= 110 && my < 121) level = (level + 1) % CC_LEVELS;
-                else if (row >= 0 && row < CC_CONTROLS && my >= 132) {
-                    cc_binding *b = &cfg->b[level][row];
-                    int lw = 175 + text_width(&g_fthin, CC_LABEL[row]);
-                    if (button == SDL_BUTTON_RIGHT) { b->device = -1; b->flags = 0; sel = -1; }
-                    else if (mx >= 250 && mx < 285) { int m = (int)(b->flags & 7); m = m == 0 ? 1 : m == 1 ? 2 : m == 2 ? 4 : 0; b->flags = (b->flags & ~7u) | (uint32_t)m; }
-                    else if (row <= 6 && mx >= lw && mx < lw + 24) b->flags ^= 0x80000000u;
-                    else { sel = row; half = 0; }
-                }
-            } else if (sel >= 0) {   /* an input of the shown device */
-                cc_binding *b = &cfg->b[level][sel];
-                int y = 154, i, hit = -1, axis = 0;
-                for (i = 0; i < d->naxis; i++, y += 11) if (my >= y && my < y + 11) { hit = i; axis = 1; }
-                y = 264;
-                for (i = scroll; i < d->nbutton && y < 470; i++, y += 11) if (my >= y && my < y + 11) { hit = i; axis = 0; }
-                if (hit >= 0) {
-                    if (axis && sel <= 6) { b->type = 0; b->device = shown; b->a = hit; b->b = 0; sel = -1; }
-                    else if (!axis && sel <= 6) {
-                        if (!half) { b->type = 2; b->device = shown; b->a = hit; b->b = hit; half = 1; }
-                        else { b->b = hit; half = 0; sel = -1; }
-                    } else if (!axis) { b->type = 1; b->device = shown; b->a = hit; b->b = shown == 2 ? -1 : 0; sel = -1; }
-                    else snprintf(msg, sizeof msg, "That control takes a button.");
-                }
-            }
-        }
-        cc_present(rd, tx);
     }
 }
 

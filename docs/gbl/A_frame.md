@@ -395,6 +395,12 @@ Background idx 4 (entry 3, 0x21f49). The decompile is the base function line for
 two lines, mouse field offsets +0x2b/+0x2f -> +0x2c/+0x30 because the mouse object grew by one byte). Device list,
 "Current Config: Default Config", ACCEPT / CUSTOM CONFIGURATION / ABORT and the legend match the base screen; the device
 names come from GIDDI\ (not in the EXE). No functional difference found.
+Traced further for the port (agent S, src/cockpitcfg.c, tools/gbl/gbl_frame.c): drivers numbered in GIDDI\*.DLL order
+(FUN_0001a530), every CPC renumbered by name on loading (FUN_00020fc0); CONFIG00.CPC read on entry (FUN_000213e0(0)) and
+the selection taken from it (FUN_00020ee0: keyboard + used drivers, at most 4); the keyboard cannot be toggled, a 5th
+driver cannot be selected (0x20040; the others drawn grey, 0x1ffe0); ACCEPT writes only after a change (0x20180) and
+saves CONFIG00.CPC (FUN_00021d80); the editor is widget table 0x7b8e4 ("Page One".."Page Four", NEXT PAGE, only the
+selected drivers listed). DOSBox runs of each GBL driver: tests/gbl/cockpit/ (INPUT.MAP + CONFIG00.CPC).
 
 ### 4.4 HALL OF HONOR (case 3) - `FUN_0002b910` (base FUN_00028250) - A_hoh.png (empty), A_hoh_pilot.png (one pilot)
 - Background idx 2 (entry 1); clip amwlogo1 at (120, 4) flags 4.

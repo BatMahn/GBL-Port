@@ -27,3 +27,12 @@
 - **Sound:** the disc's CD audio as the music, the briefing and debriefing voices, and the menu clips' own sound. There
   is no MIDI, as in the original.
 - **No CD check.**
+- **Weapons and effects:** GBL's new projectiles are drawn in all three looks: the Torpedo, Arrow IV, NARC and the
+  Flamer. The burning effect follows the 'Mech it hit. Each mission uses its own projectile and effect sets, with their
+  own blast sizes, and shots start ahead of the 'Mech as in the original. Torpedo guidance matches it too.
+- **Aircraft and hovercraft fly:** fighters, helicopters, submarines and hovercraft hold their height as in GBL. The
+  JumpShip fighters in the last mission now attack the ship.
+- **Wrecks:** a unit that runs into a wreck blows it apart, as in the original, so escorts no longer get stuck (MARO).
+- **The BRAN lift** carries you up into the station as in the original; the mission no longer fails at the start.
+- **Cockpit Controls:** all twelve of GBL's control drivers, written to INPUT.MAP exactly as the original shell does,
+  and a gamepad option (Xbox / PlayStation / Switch controllers).

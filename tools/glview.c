@@ -147,6 +147,36 @@ static int        g_im_ok, g_im_mouse;   /* g_im_mouse: INPUT.MAP uses the mouse
 static float      g_eye_pan, g_eye_tilt, g_zoom = 1.0f;   /* pilot_pan / pilot_tilt / zoom_factor (the cockpit view) */
 #define A(name) (g_im_ok && im_action(&g_im, name, k, e.key.keysym.mod))
 #define H(name) (g_im_ok && im_held(&g_im, name, ks))
+/* the gamepad (port addition, "gamepad" in INPUT.MAP): the first SDL game controller; plugged in later: taken if none is
+ * open; pulled out: the next one present, if any */
+static void pad_open_first(void)
+{
+    int i;
+    for (i = 0; i < SDL_NumJoysticks() && !g_im_dev.pad; i++)
+        if (SDL_IsGameController(i)) g_im_dev.pad = SDL_GameControllerOpen(i);
+    if (g_im_dev.pad) printf("controls: gamepad %s\n", SDL_GameControllerName(g_im_dev.pad));
+}
+static void pad_hotplug(const SDL_Event *e)
+{
+    if (!g_im_ok || !im_uses(&g_im, 4)) return;
+    if (e->type == SDL_CONTROLLERDEVICEADDED && !g_im_dev.pad) pad_open_first();
+    else if (e->type == SDL_CONTROLLERDEVICEREMOVED && g_im_dev.pad &&
+             e->cdevice.which == SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(g_im_dev.pad))) {
+        SDL_GameControllerClose(g_im_dev.pad);
+        g_im_dev.pad = NULL;
+        pad_open_first();
+    }
+}
+/* a gamepad stick on a control the original sets by position (throttle, torso_pan / tilt, pilot_pan / tilt) moves it
+ * at a rate instead - full deflection: the control's whole half range a second (ASSUMED; a sprung stick held to the
+ * side would otherwise have to stay there); 0 if the gamepad has no block on it, *on = it has one that holds */
+static float pad_rate(const char *control, const Uint8 *ks, int *on)
+{
+    int pr = 0;
+    float a = g_im_ok && g_im_dev.pad ? im_axis(&g_im, control, ks, 4, &pr) : 0;
+    *on = pr == 2 && g_im_dev.pad != NULL;
+    return *on ? a : 0;
+}
 
 static mech3d    g_mech;          /* the viewed mech, kept for posing */
 static float     g_test_vhead;    /* TEST ONLY (MW2_TEST_VIEWER's third value): the viewed mech's heading */
@@ -504,7 +534,7 @@ static void ti_particles(glr *r, const glr_view *v, float now_ticks, const char 
             const msim_shot *sh = &g_sim.shots[q];
             int kind = combat_weapon_kind(sh->weapon), i;
             float d[3], o[3], dx, dy, dz;
-            if (kind != 3 && kind != 4) continue;
+            if (kind != 3 && kind != 4 && kind != 9 && kind != 10 && kind != 12) continue;   /* (GBL: torpedo, Arrow IV, NARC too) */
             if (g_tip_n + 1 >= TI_EMIT_MAX) break;
             d[0] = sh->vx * dt; d[1] = sh->vy * dt; d[2] = sh->vz * dt;
             o[0] = sh->x - d[0]; o[1] = sh->y - d[1]; o[2] = sh->z - d[2];
@@ -651,11 +681,20 @@ static void on_effect(void *u, int type, const float pos[3])
     int snd;
     (void)u;
     if (!g_fx_ok) return;
-    {
+    if (g_sim.fxw && g_sim.fx_index >= 0) {
+        /* the sim's own pool started it (msim fx_start: GBL 0x52040's slot, refusal, follow and orientation): shown as that */
+        if (fx_adopt(&g_fxw, &g_fxd, &g_sim.fxw->e[g_sim.fx_index]) < 0) return;
+    } else {
         int fi = fx_spawn(&g_fxw, &g_fxd, type, pos, (int32_t)((int64_t)g_sim.now * 182 / 1000));
         if (fi < 0) { g_sim.fx_refused = 1; return; }   /* nor its chunks */
         g_fxw.e[fi].has_rot = g_sim.fx_rot_ok;   /* a muzzle flash / jet flame: its mount node's orientation (0x10044a70) */
         if (g_sim.fx_rot_ok) memcpy(g_fxw.e[fi].rot, g_sim.fx_rot, sizeof g_fxw.e[fi].rot);
+        if (fx_flags(type) & 1) {
+            /* GBL 0x52040: an effect that follows its object (flags 1: the burning one) - struck on a unit, it hangs on the
+             * unit's object (0x39410 -> 0x1e870) for its whole time; anywhere else it lasts 0xb6 ticks */
+            if (g_sim.fx_follow >= -1) g_fxw.e[fi].follow = g_sim.fx_follow;
+            else g_fxw.e[fi].end = g_fxw.e[fi].start + 0xb6;
+        }
     }
     if (getenv("MW2_FX_TRACE")) fprintf(stderr, "fx %.1fs type %x at %.0f,%.0f,%.0f\n", g_sim.now / 1000.0, type, pos[0], pos[1], pos[2]);
     snd = fx_sound(type);
@@ -853,19 +892,25 @@ static void on_radio(void *user, const char *name)
         }
     }
 }
-static float g_proj_len[3];
-/* the laser bolt's launch offset: 2 x its model's radius (0x10044ac0 / DOS 0x53410: the object put at the mount plus the
- * course x 2 x model +0x40; +0x40 the farthest vertex from the vertex box's centre, 0x10029060 / DOS 0x37f60, of the
- * vertices scaled by the OBJ scale at load, 0x100420b0 -> 0x10042140 / DOS 0x501a9) */
-static float g_proj_off[3];
+#define PROJ_SLOTS 12   /* 0-2 LASER1-3, 3 LRM, 4 BULLET, 5 PPCSHOT1, 6 SRM, 7-8 debris, 9 TORPEDO, 10 ARROW4, 11 NARC */
+static float g_proj_len[PROJ_SLOTS];   /* the laser models' length (MW2_DOS_LASERS' glowing balls) */
 static int   g_dos_lasers;
 static int   g_tex_kind;   /* the texture archive's kind (the command line's): 3 "dos" - the DOS GBL MW2.PRJ, the DOS and
                             * ENHANCED looks; 5 "titanium" - the Titanium archive, the TITANIUM look */
 static int   g_dos_tc;     /* the ENHANCED look (MW2_EDITION=enhanced with the DOS archive): the DOS renderer in true colour
                             * with the Titanium SKYGND.PAR fog (glr_view.dos_tc) */
 static void enhanced_fog(const char *mission, glr_view *v);
-static mech3d_part g_proj[9];   /* projectile models: LASER1-3, MISSILE1, BULLET, PPCSHOT1, MISSILE2; debris CHUNKER1-2 */
-static float     g_proj_scale[7][3];   /* the pool object's OBJ scale (x, y, z) for slots 0-6 (MW2_SHT1) */
+static mech3d_part g_proj[PROJ_SLOTS];   /* projectile models: LASER1-3, MISSILE1, BULLET, PPCSHOT1, MISSILE2; debris CHUNKER1-2;
+                                        * GBL's TORPEDO, ARROW4, NARC (kinds 9, 10, 12) */
+static float     g_proj_scale[PROJ_SLOTS][3];   /* the pool object's OBJ scale (x, y, z) per slot (MW2_SHT1) */
+/* GBL's Flamer (kind 8): its pool objects are colour type 3 cards - XPL8_0..3 / XPL9_0..3 (0x3f80..0x3fe0: texture slots
+ * 248..254 of mw2_xpl1, A9FLA209-10 and A9FLAM01-15), 32 of them in the order f8 f9 fb fc fa fb fd fe x 4; a Flamer shot takes
+ * the first free one (0x53823), so its card is the pool entry's: per entry the slot, and the billboard's foot (texel u 0,
+ * v > 0) and top (u 0, v 0) x the OBJ scale (2) in the object's frame (x right, y up, z along the course - 0x54730 turns
+ * the object to the course; flags 0x40: not pushed ahead). [0] the mission's archive, [1] the Titanium pool */
+#define FLAME_MAX 32
+static int       g_flame_n[2], g_flame_slot[2][FLAME_MAX];
+static float     g_flame_foot[2][FLAME_MAX][3], g_flame_top[2][FLAME_MAX][3];
 /* the PPC (kind 6) and gauss (kind 7) cards: their pool object's colour 0x3xxx -> texture slot (w >> 4) & 0xff (3D 0x0b /
  * 0x0d, DOS 0x52 a9ppcs01 / 0x5a a9gaus01), and half the card's height (foot to top) x its OBJ y scale */
 /* [0] the mission's archive (3D 0x0b / 0x0d, DOS 0x52 / 0x5a); [1] TEXTURES TITANIUM: the Titanium archive's own pool
@@ -882,29 +927,34 @@ static int       g_proj_ok;
  * first, the debris and torpedo / Narc / Arrow IV pools added, kinds 3 and 4 both MISSLE1): the 16-bit engine has only
  * its own archive, so its projectiles take the pool entry of the weapon's kind (BTHG, 0x10072a7d / the projectile maker
  * 0x1006ca99) and its debris chunks the type 0x0b XPLO entries (CHUNKER1 / CHUNKER2, 0x10072b53) from it */
-static mech3d_part g_tiproj[9];
-static float     g_tiproj_scale[7][3], g_tiproj_len[3], g_tiproj_off[3];
+static mech3d_part g_tiproj[PROJ_SLOTS];
+static float     g_tiproj_scale[PROJ_SLOTS][3];
 static prj_archive *g_tiproj_src;
-static void load_projectiles_into(prj_archive *a, mech3d_part *proj, float (*pscale)[3], float *plen, float *poff, int cs);
+/* the mission's pool records (fx_pool_records: the scene's includes holding XPLO / BTHG - MW2_SHT1, GBL's petesht1 / zackSHT1,
+ * base MW2_SHT2 ...): the engine loads the pool from whatever the scene includes; the Titanium archive holds the same names */
+static char g_pool_names[8][17] = {"MW2_SHT1"};
+static int  g_pool_n = 1;
+static void load_projectiles_into(prj_archive *a, mech3d_part *proj, float (*pscale)[3], int cs);
 static void load_projectiles(prj_archive *a)
 {
     if (g_proj_ok) return;
-    load_projectiles_into(a, g_proj, g_proj_scale, g_proj_len, g_proj_off, 0);
+    load_projectiles_into(a, g_proj, g_proj_scale, 0);
     g_proj_ok = 1;
 }
 static void load_ti_projectiles(void)
 {
     int i;
     if (!c3d_ti || g_tiproj_src == c3d_ti) return;
-    if (g_tiproj_src) for (i = 0; i < 9; i++) wtb_free(&g_tiproj[i].model);
-    load_projectiles_into(c3d_ti, g_tiproj, g_tiproj_scale, g_tiproj_len, g_tiproj_off, 1);
-    for (i = 0; i < 9; i++) g_tiproj[i].ti = 1;   /* (its colour words read the Titanium way) */
+    if (g_tiproj_src) for (i = 0; i < PROJ_SLOTS; i++) wtb_free(&g_tiproj[i].model);
+    load_projectiles_into(c3d_ti, g_tiproj, g_tiproj_scale, 1);
+    for (i = 0; i < PROJ_SLOTS; i++) g_tiproj[i].ti = 1;   /* (its colour words read the Titanium way) */
     g_tiproj_src = c3d_ti;
-    printf("titanium: pool models %s %s %s %s %s %s %s, debris %s %s\n", g_tiproj[0].model_name, g_tiproj[1].model_name, g_tiproj[2].model_name,
-           g_tiproj[3].model_name, g_tiproj[4].model_name, g_tiproj[5].model_name, g_tiproj[6].model_name, g_tiproj[7].model_name, g_tiproj[8].model_name);
+    printf("titanium: pool models %s %s %s %s %s %s %s, debris %s %s, %s %s %s, flamer cards %d\n", g_tiproj[0].model_name, g_tiproj[1].model_name, g_tiproj[2].model_name,
+           g_tiproj[3].model_name, g_tiproj[4].model_name, g_tiproj[5].model_name, g_tiproj[6].model_name, g_tiproj[7].model_name, g_tiproj[8].model_name,
+           g_tiproj[9].model_name, g_tiproj[10].model_name, g_tiproj[11].model_name, g_flame_n[1]);
     printf("titanium: cards PPC slot 0x%02x half %.0f, gauss slot 0x%02x half %.0f\n", g_card_slot[1][0], g_card_half[1][0], g_card_slot[1][1], g_card_half[1][1]);
 }
-static void load_projectiles_into(prj_archive *a, mech3d_part *proj, float (*pscale)[3], float *plen, float *poff, int cs)
+static void load_projectiles_into(prj_archive *a, mech3d_part *proj, float (*pscale)[3], int cs)
 {
     int seen[2] = {0, 0};   /* the cards: the first pool entry of each kind */
     /* the projectile objects come from the pool record MW2_SHT1 (engine 0x10043dc5 / DOS 0x50xxx: the first free pool
@@ -913,111 +963,130 @@ static void load_projectiles_into(prj_archive *a, mech3d_part *proj, float (*psc
      * the DOS one MISSLE1 for both (no MISSILE1 / MISSILE2 records at all: DOS missiles were never drawn) - so the
      * model is taken by the pool's id, not by a name. Slots: kind 0-2 -> 0-2, 4 -> 3, 5 -> 4, 6 -> 5, 3 -> 6. The
      * names below are the fallback (an archive without the pool) and the debris chunks (7, 8). */
-    static const char *names[9] = {"LASER1", "LASER2", "LASER3", "MISSILE1", "BULLET", "PPCSHOT1", "MISSILE2", "CHUNKER1", "CHUNKER2"};
-    static const int SLOT_OF_KIND[7] = {0, 1, 2, 6, 3, 4, 5};
-    int i, have[9] = {0};
+    static const char *names[PROJ_SLOTS] = {"LASER1", "LASER2", "LASER3", "MISSILE1", "BULLET", "PPCSHOT1", "MISSILE2", "CHUNKER1", "CHUNKER2",
+                                            "TORPEDO", "ARROW4", "NARC"};
+    /* kinds 0-12 -> slot (-1: a card - 6 PPC / 7 gauss / 8 Flamer - or none); GBL: 9 TORPEDO, 10 ARROW4, 12 NARC */
+    static const int SLOT_OF_KIND[13] = {0, 1, 2, 6, 3, 4, 5, -1, -1, 9, 10, -1, 11};
+    int i, have[PROJ_SLOTS] = {0};
     prj_record r;
-    for (i = 0; i < 7; i++) pscale[i][0] = pscale[i][1] = pscale[i][2] = 1.0f;
+    g_flame_n[cs] = 0;
+    for (i = 0; i < PROJ_SLOTS; i++) pscale[i][0] = pscale[i][1] = pscale[i][2] = 1.0f;
     pscale[0][0] = pscale[0][1] = pscale[1][0] = pscale[1][1] = pscale[2][0] = pscale[2][1] = 3.0f;
     pscale[0][2] = pscale[1][2] = pscale[2][2] = 12.0f;   /* the lasers' (3, 3, 12) if no pool */
-    for (i = 0; i < 9; i++) {
+    for (i = 0; i < PROJ_SLOTS; i++) {
         memset(&proj[i], 0, sizeof proj[i]);
         snprintf(proj[i].model_name, sizeof proj[i].model_name, "%s", names[i]);
         proj[i].node = -1;
     }
-    if (prj_read_named(a, "BWD", "MW2_SHT1", &r) == PRJ_OK) {
-        int n = bwd_chunks(r.data, r.size, NULL, 0), k, pt = prj_find_type(a, "POLY"), sl;
-        bwd_chunk *c = n > 0 ? calloc((size_t)n, sizeof *c) : NULL;
-        bwd_obj ob;
-        int got = 0;
-        if (c) bwd_chunks(r.data, r.size, c, n);
-        for (k = 0; c && k < n; k++) {
-            if (strcmp(c[k].tag, "OBJ") == 0) got = bwd_obj_decode(&c[k], &ob) == 0;
-            else if (strcmp(c[k].tag, "XPLO") == 0 && got && c[k].size >= 6 && (c[k].data[4] | c[k].data[5] << 8) == 0x0b) {
-                /* the debris chunks: the pool's effect type 0x0b objects (XPLO {u16 id, i16, u16 type}, 0x10072b06 /
-                 * 3D 0x1003ed54), alternately (CHUNKER1 / CHUNKER2 in both archives) - the first two models */
-                prj_record mr;
-                got = 0;
-                sl = !have[7] ? 7 : !have[8] ? 8 : -1;
-                if (sl < 0 || pt < 0 || prj_read(a, pt, ob.model, &mr) != PRJ_OK) continue;
-                if (wtb_parse(mr.data, mr.size, &proj[sl].model) == 0 && proj[sl].model.object_count > 0) {
-                    int q;
-                    for (q = 0; q < prj_symbol_count(a, pt); q++)
-                        if (prj_symbol_id(a, pt, q) == ob.model) { snprintf(proj[sl].model_name, sizeof proj[sl].model_name, "%s", prj_symbol_name(a, pt, q)); break; }
-                    if (sl == 8 && strcmp(proj[8].model_name, proj[7].model_name) == 0) { wtb_free(&proj[8].model); proj[8].model_name[0] = 0; }
-                    else have[sl] = 1;
-                }
-                prj_record_free(&mr);
-            }
-            else if (strcmp(c[k].tag, "BTHG") == 0 && got && c[k].size >= 4) {
-                int kind = c[k].data[2] | c[k].data[3] << 8;
-                prj_record mr;
-                got = 0;
-                if (kind == 6 || kind == 7) {
-                    wtb_model cm;   /* a card (set cs): its texture slot and size (the first pool entry of the kind) */
-                    if (seen[kind - 6]++ || pt < 0 || prj_read(a, pt, ob.model, &mr) != PRJ_OK) continue;
-                    if (wtb_parse(mr.data, mr.size, &cm) == 0 && cm.object_count > 0 && cm.objects[0].poly_count > 0 &&
-                        (cm.objects[0].polys[0].color & 0x7000) == 0x3000) {
-                        const wtb_object *o = &cm.objects[0];
-                        int q, lo = 1 << 30, hi = -(1 << 30);
-                        g_card_slot[cs][kind - 6] = (o->polys[0].color >> 4) & 0xff;
-                        for (q = 0; q < o->vert_count; q++) if (o->verts[q].a == 0) { if (o->verts[q].y < lo) lo = o->verts[q].y; if (o->verts[q].y > hi) hi = o->verts[q].y; }
-                        if (hi > lo) g_card_half[cs][kind - 6] = (float)(hi - lo) * 0.5f * (ob.scale[1] > 0 ? (float)ob.scale[1] : 1.0f);
-                        if (o->polys[0].n == 3) {
-                            for (q = 0; q < 3; q++) {
-                                const wtb_vertex *vv = &o->verts[o->polys[0].idx[q]];
-                                g_card_tri[cs][kind - 6][q][0] = (float)vv->x * (ob.scale[0] > 0 ? (float)ob.scale[0] : 1.0f);
-                                g_card_tri[cs][kind - 6][q][1] = (float)vv->y * (ob.scale[1] > 0 ? (float)ob.scale[1] : 1.0f);
-                                g_card_tri[cs][kind - 6][q][2] = (float)vv->z * (ob.scale[2] > 0 ? (float)ob.scale[2] : 1.0f);
-                            }
-                            g_card_tri_ok[cs][kind - 6] = 1;
+    {   /* the mission's pool records in turn (MW2_SHT1 if the archive has none of them) */
+        int pr, ok = 0;
+        for (pr = 0; pr < g_pool_n; pr++) if (prj_read_named(a, "BWD", g_pool_names[pr], &r) == PRJ_OK) { prj_record_free(&r); ok = 1; }
+        for (pr = 0; pr < (ok ? g_pool_n : 1); pr++) {
+            if (prj_read_named(a, "BWD", ok ? g_pool_names[pr] : "MW2_SHT1", &r) == PRJ_OK) {
+                int n = bwd_chunks(r.data, r.size, NULL, 0), k, pt = prj_find_type(a, "POLY"), sl;
+                bwd_chunk *c = n > 0 ? calloc((size_t)n, sizeof *c) : NULL;
+                bwd_obj ob;
+                int got = 0;
+                if (c) bwd_chunks(r.data, r.size, c, n);
+                for (k = 0; c && k < n; k++) {
+                    if (strcmp(c[k].tag, "OBJ") == 0) got = bwd_obj_decode(&c[k], &ob) == 0;
+                    else if (strcmp(c[k].tag, "XPLO") == 0 && got && c[k].size >= 6 && (c[k].data[4] | c[k].data[5] << 8) == 0x0b) {
+                        /* the debris chunks: the pool's effect type 0x0b objects (XPLO {u16 id, i16, u16 type}, 0x10072b06 /
+                         * 3D 0x1003ed54), alternately (CHUNKER1 / CHUNKER2 in both archives) - the first two models */
+                        prj_record mr;
+                        got = 0;
+                        sl = !have[7] ? 7 : !have[8] ? 8 : -1;
+                        if (sl < 0 || pt < 0 || prj_read(a, pt, ob.model, &mr) != PRJ_OK) continue;
+                        if (wtb_parse(mr.data, mr.size, &proj[sl].model) == 0 && proj[sl].model.object_count > 0) {
+                            int q;
+                            for (q = 0; q < prj_symbol_count(a, pt); q++)
+                                if (prj_symbol_id(a, pt, q) == ob.model) { snprintf(proj[sl].model_name, sizeof proj[sl].model_name, "%s", prj_symbol_name(a, pt, q)); break; }
+                            if (sl == 8 && strcmp(proj[8].model_name, proj[7].model_name) == 0) { wtb_free(&proj[8].model); proj[8].model_name[0] = 0; }
+                            else have[sl] = 1;
                         }
-                        wtb_free(&cm);
+                        prj_record_free(&mr);
                     }
-                    prj_record_free(&mr);
-                    continue;
-                }
-                if (kind < 0 || kind > 6 || have[sl = SLOT_OF_KIND[kind]]) continue;
-                if (pt >= 0 && prj_read(a, pt, ob.model, &mr) == PRJ_OK) {
-                    if (wtb_parse(mr.data, mr.size, &proj[sl].model) == 0 && proj[sl].model.object_count > 0) {
-                        int q;
-                        have[sl] = 1;
-                        for (q = 0; q < prj_symbol_count(a, pt); q++)
-                            if (prj_symbol_id(a, pt, q) == ob.model) { snprintf(proj[sl].model_name, sizeof proj[sl].model_name, "%s", prj_symbol_name(a, pt, q)); break; }
-                        for (q = 0; q < 3; q++) pscale[sl][q] = ob.scale[q] > 0 ? (float)ob.scale[q] : 1.0f;
+                    else if (strcmp(c[k].tag, "BTHG") == 0 && got && c[k].size >= 4) {
+                        int kind = c[k].data[2] | c[k].data[3] << 8;
+                        prj_record mr;
+                        got = 0;
+                        if (kind == 6 || kind == 7) {
+                            wtb_model cm;   /* a card (set cs): its texture slot and size (the first pool entry of the kind) */
+                            if (seen[kind - 6]++ || pt < 0 || prj_read(a, pt, ob.model, &mr) != PRJ_OK) continue;
+                            if (wtb_parse(mr.data, mr.size, &cm) == 0 && cm.object_count > 0 && cm.objects[0].poly_count > 0 &&
+                                (cm.objects[0].polys[0].color & 0x7000) == 0x3000) {
+                                const wtb_object *o = &cm.objects[0];
+                                int q, lo = 1 << 30, hi = -(1 << 30);
+                                g_card_slot[cs][kind - 6] = (o->polys[0].color >> 4) & 0xff;
+                                for (q = 0; q < o->vert_count; q++) if (o->verts[q].a == 0) { if (o->verts[q].y < lo) lo = o->verts[q].y; if (o->verts[q].y > hi) hi = o->verts[q].y; }
+                                if (hi > lo) g_card_half[cs][kind - 6] = (float)(hi - lo) * 0.5f * (ob.scale[1] > 0 ? (float)ob.scale[1] : 1.0f);
+                                if (o->polys[0].n == 3) {
+                                    for (q = 0; q < 3; q++) {
+                                        const wtb_vertex *vv = &o->verts[o->polys[0].idx[q]];
+                                        g_card_tri[cs][kind - 6][q][0] = (float)vv->x * (ob.scale[0] > 0 ? (float)ob.scale[0] : 1.0f);
+                                        g_card_tri[cs][kind - 6][q][1] = (float)vv->y * (ob.scale[1] > 0 ? (float)ob.scale[1] : 1.0f);
+                                        g_card_tri[cs][kind - 6][q][2] = (float)vv->z * (ob.scale[2] > 0 ? (float)ob.scale[2] : 1.0f);
+                                    }
+                                    g_card_tri_ok[cs][kind - 6] = 1;
+                                }
+                                wtb_free(&cm);
+                            }
+                            prj_record_free(&mr);
+                            continue;
+                        }
+                        if (kind == 8) {   /* GBL's Flamer: each pool entry's card (see g_flame_slot) */
+                            wtb_model cm;
+                            if (g_flame_n[cs] >= FLAME_MAX || pt < 0 || prj_read(a, pt, ob.model, &mr) != PRJ_OK) continue;
+                            if (wtb_parse(mr.data, mr.size, &cm) == 0) {
+                                if (cm.object_count > 0 && cm.objects[0].poly_count > 0 && (cm.objects[0].polys[0].color & 0xf000) == 0x3000) {
+                                    const wtb_object *o = &cm.objects[0];
+                                    int q, ft = -1, tp = -1, f = g_flame_n[cs]++;
+                                    for (q = 0; q < o->polys[0].n; q++) {   /* the billboard's corners (0x39573 / 3D 0x1002a8e0) */
+                                        const wtb_vertex *vv = &o->verts[o->polys[0].idx[q]];
+                                        if (vv->a != 0) continue;
+                                        if (vv->b == 0) tp = o->polys[0].idx[q]; else ft = o->polys[0].idx[q];
+                                    }
+                                    g_flame_slot[cs][f] = (o->polys[0].color >> 4) & 0xff;
+                                    for (q = 0; q < 3; q++) {
+                                        const float sc = ob.scale[q] > 0 ? (float)ob.scale[q] : 1.0f;
+                                        g_flame_foot[cs][f][q] = ft >= 0 ? (float)(q == 0 ? o->verts[ft].x : q == 1 ? o->verts[ft].y : o->verts[ft].z) * sc : 0.0f;
+                                        g_flame_top[cs][f][q] = tp >= 0 ? (float)(q == 0 ? o->verts[tp].x : q == 1 ? o->verts[tp].y : o->verts[tp].z) * sc : 0.0f;
+                                    }
+                                }
+                                wtb_free(&cm);
+                            }
+                            prj_record_free(&mr);
+                            continue;
+                        }
+                        if (kind < 0 || kind > 12 || (sl = SLOT_OF_KIND[kind]) < 0 || have[sl]) continue;
+                        if (pt >= 0 && prj_read(a, pt, ob.model, &mr) == PRJ_OK) {
+                            if (wtb_parse(mr.data, mr.size, &proj[sl].model) == 0 && proj[sl].model.object_count > 0) {
+                                int q;
+                                have[sl] = 1;
+                                for (q = 0; q < prj_symbol_count(a, pt); q++)
+                                    if (prj_symbol_id(a, pt, q) == ob.model) { snprintf(proj[sl].model_name, sizeof proj[sl].model_name, "%s", prj_symbol_name(a, pt, q)); break; }
+                                for (q = 0; q < 3; q++) pscale[sl][q] = ob.scale[q] > 0 ? (float)ob.scale[q] : 1.0f;
+                            }
+                            prj_record_free(&mr);
+                        }
                     }
-                    prj_record_free(&mr);
                 }
-            }
+                free(c);
+                prj_record_free(&r);
         }
-        free(c);
-        prj_record_free(&r);
+        }
     }
-    for (i = 0; i < 9; i++) {
+    for (i = 0; i < PROJ_SLOTS; i++) {
         if (!have[i] && prj_read_named(a, "POLY", names[i], &r) == PRJ_OK) {
             wtb_parse(r.data, r.size, &proj[i].model);
             prj_record_free(&r);
         }
-        if (i < 3 && proj[i].model.object_count) {
+        if (cs == 0 && i < 3 && proj[i].model.object_count) {
             const wtb_object *o = &proj[i].model.objects[0];
             int k2;
             float lo = 1e9f, hi = -1e9f;
             for (k2 = 0; k2 < o->vert_count; k2++) { if (o->verts[k2].z < lo) lo = (float)o->verts[k2].z; if (o->verts[k2].z > hi) hi = (float)o->verts[k2].z; }
-            plen[i] = hi - lo;
-            {
-                float mn[3] = {1e9f, 1e9f, 1e9f}, mx[3] = {-1e9f, -1e9f, -1e9f}, ctr[3], r2 = 0;
-                int c2;
-                for (k2 = 0; k2 < o->vert_count; k2++) {
-                    const float vv[3] = {o->verts[k2].x * pscale[i][0], o->verts[k2].y * pscale[i][1], o->verts[k2].z * pscale[i][2]};
-                    for (c2 = 0; c2 < 3; c2++) { if (vv[c2] < mn[c2]) mn[c2] = vv[c2]; if (vv[c2] > mx[c2]) mx[c2] = vv[c2]; }
-                }
-                for (c2 = 0; c2 < 3; c2++) ctr[c2] = (mn[c2] + mx[c2]) * 0.5f;
-                for (k2 = 0; k2 < o->vert_count; k2++) {
-                    const float d0 = o->verts[k2].x * pscale[i][0] - ctr[0], d1 = o->verts[k2].y * pscale[i][1] - ctr[1], d2 = o->verts[k2].z * pscale[i][2] - ctr[2];
-                    if (d0 * d0 + d1 * d1 + d2 * d2 > r2) r2 = d0 * d0 + d1 * d1 + d2 * d2;
-                }
-                poff[i] = 2.0f * sqrtf(r2);
-            }
+            g_proj_len[i] = hi - lo;
         }
     }
 }
@@ -1043,18 +1112,18 @@ static const mech3d_part *ti_debris_part(int k, const mech3d *orig, int part)
  * object's model starts with a colour kind 4 polygon, the palette entry of its vertex 0's texel u (0x10286d40: the
  * palette's 6-bit values x 4) / 128 - for as long as it flies (no life, 0x1002e94f mask 0x107; moved with it,
  * 0x1001194c; freed at its end, 0x10011e45). The model: the Titanium MW2_SHT1 pool entry of the weapon's kind (BTHG). */
-static float   g_tipl[8][3];
+static float   g_tipl[13][3];   /* per projectile kind 0-12 (GBL's 9 / 10 / 12 too) */
 static uint8_t g_tipl_pal[256][3];
 static int     g_tipl_ok;
 static void ti_proj_light(int w, float out[3])
 {
     int kind = combat_weapon_kind(w), q;
     out[0] = out[1] = out[2] = 0.2f;
-    if (!c3d_ti || !c3d_ti_have_scene || kind < 0 || kind > 7) return;
+    if (!c3d_ti || !c3d_ti_have_scene || kind < 0 || kind > 12) return;
     if (!g_tipl_ok || memcmp(g_tipl_pal, c3d_ti_scene.palette, sizeof g_tipl_pal) != 0) {   /* per mission (its palette) */
         prj_record r;
-        int seen[8] = {0};
-        for (q = 0; q < 8; q++) g_tipl[q][0] = g_tipl[q][1] = g_tipl[q][2] = 0.2f;
+        int seen[13] = {0};
+        for (q = 0; q < 13; q++) g_tipl[q][0] = g_tipl[q][1] = g_tipl[q][2] = 0.2f;
         memcpy(g_tipl_pal, c3d_ti_scene.palette, sizeof g_tipl_pal);
         g_tipl_ok = 1;
         if (prj_read_named(c3d_ti, "BWD", "MW2_SHT1", &r) == PRJ_OK) {
@@ -1069,7 +1138,7 @@ static void ti_proj_light(int w, float out[3])
                     prj_record mr;
                     wtb_model wm;
                     got = 0;
-                    if (bk < 0 || bk > 7 || seen[bk]++ || pt < 0 || prj_read(c3d_ti, pt, ob.model, &mr) != PRJ_OK) continue;
+                    if (bk < 0 || bk > 12 || seen[bk]++ || pt < 0 || prj_read(c3d_ti, pt, ob.model, &mr) != PRJ_OK) continue;
                     if (wtb_parse(mr.data, mr.size, &wm) == 0) {
                         if (wm.object_count > 0 && wm.objects[0].poly_count > 0 && wm.objects[0].vert_count > 0 &&
                             (wm.objects[0].polys[0].color & 0xf000) == 0x4000) {
@@ -1090,14 +1159,16 @@ static void ti_proj_light(int w, float out[3])
 /* weapon table +0x04 -> model slot */
 /* the projectile pool object for a weapon (engine 0x10043dc5: the MW2_SHT1 pool entry whose BTHG kind equals the weapon
  * table's +0x00): 0-2 LASER1-3, 3 SRM / Narc MISSILE2, 4 LRM / Streak MISSILE1, 5 BULLET, 6 PPCSHOT1 card, 7 GAS0_0
- * card (the gauss rifle; the flamer has no object, +0x14 = 0); -1 = none. Cards are drawn as sprites below. */
+ * card (the gauss rifle); GBL (0xafecc +0x10): 8 the Flamer's XPL8 / XPL9 cards, 9 TORPEDO, 10 ARROW4, 12 NARC - the
+ * Inferno SRM-2 / SSRM-2 are kind 3 (MISSLE1 as the SRMs); -1 = none. Cards are drawn as sprites below. */
 static int proj_slot_w(int w)
 {
     if (!combat_weapon_has_object(w)) return -1;
     switch (combat_weapon_kind(w)) {
     case 0: return 0; case 1: return 1; case 2: return 2;
     case 3: return 6; case 4: return 3; case 5: return 4;
-    default: return -1;                         /* 6 / 7: cards */
+    case 9: return 9; case 10: return 10; case 12: return 11;   /* GBL: TORPEDO, ARROW4, NARC (MW2_SHT1 BTHG 9 / 10 / 12) */
+    default: return -1;                         /* 6 / 7 / 8 (GBL's Flamer): cards */
     }
 }
 /* message + Betty's voice line (message table 0x1024f144: text, voice SNDS index) */
@@ -3406,8 +3477,14 @@ static int load(glr *r, prj_archive *ma, prj_archive *ta, int ati, const char *r
         g_sim.on_radio = on_radio;
         g_sim.debug_invulnerable = getenv("MW2_DEBUG_INVULN") != NULL;   /* tests: the player survives */
         memset(&g_fxw, 0, sizeof g_fxw);
+        g_pool_n = fx_pool_records(ma, scene, g_pool_names, 8);   /* the mission's projectile / effect pool records */
+        {   /* a later mission: its own effect pool (the sim's effects come with their slot in it, msim fx_start) */
+            static char fx_scene[16];
+            if (g_fx_ok && strcmp(fx_scene, scene) != 0) g_fx_ok = fx_load_scene(ma, &g_fxd, scene) == 0;
+            snprintf(fx_scene, sizeof fx_scene, "%s", scene);
+        }
         if (!g_fx_ok) {
-            g_fx_ok = fx_load(ma, &g_fxd) == 0;
+            g_fx_ok = fx_load_scene(ma, &g_fxd, scene) == 0;
             g_fx_ta = ta; g_fx_ati = ati;   /* before the dump: it loads frames */
             if (g_fx_ok && getenv("MW2_DUMP_FXTEX")) {   /* tests: list effect texture slots and dump the first frame of some */
                 int q;
@@ -4676,6 +4753,23 @@ int main(int argc, char **argv)
         g_im_mouse = g_im_ok && im_uses(&g_im, 2);
         if (g_im_ok && im_uses(&g_im, 1) && SDL_InitSubSystem(SDL_INIT_JOYSTICK) == 0 && SDL_NumJoysticks() > 0)
             g_im_dev.joy = SDL_JoystickOpen(0);   /* the configured stick: the first one SDL finds */
+        if (g_im_ok && im_uses(&g_im, 4) && SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER) == 0) {
+#if SDL_VERSION_ATLEAST(2, 0, 14)
+            if (getenv("MW2_TEST_PAD")) {   /* TEST ONLY: a virtual game controller held as given: "aN=value,bN,..." (SDL axis /
+                                             * button numbers, axis values -32768..32767) */
+                int vi = SDL_JoystickAttachVirtual(SDL_JOYSTICK_TYPE_GAMECONTROLLER, SDL_CONTROLLER_AXIS_MAX, SDL_CONTROLLER_BUTTON_MAX, 0);
+                SDL_Joystick *vj = vi >= 0 ? SDL_JoystickOpen(vi) : NULL;
+                const char *q = getenv("MW2_TEST_PAD");
+                while (vj && *q) {
+                    int n = 0, v = 0;
+                    if (sscanf(q, "a%d=%d", &n, &v) == 2) SDL_JoystickSetVirtualAxis(vj, n, (Sint16)v);
+                    else if (sscanf(q, "b%d", &n) == 1) SDL_JoystickSetVirtualButton(vj, n, 1);
+                    q = strchr(q, ',') ? strchr(q, ',') + 1 : q + strlen(q);
+                }
+            }
+#endif
+            pad_open_first();   /* the gamepad (port addition): the first game controller; later ones as they are plugged in */
+        }
         printf("controls: %d key commands, %d control rules (%s)\n", g_im.nbinds, g_im.nrules, dir);
     }
     if (getenv("MW2_INSTALL_DIR")) {   /* Combat Variables detail (MW2SND.CFG int32 +0x14 object textures, +0x18 terrain textures,
@@ -4848,6 +4942,7 @@ int main(int argc, char **argv)
                       && !(SDL_GetModState() & KMOD_GUI));   /* Cmd held: the system gets its shortcuts back (Cmd+Tab, Cmd+Shift+4 ...) */
         while (SDL_PollEvent(&e)) {
             if (e.type == SDL_QUIT) running = 0;
+            else if (e.type == SDL_CONTROLLERDEVICEADDED || e.type == SDL_CONTROLLERDEVICEREMOVED) pad_hotplug(&e);
             else if ((g_mm_depth || g_paused) && (e.type == SDL_MOUSEMOTION || e.type == SDL_MOUSEBUTTONDOWN || e.type == SDL_MOUSEWHEEL)) continue;   /* controls off (0x1003a3c0) */
             else if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) dragging = 1;
             else if (e.type == SDL_MOUSEBUTTONUP && e.button.button == SDL_BUTTON_LEFT) dragging = 0;
@@ -5215,12 +5310,12 @@ int main(int argc, char **argv)
                     else g_actors[ka].mech.origin[0] = x0 + (int32_t)lrintf(v * ((tn < t1 ? tn : t1) - t0));
                 }
             }
-            if (g_sim_ok && getenv("MW2_MISSILE_TRACE")) {   /* TEST ONLY: the player's missiles in flight (table types 3 / 4) */
+            if (g_sim_ok && getenv("MW2_MISSILE_TRACE")) {   /* TEST ONLY: the player's missiles in flight (table types 3 / 4, GBL 9 / 10 / 12) */
                 int q;
                 for (q = 0; q < g_sim.shot_count; q++) {
                     const msim_shot *ms = &g_sim.shots[q];
                     int kd = combat_weapon_kind(ms->weapon);
-                    if (ms->owner == -1 && (kd == 3 || kd == 4) && ms->life > 0 && ms->y >= 0)
+                    if (ms->owner == -1 && (kd == 3 || kd == 4 || kd == 9 || kd == 10 || kd == 12) && ms->life > 0 && ms->y >= 0)
                         fprintf(stderr, "missile %.3f id %u w %d at %.0f %.0f %.0f v %.1f %.1f %.1f homing %d\n", g_sim.now / 1000.0, ms->id, ms->weapon,
                                 ms->x, ms->y, ms->z, ms->vx, ms->vy, ms->vz, ms->homing);
                 }
@@ -5334,6 +5429,8 @@ int main(int argc, char **argv)
                     if (!cp) {
                         a = g_im_ok ? im_axis(&g_im, "torso_pan", ks, 1, &pr) : 0;
                         if (pr == 2 && g_im_dev.joy) { if (a != last_jp) { sp.val = a; cp = 1; } last_jp = a; }
+                        a = pad_rate("torso_pan", ks, &pr);
+                        if (a != 0) { sp.val += a * dt; sp.vel = 0; cp = 1; }
                         pr = 2;
                         a = g_im_mouse ? (g_im_ok ? im_axis(&g_im, "torso_pan", ks, 2, &pr) : 0) : (float)g_im_dev.mouse_x / 512.0f;
                         if (mp && pr == 2) { if (a != last_mp) { sp.val = a; cp = 1; } last_mp = a; }
@@ -5341,6 +5438,8 @@ int main(int argc, char **argv)
                     if (!ct) {
                         a = g_im_ok ? im_axis(&g_im, "torso_tilt", ks, 1, &pr) : 0;
                         if (pr == 2 && g_im_dev.joy) { if (a != last_jt) { st.val = a; ct = 1; } last_jt = a; }
+                        a = pad_rate("torso_tilt", ks, &pr);
+                        if (a != 0) { st.val += a * dt; st.vel = 0; ct = 1; }
                         pr = 2;
                         a = g_im_mouse ? (g_im_ok ? im_axis(&g_im, "torso_tilt", ks, 2, &pr) : 0) : -(float)g_im_dev.mouse_y / 512.0f;
                         if (mt && pr == 2) { if (a != last_mt) { st.val = a; ct = 1; } last_mt = a; }
@@ -5348,6 +5447,8 @@ int main(int argc, char **argv)
                     if (!cth) {   /* a throttle axis ("- fltstck Throttle": forward +1 = 1024, back -1 = 0, the centre half) */
                         a = g_im_ok ? im_axis(&g_im, "throttle", ks, 1, &pr) : 0;
                         if (pr == 2 && g_im_dev.joy) { if (a != last_jth) { sth.val = a; cth = 1; } last_jth = a; }
+                        a = pad_rate("throttle", ks, &pr);
+                        if (a != 0) { sth.val += a * dt; sth.vel = 0; cth = 1; }
                     }
                     if (cp) { sp.val = sp.val > 1 ? 1 : sp.val < -1 ? -1 : sp.val; g_twist_dem = sp.val * 90.0f; }   /* limits: below */
                     if (ct) { st.val = st.val > 1 ? 1 : st.val < -1 ? -1 : st.val; g_pitch_dem = -st.val * 60.0f; }   /* g_pitch: up positive */
@@ -5420,6 +5521,10 @@ int main(int argc, char **argv)
                     if (pr && g_im_dev.joy) g_eye_pan = a * 70.0f;
                     a = g_im_ok ? im_axis(&g_im, "pilot_tilt", ks, 1, &pr) : 0;
                     if (pr && g_im_dev.joy) g_eye_tilt = a * 60.0f;
+                    a = pad_rate("pilot_pan", ks, &pr);
+                    if (a != 0) { g_eye_pan += a * 70.0f * dt; if (g_eye_pan > 70.0f) g_eye_pan = 70.0f; if (g_eye_pan < -70.0f) g_eye_pan = -70.0f; }
+                    a = pad_rate("pilot_tilt", ks, &pr);
+                    if (a != 0) { g_eye_tilt += a * 60.0f * dt; if (g_eye_tilt > 60.0f) g_eye_tilt = 60.0f; if (g_eye_tilt < -60.0f) g_eye_tilt = -60.0f; }
                 }
                 /* the pilot's view: pan / tilt keys, glances (held: 90 degrees aside, ASSUMED), recentre, zoom */
                 if (getenv("MW2_EYE_PAN")) g_eye_pan = (float)atof(getenv("MW2_EYE_PAN"));   /* tests */
@@ -5478,6 +5583,9 @@ int main(int argc, char **argv)
                      * (0x10031870): "Autopilot" (voice 65, table 0x1024f140) "disengaged" (voice 84, table 0x1024edb8) */
                     int prt = 0;
                     float axt = g_im_ok ? im_axis(&g_im, "legs_pan_delta", ks, 1, &prt) : 0;
+                    int prp = 0;
+                    float axp = g_im_ok && g_im_dev.pad ? im_axis(&g_im, "legs_pan_delta", ks, 4, &prp) : 0;
+                    if (prp && fabsf(axp) >= 1e-7f) { prt = 1; axt = axp; }
                     if (g_autopilot && !offline && (H("legs_pan_minus") || H("legs_pan_plus") || (prt && fabsf(axt) >= 1e-7f) || g_feet_to_torso)) {
                         g_autopilot = 0;
                         hud_message_v2("Autopilot disengaged.", 65, 84);
@@ -5561,6 +5669,11 @@ int main(int argc, char **argv)
                     if (rl.val != 0) g_pl_legs_turn = 1;
                 }
                 { int pr = 0; float a = g_im_ok ? im_axis(&g_im, "legs_pan_delta", ks, 1, &pr) : 0; if (pr) g_pl.heading += a * turn * dt; if (pr && fabsf(a) >= 1e-7f) g_pl_legs_turn = 1; }
+                if (g_im_dev.pad) {   /* the gamepad on legs_pan_delta: the same rate as a stick */
+                    int pr = 0; float a = g_im_ok ? im_axis(&g_im, "legs_pan_delta", ks, 4, &pr) : 0;
+                    if (pr) g_pl.heading += a * turn * dt;
+                    if (pr && fabsf(a) >= 1e-7f) g_pl_legs_turn = 1;
+                }
                 if (g_feet_to_torso) {
                     float step = 55.0f * dt, d = g_pl.twist;
                     if (fabsf(d) <= step) { g_pl.heading += d; g_pl.twist = 0; g_feet_to_torso = 0; }
@@ -6062,6 +6175,7 @@ int main(int argc, char **argv)
                 all.parts = malloc((size_t)(total ? total : 1) * sizeof *all.parts);
                 for (k = 0; all.parts && k < g_actor_count; k++) {
                     int q;
+                    if (g_sim.scattered && g_sim.scattered[k]) continue;   /* a wreck blown apart (msim scatter_wrecks): its pieces fly as debris */
                     {
                         const mech3d *src = &g_actors[k].mech;
                         float ddx = (float)src->origin[0] - v.eye[0], ddy = (float)src->origin[1] - v.eye[1], ddz = (float)src->origin[2] - v.eye[2];
@@ -6122,7 +6236,6 @@ int main(int argc, char **argv)
                 const int tipool = c3d_ti && g_tex_kind != 3;   /* TEXTURES TITANIUM: its own pool models */
                 mech3d_part *const projm = tipool ? g_tiproj : g_proj;
                 float (*const projs)[3] = tipool ? g_tiproj_scale : g_proj_scale;
-                const float *const projl = tipool ? g_tiproj_len : g_proj_len, *const projo = tipool ? g_tiproj_off : g_proj_off;
                 if (tipool) load_ti_projectiles();
                 for (k = 0; all.parts && g_proj_ok && k < g_sim.shot_count; k++) {
                     /* each shot: its weapon's model at its position, pointing along its velocity */
@@ -6146,20 +6259,9 @@ int main(int argc, char **argv)
                         int q;
                         for (q = 0; q < 3; q++) { pp.rot[q * 3 + 0] *= projs[ps][0]; pp.rot[q * 3 + 1] *= projs[ps][1]; pp.rot[q * 3 + 2] *= projs[ps][2]; }
                     }
-                    if (ps <= 2) {
-                        /* the laser bolt (engine 0x10043cc0 / 0x10044ac0, DOS 0x52757 / 0x53410 - the same code): the LASER1-3
-                         * mesh with its MW2_SHT1 OBJ scale (3, 3, 12) - long thin bolts (3D 43 / 30 / 19 m, DOS 13 m) - set
-                         * along the velocity at launch, no glow; the model lies behind its origin (nose at z 0), and the
-                         * engine puts that origin 2 x the model's radius (g_proj_off: about one scaled length) ahead of the
-                         * muzzle, so the bolt's tail leaves the muzzle: drawn here that far ahead of the shot point (the shot
-                         * itself, and its hits, still start at the muzzle) */
-                        float L = projo[ps] > 0 ? projo[ps] : (projl[ps] > 0 ? projl[ps] : 300.0f) * projs[ps][2], vl = sqrtf(sh->vx * sh->vx + sh->vy * sh->vy + sh->vz * sh->vz);
-                        if (vl > 0) {
-                            pp.pos[0] = (int32_t)(sh->x + sh->vx / vl * L);
-                            pp.pos[1] = (int32_t)(sh->y + sh->vy / vl * L);
-                            pp.pos[2] = (int32_t)(sh->z + sh->vz / vl * L);
-                        }
-                    }
+                    /* (the shot itself starts 2 x its pool object's radius ahead of the mount - GBL 0x54730, msim spawn_shot_h -
+                     * so the model is drawn at the shot's point: the laser bolt (nose at z 0, behind its origin) leaves the
+                     * mount with its tail, the bullet's tracer lines 20-40 m ahead) */
                     pp.group = 0;
                     /* the pool's projectile objects get type word 0x400 when loaded (BTHG handler: 3D 0x1003ed54 ->
                      * 0x1000fb20, DOS 0x4f3e8 -> 0x1e300): image enhancement draws them red (0x1002a4b0 / DOS 0x38ae3, mode
@@ -6439,10 +6541,39 @@ int main(int argc, char **argv)
             int32_t now = (int32_t)((int64_t)g_sim.now * 182 / 1000);
             int k, n = 0;
             fx_update(&g_fxw, now);
+            {   /* GBL 0x53823: a Flamer shot (flags 0x20) restarts the animations of texture slots +0x0c .. +0x0c + 7 (118-125,
+                 * A9EXCF - the burning effect's cards XPL7_0..7) - every new shot of such a weapon, whoever fired it */
+                static unsigned seen_id;
+                if (g_sim_ok) {
+                    unsigned top = seen_id;
+                    for (k = 0; k < g_sim.shot_count; k++) {
+                        const msim_shot *sh = &g_sim.shots[k];
+                        const sim_weapon_gx *x = sim_wx(sh->weapon);
+                        if (sh->id <= seen_id) continue;
+                        if (sh->id > top) top = sh->id;
+                        if (x && (x->flags & 0x20)) { int q; for (q = 0; q < 8; q++) fx_anim_restart(&g_fxw, x->tex + q, now); }
+                    }
+                    seen_id = top;
+                }
+                /* GBL 0x52040: an effect that follows its object (the burning one) rides the unit it struck - at the unit's
+                 * object position (its centre, as msim's area damage takes it) */
+                for (k = 0; g_sim_ok && k < FX_LIVE; k++) {
+                    fx_live *e = &g_fxw.e[k];
+                    if (!e->alive || e->follow < -1) continue;
+                    if (e->follow == -1) {
+                        if (g_sim.player_unit.destroyed) continue;
+                        e->pos[0] = g_sim.player[0]; e->pos[1] = g_sim.player_unit.y + g_sim.player_centre_h; e->pos[2] = g_sim.player[2];
+                    } else if (e->follow < g_sim.actor_count) {
+                        e->pos[0] = (float)g_sim.actors[e->follow].mech.origin[0];
+                        e->pos[1] = g_sim.units[e->follow].y + (g_sim.centre_h ? g_sim.centre_h[e->follow] : 550.0f);
+                        e->pos[2] = (float)g_sim.actors[e->follow].mech.origin[2];
+                    }
+                }
+            }
             for (k = 0; k < FX_LIVE && n < GLR_MAX_SPRITES; k++) {
                 const fx_live *e = &g_fxw.e[k];
                 texture *t;
-                if (!e->alive || !(t = fx_texture(fx_frame(&g_fxd, e, now)))) continue;
+                if (!e->alive || !(t = fx_texture(fx_frame(&g_fxd, &g_fxw, e, now)))) continue;
                 memcpy(spr[n].pos, e->pos, sizeof spr[n].pos);
                 spr[n].quad = 0; spr[n].ti = 0;
                 int cs = e->slot >= 0 && e->slot < FX_CARD_SLOTS ? e->slot : 0;   /* the pool slot's own model (MZL0_2 / _3: one polygon) */
@@ -6535,6 +6666,55 @@ int main(int argc, char **argv)
                     }
                     for (c = 0; c < 3; c++) { spr[n].top[c] = spr[n].pos[c] + up[c] * hl; spr[n].pos[c] -= up[c] * hl; }
                 }
+                n++;
+            }
+            /* GBL's Flamer (kind 8): each shot is its pool entry's colour type 3 card (XPL8_n / XPL9_n, g_flame_slot) drawn by
+             * the billboard (0x39573 -> the DOS card routine / 3D 0x1002a8e0): a screen square on its foot and top, the
+             * object turned to its course (0x54730; flags 0x40 - not pushed ahead), the slot's animation running on as the
+             * texture table steps it (BSEC 248-251 A9FLA2 every 18 ticks, 252-255 A9FLAM every 91; never restarted by the
+             * shot - its 0x20 restart is of slots 118-125, the burning effect's cards). TEXTURES TITANIUM: the Titanium pool's
+             * card, its bank-0 bitmap (as the PPC card, 0x1004ef4c), else the DOS one */
+            for (k = 0; g_sim_ok && k < g_sim.shot_count && n < GLR_MAX_SPRITES; k++) {
+                const msim_shot *sh = &g_sim.shots[k];
+                int cs, f, slot;
+                texture *t = NULL;
+                if (combat_weapon_kind(sh->weapon) != 8 || !combat_weapon_has_object(sh->weapon)) continue;
+                cs = c3d_ti && g_tex_kind != 3 && g_flame_n[1] > 0 ? 1 : 0;
+                if (g_flame_n[cs] <= 0) continue;
+                f = sh->pool >= 0 ? sh->pool % g_flame_n[cs] : 0;
+                slot = g_flame_slot[cs][f];
+                if (cs && c3d_ti_have_scene && c3d_ti_scene.bank0[slot]) {
+                    t = c3d_ti_scene.bank0[slot];
+                    { static int said; if (!said) { said = 1; printf("titanium: flamer card from the Titanium pool, bank 0 slot 0x%02x\n", slot); } }
+                } else {
+                    cs = 0;
+                    if (g_flame_n[0] <= 0) continue;
+                    f = sh->pool >= 0 ? sh->pool % g_flame_n[0] : 0;
+                    slot = g_flame_slot[0][f];
+                    t = fx_texture(fx_slot_frame(&g_fxd, &g_fxw, slot, now));
+                }
+                if (!t || !t->rgba) continue;
+                {
+                    float vl = sqrtf(sh->vx * sh->vx + sh->vy * sh->vy + sh->vz * sh->vz), hz = sqrtf(sh->vx * sh->vx + sh->vz * sh->vz);
+                    float zx = vl > 0 ? sh->vx / vl : 0, zy = vl > 0 ? sh->vy / vl : 0, zz = vl > 0 ? sh->vz / vl : 1;
+                    float xr[3] = {hz > 0 ? sh->vz / hz : 1, 0, hz > 0 ? -sh->vx / hz : 0}, up[3] = {0, 1, 0};
+                    const float *fo = g_flame_foot[cs][f], *tp = g_flame_top[cs][f];
+                    int c;
+                    if (vl > 0 && hz > 0) { up[0] = -sh->vx / hz * sh->vy / vl; up[1] = hz / vl; up[2] = -sh->vz / hz * sh->vy / vl; }
+                    for (c = 0; c < 3; c++) {
+                        const float zc = c == 0 ? zx : c == 1 ? zy : zz, p0 = c == 0 ? sh->x : c == 1 ? sh->y : sh->z;
+                        spr[n].pos[c] = p0 + xr[c] * fo[0] + up[c] * fo[1] + zc * fo[2];
+                        spr[n].top[c] = p0 + xr[c] * tp[0] + up[c] * tp[1] + zc * tp[2];
+                    }
+                    spr[n].half_w = spr[n].half_h = 0.5f * sqrtf((tp[0] - fo[0]) * (tp[0] - fo[0]) + (tp[1] - fo[1]) * (tp[1] - fo[1]) + (tp[2] - fo[2]) * (tp[2] - fo[2]));
+                }
+                spr[n].quad = 0;
+                spr[n].ti = cs;
+                spr[n].tex = t;
+                spr[n].bb = 1;
+                spr[n].wire_code = 2;   /* image enhancement: red (the projectile pool's type word 0x400) */
+                spr[n].has_tri = 0;
+                { static int said; if (!said && getenv("MW2_FX_TRACE")) { said = 1; fprintf(stderr, "flamer card pool %d slot %d\n", sh->pool, slot); } }
                 n++;
             }
             if (g_dos_lasers) {   /* MW2_DOS_LASERS=1 - the lasers as glowing beams: a row of camera-facing cards along the beam (1 per 75 cm, 12 m at least).
@@ -6643,7 +6823,7 @@ int main(int argc, char **argv)
                         const fx_live *e = &g_fxw.e[k];
                         float dx, dy, dz, d2;
                         int t = e->type, j, at;
-                        if (!e->alive || !(t == 3 || t == 6 || t == 0x0c || t == 0x11 || t == 0x13 || t == 0x15)) continue;
+                        if (!e->alive || !(t == 3 || t == 6 || t == 0x0c || t == 0x11 || t == 0x13 || t == 0x15 || t == 0x22 || t == 0x23)) continue;   /* (0x22 / 0x23: GBL's torpedo / Arrow IV on a unit) */
                         dx = e->pos[0] - v.eye[0]; dy = e->pos[1] - v.eye[1]; dz = e->pos[2] - v.eye[2];
                         d2 = dx * dx + dy * dy + dz * dz;
                         at = v.ti_dyn_n < GLR_TI_DYN ? v.ti_dyn_n++ : -1;

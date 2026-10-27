@@ -109,6 +109,29 @@ the install's GAMEKEY.MAP / INPUT.MAP; set them up in COCKPIT CONTROLS, as in th
 original's main menu and pauses the game. The `MW2_*` and `GBL_*` environment variables are for development and tests
 only.
 
+### Input devices and the gamepad
+COCKPIT CONTROLS lists the original's twelve drivers (up to four at a time, the keyboard always). The joysticks
+(Two Button Joystick, Flightstick PRO, SideWinder, ThrustMaster, Wingman Extreme, CH Virtual Pilot PRO) are read from the
+first joystick the system reports; the Spaceball Avenger as a six-axis controller in the same way. The head trackers
+(Virtual i/O i-glasses, VFX1) have no modern equivalent: they can be selected, but the port ignores their lines.
+
+**Gamepad (port addition).** Select *Gamepad (port addition)* in COCKPIT CONTROLS and press ACCEPT. Any controller SDL
+knows works (Xbox, PlayStation, Switch Pro and similar); plug it in before or during a mission. The face buttons go by
+position: A = bottom (Cross, Switch B), B = right, X = left, Y = top. Default mapping:
+
+| Control | Gamepad | | Control | Gamepad |
+|---|---|---|---|---|
+| Throttle up / down | left stick up / down | | Fire weapon | right trigger |
+| Turn (chassis) | left stick left / right | | Fire group 1 | left trigger |
+| Torso twist / pitch | right stick | | Cycle weapon / group | right / left shoulder |
+| Recenter torso | right stick press | | Jump jets | A |
+| Zoom in / out | d-pad up / down | | Nearest enemy / next target | B / Y |
+| Glance left / right | d-pad left / right | | Target at reticle | X |
+| Inspect target | left stick press | | Next nav point | Back / Select |
+
+The sticks move the throttle and the torso at a rate, so the setting stays where you leave it. Change any of it in
+CUSTOM CONFIGURATION like the other devices; it is saved in INPUT.MAP and GIDDI\CONFIG00.CPC, as the original's are.
+
 ## Tests
 The tests need your own game data, which isn't in the repository:
 

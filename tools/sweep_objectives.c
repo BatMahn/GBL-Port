@@ -6,7 +6,7 @@
  *     -v             every node change and the sim's log
  *     -nofire        the player never fires (only the fallbacks destroy things)
  *     -installstars  use the install's USERSTAR / EN0nSTAR files instead of a fresh fixed lance (temp dir)
- *   env: MW2_SWEEP_TRACE=1 the player's state every second, MW2_SWEEP_BRG=1 the firing-position scores,
+ *   env: MW2_SWEEP_TRACE=1 the player's state every second (=n: every n steps of 50 ms), MW2_SWEEP_BRG=1 the firing-position scores,
  *        MW2_SWEEP_ACTOR=n actor n's position / AI state every 5 s, MW2_SWEEP_STAR_SIZE=1..3 the player's star size
  *        (default: the mission's BRF2 SDSC default, as the campaign shell starts it; capped at the SDSC maximum)
  *
@@ -20,8 +20,12 @@
  *              unit; structures: along the aim line at the box); after 25 s without a kill the target is
  *              finished directly (combat_hit / msim_damage_building) and the fallback is reported
  *   scan    -> next to each target and msim_inspect() it
- *   protect -> attacks hostile mechs within 800 m of the protected targets
+ *   protect -> attacks hostile mechs within 800 m of the protected targets (inside the mission area); a protect node
+ *              whose FAILURE a wanted node needs (an 'F' item) -> its targets are destroyed instead
  *   leave   -> outside the target's radius (only when the node is wanted)
+ * Every move (teleport or a small step after a walking target) keeps the player on a floor near the target's level and
+ * inside every mission-failing leave radius in 3D, as the engine tests it; else he stays where he is (station / space
+ * maps: BRANSCN1, ZACKSCN1). A target out of reach that cannot come to the player is finished by the fallback.
  * A node is acted on when it is "wanted" (a main / optional objective, a star-win for table 0, or what one of
  * those needs to succeed - items 'S' / 'C') and not "bad" (its success leads to a star-lose of table 0 or to
  * failing a main node). Others are left alone (e.g. "you strayed" leave nodes).
@@ -52,6 +56,7 @@
 #define PI_F 3.14159265f
 
 static int g_verbose, g_nofire;
+static int g_fwant[MTBL_MAX_NODES];   /* table 0 protect nodes whose FAILURE a wanted node needs (an 'F' item) */
 static const char *g_stars_dir;   /* own star files: USERSTAR is rewritten per scene with the mission's star size */
 static lance_slot g_fr[3];
 static float g_max_s = 1800.0f;
@@ -70,6 +75,8 @@ typedef struct {
     int record;          /* the name is a record of the mission tree */
 } target_info;
 
+/* a unit that can come to the player: msim drives every class but turrets (3) and doors (7) at its MEK speed */
+static int actor_moves(const world_actor *ac) { return ac->unit_class != 3 && ac->unit_class != 7 && ac->speed > 0.0f; }
 static unsigned widen(unsigned c) { if (c & 0x730) c |= 0x730; if (c & 3) c |= 3; return c; }
 
 static const char *bld_rec(const msim *s, int b) { return s->world->parts[s->bld[b].intact].rec; }
@@ -142,6 +149,14 @@ static void classify(const mtbl_logic *ml, int *wanted, int *bad)
                 if (bad[j] && !bad[it->node]) { bad[it->node] = 1; changed = 1; }
             }
     }
+    /* a protect node whose failure a wanted node waits for ('F' item: node_ready, engine 0x1000a110): what it guards
+     * is to be destroyed (BRANSCN1: node 7 'M' "Destroy Reactor at Nav Gamma" needs F0.8, node 8 protect branare1) */
+    memset(g_fwant, 0, sizeof g_fwant);
+    for (j = 0; j < t0->node_count; j++)
+        for (k = 0; wanted[j] && k < t0->nodes[j].item_count; k++) {
+            const mtbl_item *it = &t0->nodes[j].items[k];
+            if (it->type == 'F' && it->table == 0 && it->node < t0->node_count && t0->nodes[it->node].kind == MTBL_K_PROTECT) g_fwant[it->node] = 1;
+        }
 }
 
 /* ---- the run ---------------------------------------------------------------------- */
@@ -153,6 +168,7 @@ typedef struct {
     int    last_health, aim;
     float  stagnant;         /* seconds without damage taking effect */
     int    clamped, start_health;
+    int    refused;          /* the last teleport towards it was refused: no floor / outside the mission area in 3D */
     float  waited;           /* seconds held back at the mission area's edge */
     float  held;             /* seconds of fire held for a protected structure in the line of fire */
     int    fallbacks;
@@ -270,8 +286,28 @@ static int target_xz(const msim *s, const char *t, float *x, float *z, float *r)
     return -1;
 }
 
-/* the nearest hostile armed mech within 800 m of a protected thing, -1 */
-static int protect_threat(const msim *s, const char *t)
+/* would the player standing at (x, y, z) be inside every leave node of table 0 that fails the mission (bad, not the
+ * node worked on)? The engine's within test is 3D (GBL 0x16280: squared distance to the nav against its radius), so on
+ * station / space maps (BRANSCN1 1438 m up, ZACKSCN1 3.9 km up) a point on the floor far below the area is outside it */
+static int inside_area(const msim *s, const int *bad, int best, float x, float y, float z)
+{
+    const mtbl_table *t0 = &s->logic.tables[0];
+    int k;
+    for (k = 0; k < t0->node_count; k++) {
+        const mtbl_node *nd = &t0->nodes[k];
+        int ni;
+        float dx, dy, dz;
+        if (k == best || nd->kind != MTBL_K_LEAVE || !bad[k] || nd->objective == 'M' || !has_target(nd) || s->logic.state[0][k] != MTBL_ACTIVE ||
+            (ni = nav_index(s, nd->target)) < 0) continue;
+        dx = x - s->navs[ni].x; dy = y - s->navs[ni].y; dz = z - s->navs[ni].z;
+        if (dx * dx + dy * dy + dz * dz > s->navs[ni].radius * s->navs[ni].radius * 0.9f) return 0;
+    }
+    return 1;
+}
+
+/* the nearest hostile armed mech within 800 m of a protected thing, -1; one outside the mission area in 3D is left
+ * alone (ZACKSCN1: the Jaguar fighters at y 0, 3.9 km under the carrier deck the dropship hangs at) */
+static int protect_threat(const msim *s, const char *t, const int *bad)
 {
     float px, pz, pr, bd = 80000.0f * 80000.0f;
     int k, e = -1;
@@ -280,6 +316,7 @@ static int protect_threat(const msim *s, const char *t)
         float dx = (float)s->actors[k].mech.origin[0] - px, dz = (float)s->actors[k].mech.origin[2] - pz;
         if (!s->armed[k] || s->units[k].destroyed || s->actors[k].friendly || s->actors[k].alliance != 1 ||
             strcasecmp(s->actors[k].group, t) == 0) continue;
+        if (!inside_area(s, bad, -1, (float)s->actors[k].mech.origin[0], s->units[k].y, (float)s->actors[k].mech.origin[2])) continue;
         if (dx * dx + dz * dz < bd) { bd = dx * dx + dz * dz; e = k; }
     }
     return e;
@@ -479,13 +516,15 @@ static int run_scene(prj_archive *a, const char *scene)
                 if (!doable && nav_index(&s, nd->target) >= 0) doable = 1;
                 break;
             }
-            case MTBL_K_PROTECT: doable = protect_threat(&s, nd->target) >= 0; break;
+            case MTBL_K_PROTECT:   /* (its failure wanted: what it guards, class 4 - the protect attach mask) */
+                doable = g_fwant[k] ? live_member(&s, nd->target) >= 0 || live_bld(&s, nd->target, 4) >= 0 : protect_threat(&s, nd->target, bad) >= 0;
+                break;
             default: break;
             }
             {   /* protecting comes after everything else - except that a main objective's protect (with a threat) goes
                  * before the optional objectives (FUCH: the firebase's attackers before the optional kills outside the
                  * mission area, now that enemy armour carries the loader's x 3, 0x10041410) */
-                int32_t key = s.logic.started[0][k] + (nd->kind == MTBL_K_PROTECT ? (nd->objective == 'M' ? 50000000 : 100000000)
+                int32_t key = s.logic.started[0][k] + (nd->kind == MTBL_K_PROTECT && !g_fwant[k] ? (nd->objective == 'M' ? 50000000 : 100000000)
                                                                                   : (nd->objective == 'O' ? 60000000 : 0));
                 if (doable && key < best_t) { best_t = key; best = k; }
             }
@@ -534,13 +573,13 @@ static int run_scene(prj_archive *a, const char *scene)
             }
             case MTBL_K_DESTROY1: case MTBL_K_DESTROY2: case MTBL_K_PROTECT: {
                 int e = -1, b = -1;
-                if (nd->kind == MTBL_K_PROTECT) e = protect_threat(&s, nd->target);
+                if (nd->kind == MTBL_K_PROTECT && !g_fwant[best]) e = protect_threat(&s, nd->target, bad);
                 else {
                     e = live_member(&s, nd->target);
-                    if (e < 0) b = live_bld(&s, nd->target, 3);
+                    if (e < 0) b = live_bld(&s, nd->target, nd->kind == MTBL_K_PROTECT ? 4 : 3);
                 }
                 if ((e >= 0 && e != at.actor) || (b >= 0 && b != at.bld) || (e < 0 && b < 0)) {
-                    at.actor = e; at.bld = b; at.since = 0; at.aim = 0; at.stagnant = 0; at.last_health = -1; at.waited = 0; at.held = 0;
+                    at.actor = e; at.bld = b; at.since = 0; at.refused = 0; at.aim = 0; at.stagnant = 0; at.last_health = -1; at.waited = 0; at.held = 0;
                     at.start_health = e >= 0 ? combat_health(&s.units[e]) : b >= 0 ? s.bld[b].hp : 0;
                     if (g_verbose && b >= 0)
                         printf("  %7.1fs target structure %d %s (%s) rec %s type %#x hp %d box %.0f..%.0f, %.0f..%.0f, %.0f..%.0f coll %d hidden %d\n", now_s, b,
@@ -553,6 +592,12 @@ static int run_scene(prj_archive *a, const char *scene)
                 if (at.clamped) at.waited += DT_MS / 1000.0f;   /* outside the mission area: it has to come to us */
                 else at.since += DT_MS / 1000.0f;
                 if (at.waited > 60.0f) at.since = 1e9f;
+                /* out of the harness's reach (the teleport refused: no floor there / outside the mission area in 3D) and it
+                 * cannot come to us - a unit that never moves (a turret or door, class 3 / 7, or no top speed) at once, a
+                 * structure after 10 s of fire from where the player stands - or no geometry to strike (an all-DUMMY
+                 * skeleton, DUMBTURT: ASSUMED unhittable, J_sim_impl 1.3): finished by the fallback (reported). Vehicles
+                 * and GBL's class 2 flyers (ZACKSCN1's Jaguar fighters at the deck's height) come: waited for (60 s) */
+                if ((at.refused && ((e >= 0 && !actor_moves(&s.actors[e])) || (b >= 0 && at.since > 10.0f))) || (e >= 0 && s.actors[e].mech.part_count == 0)) at.since = 1e9f;
                 if (e >= 0) {
                     static const float AIM_H[4] = {0.55f, 0.8f, 0.4f, 0.95f};
                     int hl = combat_health(&s.units[e]);
@@ -579,7 +624,7 @@ static int run_scene(prj_archive *a, const char *scene)
                         int guard = 0, w0 = s.player_unit.weapon_count > 0 ? s.player_unit.weapons[0].weapon : 0;
                         anom(&nanom, scene, "node %d %s: %s (%s, actor %d) not destroyed by projectiles (health %d of %d)%s - finished with combat_hit",
                              best, mtbl_kind_name(nd->kind), s.actors[e].name, s.actors[e].group, e, combat_health(&s.units[e]), at.start_health,
-                             at.waited > 60.0f ? (s.actors[e].have_anim ? " - stayed outside the mission area 60 s" : " - stayed outside the mission area 60 s (a vehicle: msim_step never moves actors without walk animations)") : "");
+                             at.waited > 60.0f ? " - stayed outside the mission area 60 s" : "");
                         while (!s.units[e].destroyed && guard++ < 5000) combat_hit(&s.units[e], w0, 3, 0.0f, &s.rng);
                         if (!s.units[e].destroyed) anom(&nanom, scene, "  actor %d survives 5000 combat_hit calls", e);
                         at.since = 0; at.fallbacks++;
@@ -656,7 +701,7 @@ static int run_scene(prj_archive *a, const char *scene)
             }
             for (q = 0; q < t0->node_count && s.player_attacks; q++) {
                 if (t0->nodes[q].kind != MTBL_K_PROTECT || s.logic.state[0][q] != MTBL_ACTIVE || !has_target(&t0->nodes[q]) ||   /* hidden protects too: failing one fails the mission */
-                    
+                    g_fwant[q] ||   /* (one whose failure is wanted: its target is shot at) */
                     (t0->nodes[best].kind != MTBL_K_PROTECT && strcasecmp(t0->nodes[q].target, t0->nodes[best].target) == 0)) continue;   /* (a record both
                                                                          * to destroy and to protect: destroy wins; defending it, its own protect counts too -
                                                                          * BROWSCN1's Command Vehicle stands between the player and the threat) */
@@ -682,17 +727,44 @@ static int run_scene(prj_archive *a, const char *scene)
         if (fabsf(s.player[0] - last_px) > 100.0f || fabsf(s.player[2] - last_pz) > 100.0f) {
             /* teleported: stand on the surface at about the target's level (a mesa top when the target is up there, not
              * inside the mesa; the canyon floor when it is down there) */
+            float nofloor = getenv("MW2_SWEEP_NOFLOOR") ? (float)atof(getenv("MW2_SWEEP_NOFLOOR")) : NOFLOOR_CM;   /* env: tests */
             float gy = msim_ground(&s, s.player[0], s.player[2], place_y_ref + 1000.0f);
-            if (place_y_ref - gy > (getenv("MW2_SWEEP_NOFLOOR") ? (float)atof(getenv("MW2_SWEEP_NOFLOOR")) : NOFLOOR_CM)) {   /* env: tests */
+            int reach_nav = best >= 0 && (t0->nodes[best].kind == MTBL_K_REACH || t0->nodes[best].kind == MTBL_K_ALLMAIN) && s.player_nav >= 0 &&
+                            s.player_nav < s.nav_count && strcasecmp(s.navs[s.player_nav].name, t0->nodes[best].target) == 0;
+            float drop_y = -1.0f;
+            if (place_y_ref - gy > nofloor && reach_nav) {
+                /* a nav whose 3D radius takes a floor a little above its point (BRANSCN1 node 15 "Airlock" branst01: the lift
+                 * the player started on has risen 13 m), or one in mid-air over a floor (node 2 "Go to hole" brangou1, 113 m
+                 * over the deck below): the player stands on the floor within the radius, or drops through the nav point */
+                float r = s.navs[s.player_nav].radius, g2 = msim_ground(&s, s.player[0], s.player[2], place_y_ref + r * 0.9f);
+                if (fabsf(g2 - place_y_ref) <= r * 0.9f) gy = g2;
+                else if (place_y_ref - gy <= 20000.0f && inside_area(&s, bad, best, s.player[0], gy, s.player[2])) drop_y = place_y_ref;
+            }
+            if (drop_y < 0 && (place_y_ref - gy > nofloor || !inside_area(&s, bad, best, s.player[0], gy, s.player[2]))) {
                 /* no floor near the target's level (space / station maps: BRANSCN1's upper deck, ZACKSCN1's carrier deck
-                 * 4 km up): the player would land at y 0, far outside every 3D leave radius - he stays where he is */
-                if (g_verbose && !nofloor_noted) printf("  note: %.1fs no floor within %.0f m below the target's level %.0f (ground %.0f): the player stays\n",
-                                                         now_s, (double)NOFLOOR_CM / 100.0, (double)place_y_ref, (double)gy);
+                 * 4 km up), or a floor outside the mission area in 3D (ZACKSCN1's fighters at y 0 under the carrier deck):
+                 * the player would land far outside every 3D leave radius - he stays where he is */
+                if (g_verbose && !nofloor_noted) printf("  note: %.1fs no floor within %.0f m below the target's level %.0f inside the mission area (ground %.0f): the player stays\n",
+                                                         now_s, (double)nofloor / 100.0, (double)place_y_ref, (double)gy);
                 nofloor_noted = 1;
                 s.player[0] = last_px; s.player[2] = last_pz;
+                at.refused = 1;
+            } else if (drop_y >= 0) {
+                s.player_unit.y = drop_y;
+                s.player_unit.vy = 0;
             } else {
                 s.player_unit.y = gy;
                 s.player_unit.vy = 0;
+            }
+        } else if (s.player[0] != last_px || s.player[2] != last_pz) {
+            /* a small move (following a walking target): not off a ledge into a hole or off the deck (BRANSCN1: the player
+             * edged off the station's upper deck at -8019,4032 and fell to y 0, outside branlve1) */
+            float nofloor = getenv("MW2_SWEEP_NOFLOOR") ? (float)atof(getenv("MW2_SWEEP_NOFLOOR")) : NOFLOOR_CM;
+            float gy = msim_ground(&s, s.player[0], s.player[2], s.player_unit.y + 100.0f);
+            float g0 = msim_ground(&s, last_px, last_pz, s.player_unit.y + 100.0f);
+            if ((s.player_unit.y - gy > nofloor || !inside_area(&s, bad, best, s.player[0], gy, s.player[2])) &&
+                s.player_unit.y - g0 <= nofloor && inside_area(&s, bad, best, last_px, g0, last_pz)) {
+                s.player[0] = last_px; s.player[2] = last_pz;
             }
         }
         last_px = s.player[0]; last_pz = s.player[2];
@@ -701,7 +773,7 @@ static int run_scene(prj_archive *a, const char *scene)
             if (q >= 0 && q < n) printf("  actor %d %s at %d,%d dead %d state %d target %d cmd %d cmdt %d\n", q, s.actors[q].group, s.actors[q].mech.origin[0], s.actors[q].mech.origin[2], s.units[q].destroyed,
                                         s.minds ? s.minds[q].state : -1, s.minds ? s.minds[q].target : -1, s.cmd ? s.cmd[q] : -1, s.cmd_target ? s.cmd_target[q] : -9);
         }
-        if (getenv("MW2_SWEEP_TRACE") && step % 20 == 0)
+        if (getenv("MW2_SWEEP_TRACE") && step % (atoi(getenv("MW2_SWEEP_TRACE")) > 1 ? atoi(getenv("MW2_SWEEP_TRACE")) : 20) == 0)
             printf("  trace %6.1fs best %d player %.0f,%.0f y %.0f attacks %d target %d free %d aim %.1f/%.1f shots %d hits %d misses %d\n", now_s, best,
                    s.player[0], s.player[2], s.player_unit.y, s.player_attacks, s.player_target, s.player_aim_free, s.player_aim_yaw, s.player_aim_pitch,
                    s.shot_count, s.hits, s.misses);

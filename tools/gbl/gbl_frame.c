@@ -1,6 +1,6 @@
 /*
  * gbl_frame.c - the GBL title (state 8, FUN_0002dda0), the global Esc menu (FUN_00026f10) and its pages: COMBAT VARIABLES
- * (menu case 1, 0x27323), COCKPIT CONTROLS (FUN_00021f40 = the base page, reused), HALL OF HONOR (FUN_0002b910), THE KESHIK
+ * (menu case 1, 0x27323), COCKPIT CONTROLS (FUN_00021f40 and its editor), HALL OF HONOR (FUN_0002b910), THE KESHIK
  * (FUN_00022320), FLEE TO DOS (0x275f3). Spec: docs/gbl/A_frame.md sections 3 and 4 (GBL MW2SHELL.EXE VAs).
  * Included by tools/gblshell.c (after the core); every page runs on gbl_frame() (present + input, one call per frame).
  */
@@ -1010,63 +1010,273 @@ static void gbl_combat_variables(void)
 }
 
 /* ======================================================================================================================
- * COCKPIT CONTROLS (menu case 2, FUN_00021f40 = the base FUN_00021020 line for line, A_cockpit.png). The page is the
- * widget table 0x7d61c (11 ints a widget: x, y, w, h, .., colour map, .., draw, click, data; a y of 0x80000000 | n is
- * n below the widget before): the red lines at x 172 / 477 from y 120; "Current Config:" (0, 110) and the config name
- * (80, 110) and "SELECT INPUT DEVICES" (0, 132) in grey (map 0x8ce5c: glyph colour 1 -> 7); twelve device rows from (0,
- * 154) every 11, 100 wide (draw 0x1ffe0: white selectable, red (1 -> 0x10) selected, grey unselectable; click 0x20040
- * toggles); ACCEPT (0, 400), CUSTOM CONFIGURATION (0, 422), ABORT (0, 444), 100 wide, white; the legend "~WHITE =
- * Selectable Option" (320, 250), "~RED = Selected Option" (320, 272, red), "~GREY = Unselectable" (320, 294, grey),
- * centred on 320. The rows are the GIDDI drivers (FUN_0001a530: every giddi\*.dll that loads, at most 16, in directory
- * order - alphabetical on the disc, as the capture shows: GBL's twelve with AVENGER, VFX1, VPILOT and WINGMAN; ASSUMED the
- * same order for an install folder), each titled as its DLL reports it (cc_driver_title); no keyboard.dll: "Error:
- * keyboard.dll not found.#Ok" and no page. A left or right press over a widget with a click runs it (FUN_00034320: x <=
- * mx < x + w, y <= my < y + h; h = the font height); Esc leaves. ACCEPT / CUSTOM CONFIGURATION / ABORT and the editor are
- * the base port's (cockpitcfg.c, gbl_common.c cc_*), which know the base's eight drivers: the four GBL-only ones can be
- * selected here but add nothing to INPUT.MAP (the port's simulation has no driver for them - port limitation). */
-static int gbl_cc_cmp(const void *a, const void *b) { return strcmp((const char *)a, (const char *)b); }
+ * COCKPIT CONTROLS (menu case 2, FUN_00021f40, A_cockpit.png; the editor S_ed_*.png). One function with two widget
+ * tables (11 ints a widget: x, y, w, h, .., colour map, .., draw, click, data; a y of 0x80000000 | n is n below the widget
+ * before; the colour maps: 0 white, 0x8ce5c grey (glyph colour 1 -> 7), 0x8cd5c red (1 -> 0x10)). A left or right press
+ * over a widget with a click runs it (FUN_00034320: x <= mx < x + w, y <= my < y + h; h = the font height); Esc leaves.
+ *
+ * The drivers (FUN_0001a530, src/cockpitcfg.c): GIDDI\*.DLL - GBL's twelve: AVENGER, FLTSTCK, JOYSTICK, KEYBOARD, MOUSE,
+ * MSJSTICK, TMASTER, VFX1, VIO1, VIO2, VPILOT, WINGMAN - numbered in that order; no keyboard: "Error: keyboard.dll not
+ * found.#Ok" and no page. Port addition: the gamepad driver after them (row 12, below the original's twelve rows).
+ * On entry (0x21f40): the configuration cleared and named "NO CONFIG", custom number 0, GIDDI\CONFIG00.CPC loaded over it
+ * (FUN_000213e0(0): devices renumbered by name, FUN_00020fc0), the selection taken from it (FUN_00020ee0: the keyboard and
+ * the drivers it uses, at most 4), the shown driver = the device of its last binding (else the keyboard), Page One.
+ *
+ * Page 1 (table 0x7d61c): the red lines (172 / 477, 120); "Current Config:" (0, 110) and the configuration's name (80,
+ * 110) grey; "SELECT INPUT DEVICES" (0, 132) grey; the drivers from (0, 154) every 11, w 100 (draw 0x1ffe0: red =
+ * selected, grey = unselectable (4 selected), white; click 0x20040: the keyboard cannot be toggled, a 5th cannot be
+ * selected; a change marks the page changed); ACCEPT (0, 400) (0x20180: only if changed - the selected drivers' defaults
+ * merged (FUN_00021b30) and written (FUN_00021d80); either way the page closes); CUSTOM CONFIGURATION (0, 422) (0x201b0:
+ * the defaults merged, then the editor); ABORT (0, 444); the legend centred on 320 at 250 / 272 / 294.
+ * FUN_00021d80 (ACCEPT, ACCEPT CONFIG AND EXIT): INPUT.MAP generated (FUN_00020b40; past the sim's limits "Error: Sim can
+ * not|handle that many controls.#Ok" and nothing changes), input.map -> input.bak, the new one in; the configuration
+ * saved as GIDDI\CONFIG<custom number>.CPC (FUN_000214a0(0)); "Cockpit Control Configured.#Ok". DOSBox: twelve runs of
+ * the original (tests/gbl/cockpit/), the port's INPUT.MAP and CONFIG00.CPC identical (make check: test_cockpitcfg).
+ *
+ * The editor (table 0x7b8e4): lines; GAME CONTROLS (175, 110) grey, the page name (285, 110) grey ("Page One" .. "Page
+ * Four", 0x7b88c), NEXT PAGE (375, 110) (0x1f300: the next of the four levels); 31 control rows from y 132 every 11:
+ * label (175) grey, direction (238, w 20, centred; rows 0-6; 0x1f3a0 reverses), modifier (260, w 20, centred: "--",
+ * "Ctrl", "Alt", "Shft"; 0x1f420 cycles none - Ctrl - Alt - Shift), the binding (285, w 100: "key Equal" / "mouse
+ * MiddleBtn" / "----"; 0x1f590) and a two-button control's second input right after it ("/Minus", 0x1f8b0). Right: the
+ * shown driver's title (480, 110) grey, ---Directional--- (480, 132) and its axes from (480, 154) (0x1faf0 / 0x1fc40),
+ * ---Buttons--- (480, 242) and 18 of its buttons from (480, 264) (0x1fbb0 / 0x1fdf0) with scroll arrows (600, 264) /
+ * (600, 451) when it has more (0x1fcd0 / 0x1fd40). Left: INPUT DEVICES (0, 110) grey, the SELECTED drivers in their own
+ * rows from (0, 132) (0x1ff70: the shown one red; 0x200e0 shows a driver); "Current Config:" (0, 275) grey and the
+ * custom number ("Default", "Custom 1" ..; 0x20140) at (90, 275) grey; the name (20, 286); Load Custom 1-4 (0, 308..)
+ * (FUN_000213e0: CONFIG0n.CPC, the selection from it); Save Custom 1-4 (0, 363..) (FUN_000214a0: named "Custom Config #n"
+ * if it was "Default Config" or a "Custom Config #"; "Configuration %d Saved.#Ok"); RESET DEFAULTS (0, 418)
+ * (FUN_00021b30); ACCEPT CONFIG AND EXIT (0, 440) (FUN_00021d80); ABORT (0, 462).
+ * The editing (0x1f590 .. 0x1fdf0): a click on a binding selects the control (its binding red) - right button: cleared
+ * first; a click on the selected one steps it to the shown driver's next input (FUN_0001f510); an axis takes a
+ * selected control that is not a button control (axis binding); a button: on a button control the input, on a
+ * directional control the first then (its second input selected) the second of a two-button binding.
+ * Not ported: typing a new configuration name (0x1ecc0), the "map to same control" warnings after Save Custom, the
+ * hidden ('*') keyboard inputs drawn grey. */
+
+static cc_drivers g_ccdv;
+static cc_config g_cccfg;
+static int g_ccsel[CC_MAXDEV], g_cccustom, g_ccshown, g_ccdirty;
+
+static const char *gbl_cc_giddi(void) { static char p[1100]; snprintf(p, sizeof p, "%s", gpath("GIDDI")); return p; }
+static void gbl_cc_cpc_path(int n, char *p, size_t cap)   /* giddi\config%02d.cpc, in the case the folder has it */
+{
+    FILE *f;
+    snprintf(p, cap, "%s/CONFIG%02d.CPC", gbl_cc_giddi(), n);
+    if ((f = fopen(p, "rb"))) { fclose(f); return; }
+    snprintf(p, cap, "%s/config%02d.cpc", gbl_cc_giddi(), n);
+    if ((f = fopen(p, "rb"))) { fclose(f); return; }
+    snprintf(p, cap, "%s/CONFIG%02d.CPC", gbl_cc_giddi(), n);
+}
+static int gbl_cc_count(void) { int k, n = 0; for (k = 0; k < CC_MAXDEV; k++) n += g_ccsel[k] != 0; return n; }
+/* FUN_00020ee0 (+ the shown driver: the last binding's device) */
+static void gbl_cc_select(void)
+{
+    int l, s;
+    cc_select_from(&g_cccfg, &g_ccdv, g_ccsel);
+    for (l = 0; l < CC_LEVELS; l++) for (s = 0; s < CC_SLOTS; s++) if (g_cccfg.b[l][s].device >= 0) g_ccshown = g_cccfg.b[l][s].device;
+}
+/* FUN_000213e0: a saved configuration (n 0 = the current one) */
+static void gbl_cc_load(int n)
+{
+    char p[1200];
+    cc_config c;
+    g_cccustom = n;
+    gbl_cc_cpc_path(n, p, sizeof p);
+    if (cc_load(&c, p, &g_ccdv) == 0) { g_cccfg = c; gbl_cc_select(); }
+}
+/* FUN_00021d80 */
+static int gbl_cc_write(void)
+{
+    static char out[65536];
+    size_t n = cc_generate(&g_cccfg, &g_ccdv, out, sizeof out);
+    char path[1100], bak[1100], p[1200];
+    FILE *f;
+    if (!n) { gbl_frame_dialog("Error: Sim can not|handle that many controls.#Ok", 0); return -1; }
+    snprintf(path, sizeof path, "%s/INPUT.MAP", g_dir);
+    snprintf(bak, sizeof bak, "%s/INPUT.BAK", g_dir);
+    remove(bak);
+    rename(path, bak);                               /* input.map -> input.bak, as the original */
+    if (!(f = fopen(path, "wb")) || fwrite(out, 1, n, f) != n) { if (f) fclose(f); rename(bak, path); return -1; }
+    fclose(f);
+    gbl_cc_cpc_path(g_cccustom, p, sizeof p);
+    cc_save(&g_cccfg, p, &g_ccdv);
+    gbl_frame_dialog("Cockpit Control Configured.#Ok", 0);
+    return 0;
+}
+
+/* the editor's hit test on a widget (FUN_00034320) */
+static int gbl_cc_in(int mx, int my, int x, int y, int w) { return mx >= x && mx < x + w && my >= y && my < y + gtext_h(GF_DEFAULT); }
+/* FUN_0001f510: the binding's input (which 0: a, 1: b) stepped to the shown driver's next one; past the last: none */
+static void gbl_cc_step(cc_binding *b, int which)
+{
+    const cc_device *d = &g_ccdv.d[g_ccshown];
+    int n = b->type == 0 ? d->naxis : d->nbutton, *v = which ? &b->b : &b->a;
+    *v = *v < 0 ? 0 : *v + 1;
+    if (*v >= n) { *v = -1; b->device = -1; }
+}
+
+static void gbl_cc_editor(void)
+{
+    static const char *const PAGE[4] = {"Page One", "Page Two", "Page Three", "Page Four"};
+    static const char *const DIRL[8] = {"~-/+", "~+/-", "~L/R", "~R/L", "~D/U", "~U/D", "~I/O", "~O/I"};
+    static const int DIRK[7] = {0, 1, 1, 2, 1, 2, 3};
+    static const char *const MODL[5] = {"~--", "~Ctrl", "~Alt", "~--", "~Shft"};
+    static const char *const CUST[5] = {"Default", "Custom 1", "Custom 2", "Custom 3", "Custom 4"};
+    int level = 0, sel = -1, half = 0, scroll = 0, done = 0, k, fh = gtext_h(GF_DEFAULT);
+    const int grey = 7, red = 0x10, white = -1;
+    while (!done) {
+        const cc_device *d = &g_ccdv.d[g_ccshown >= 0 && g_ccshown < g_ccdv.n ? g_ccshown : 0];
+        int selbtn = sel >= 0 && g_cccfg.b[level][sel].type == 1, nb = d->nbutton;
+        gbl_input *in;
+        int mx, my, right;
+        cc_frame(1);
+        gbl_frame_text(GF_DEFAULT, 175, 110, "GAME CONTROLS", grey);
+        gbl_frame_text(GF_DEFAULT, 285, 110, PAGE[level], grey);
+        gbl_frame_text(GF_DEFAULT, 375, 110, "NEXT PAGE", white);
+        for (k = 0; k < CC_CONTROLS; k++) {
+            cc_binding *b = &g_cccfg.b[level][k];
+            int y = 132 + 11 * k;
+            char t[96], *sl;
+            gbl_frame_text(GF_DEFAULT, 175, y, CC_LABEL[k], grey);
+            if (k <= 6) gtext(GF_DEFAULT, 248, y, DIRL[DIRK[k] * 2 + ((b->flags & 0x80000000u) ? 1 : 0)], white);
+            gtext(GF_DEFAULT, 270, y, MODL[b->flags & 7], white);
+            cc_describe(b, &g_ccdv, t, sizeof t);
+            sl = b->type == 2 ? strchr(t, '/') : NULL;
+            if (sl) *sl = 0;
+            gbl_frame_text(GF_DEFAULT, 285, y, t, k == sel && !half ? red : white);
+            if (sl) { int w1 = gtext_w(GF_DEFAULT, t); *sl = '/'; gbl_frame_text(GF_DEFAULT, 285 + w1 + 1, y, sl, k == sel && half ? red : white); }
+        }
+        gbl_frame_text(GF_DEFAULT, 480, 110, d->title, grey);
+        gbl_frame_text(GF_DEFAULT, 480, 132, "---Directional---", grey);
+        for (k = 0; k < d->naxis && k < 7; k++) gbl_frame_text(GF_DEFAULT, 480, 154 + 11 * k, d->axis[k].label, sel < 0 || selbtn ? grey : white);
+        gbl_frame_text(GF_DEFAULT, 480, 242, "---Buttons---", grey);
+        for (k = 0; k < 18 && k + scroll < nb; k++) gbl_frame_text(GF_DEFAULT, 480, 264 + 11 * k, d->button[k + scroll].label, sel < 0 ? grey : white);
+        if (nb > 18) {
+            gbl_frame_text(GF_DEFAULT, 600, 264, "\x01", scroll == 0 ? grey : white);
+            gbl_frame_text(GF_DEFAULT, 600, 451, "\x02", scroll >= nb - 18 ? grey : white);
+        }
+        gbl_frame_text(GF_DEFAULT, 0, 110, "INPUT DEVICES", grey);
+        for (k = 0; k < g_ccdv.n; k++) if (g_ccsel[k]) gbl_frame_text(GF_DEFAULT, 0, 132 + 11 * k, g_ccdv.d[k].title, k == g_ccshown ? red : white);
+        gbl_frame_text(GF_DEFAULT, 0, 275, "Current Config:", grey);
+        gbl_frame_text(GF_DEFAULT, 90, 275, CUST[g_cccustom >= 0 && g_cccustom < 5 ? g_cccustom : 0], grey);
+        gbl_frame_text(GF_DEFAULT, 20, 286, g_cccfg.name, white);
+        for (k = 0; k < 4; k++) {
+            char t[24];
+            snprintf(t, sizeof t, "Load Custom %d", k + 1); gbl_frame_text(GF_DEFAULT, 0, 308 + 11 * k, t, white);
+            snprintf(t, sizeof t, "Save Custom %d", k + 1); gbl_frame_text(GF_DEFAULT, 0, 363 + 11 * k, t, white);
+        }
+        gbl_frame_text(GF_DEFAULT, 0, 418, "RESET DEFAULTS", white);
+        gbl_frame_text(GF_DEFAULT, 0, 440, "ACCEPT CONFIG AND EXIT", white);
+        gbl_frame_text(GF_DEFAULT, 0, 462, "ABORT", white);
+        gbl_draw_cursor(g_in.mx, g_in.my);
+        in = gbl_frame();
+        if (in->quit || in->key == SDLK_ESCAPE) break;
+        if (!in->lclick && !in->rclick) continue;
+        mx = in->mx; my = in->my; right = in->rclick && !in->lclick;
+        if (gbl_cc_in(mx, my, 375, 110, gtext_w(GF_DEFAULT, "NEXT PAGE"))) { level = (level + 1) % CC_LEVELS; continue; }   /* 0x1f300 */
+        for (k = 0; k < CC_CONTROLS; k++) {
+            cc_binding *b = &g_cccfg.b[level][k];
+            int y = 132 + 11 * k;
+            char t[96], *sl;
+            if (my < y || my >= y + fh || mx < 175 || mx >= 477) continue;
+            if (k <= 6 && gbl_cc_in(mx, my, 238, y, 20)) b->flags ^= 0x80000000u;                         /* 0x1f3a0 */
+            else if (gbl_cc_in(mx, my, 260, y, 20)) {                                                      /* 0x1f420 */
+                if (!(b->flags & 7)) b->flags |= 1; else b->flags = (b->flags & 0x80000000u) | ((b->flags * 2) & 7);
+            } else {
+                int w1;
+                cc_describe(b, &g_ccdv, t, sizeof t);
+                if ((sl = b->type == 2 ? strchr(t, '/') : NULL)) *sl = 0;
+                w1 = gtext_w(GF_DEFAULT, t);
+                if (gbl_cc_in(mx, my, 285, y, b->type == 2 ? w1 : 100)) {                                   /* 0x1f590 */
+                    if (right) { b->device = -1; if (b->type == 2) b->type = 0; b->flags = 0; b->pad = 0; b->a = b->b = -1; sel = k; half = 0; }
+                    else if (sel == k && !half) {
+                        if (b->device != g_ccshown) { b->device = g_ccshown; b->a = b->b = -1; if (k <= 6 && b->type == 2 && d->nbutton == 0) b->type = 0; }
+                        gbl_cc_step(b, 0);
+                    } else { sel = k; half = 0; }
+                } else if (b->type == 2 && gbl_cc_in(mx, my, 285 + w1 + 1, y, 50)) {                       /* 0x1f8b0 */
+                    if (right) { b->device = -1; b->type = 0; b->flags = 0; b->pad = 0; b->a = b->b = -1; sel = k; half = 0; }
+                    else if (sel == k && half) { if (b->device == g_ccshown) gbl_cc_step(b, 1); }
+                    else { sel = k; half = 1; }
+                }
+            }
+            break;
+        }
+        if (k < CC_CONTROLS) continue;
+        for (k = 0; k < d->naxis && k < 7; k++)                                                            /* 0x1fc40 */
+            if (gbl_cc_in(mx, my, 480, 154 + 11 * k, 100) && sel >= 0 && g_cccfg.b[level][sel].type != 1) {
+                cc_binding *b = &g_cccfg.b[level][sel];
+                b->type = 0; b->device = g_ccshown; b->a = k; b->b = -1; half = 0;
+            }
+        for (k = 0; k < 18 && k + scroll < nb; k++)                                                        /* 0x1fdf0 */
+            if (gbl_cc_in(mx, my, 480, 264 + 11 * k, 100) && sel >= 0) {
+                cc_binding *b = &g_cccfg.b[level][sel];
+                int i = k + scroll;
+                if (half) {
+                    if (b->device != g_ccshown) { b->a = -1; b->device = g_ccshown; }
+                    b->b = i;
+                    if (b->a < 0) half = 0;
+                } else {
+                    if (b->type == 0) { b->type = 2; b->b = -1; }
+                    if (b->device != g_ccshown) b->b = -1;
+                    b->a = i; b->device = g_ccshown;
+                    if (b->type == 2 && b->b < 0) half = 1;
+                }
+            }
+        if (nb > 18) {                                                                                     /* 0x1fd40 */
+            int step = right ? 2 : 1;
+            if (gbl_cc_in(mx, my, 600, 264, 10)) scroll -= step;
+            if (gbl_cc_in(mx, my, 600, 451, 10)) scroll += step;
+            if (scroll + 18 >= nb) scroll = nb - 18;
+            if (scroll < 0) scroll = 0;
+        }
+        for (k = 0; k < g_ccdv.n; k++)                                                                     /* 0x200e0 */
+            if (g_ccsel[k] && gbl_cc_in(mx, my, 0, 132 + 11 * k, 100)) { g_ccshown = k; scroll = 0; }
+        for (k = 0; k < 4; k++) {
+            if (gbl_cc_in(mx, my, 0, 308 + 11 * k, gtext_w(GF_DEFAULT, "Load Custom 1"))) { gbl_cc_load(k + 1); level = 0; half = 0; sel = -1; }
+            if (gbl_cc_in(mx, my, 0, 363 + 11 * k, gtext_w(GF_DEFAULT, "Save Custom 1"))) {                 /* FUN_000214a0 */
+                char p[1200], m[64];
+                g_cccustom = k + 1;
+                if (!strcmp(g_cccfg.name, "Default Config") || !strncmp(g_cccfg.name, "Custom Config #", 15)) {
+                    memset(g_cccfg.name, 0, sizeof g_cccfg.name);   /* (sprintf: the bytes after it stay - ASSUMED cleared) */
+                    snprintf(g_cccfg.name, sizeof g_cccfg.name, "Custom Config #%d", k + 1);
+                }
+                gbl_cc_cpc_path(k + 1, p, sizeof p);
+                if (cc_save(&g_cccfg, p, &g_ccdv) == 0) { snprintf(m, sizeof m, "Configuration %d Saved.#Ok", k + 1); gbl_frame_dialog(m, 0); }
+            }
+        }
+        if (gbl_cc_in(mx, my, 0, 418, gtext_w(GF_DEFAULT, "RESET DEFAULTS"))) cc_merge_defaults(&g_cccfg, gbl_cc_giddi(), &g_ccdv, g_ccsel);
+        else if (gbl_cc_in(mx, my, 0, 440, gtext_w(GF_DEFAULT, "ACCEPT CONFIG AND EXIT"))) { gbl_cc_write(); done = 1; }
+        else if (gbl_cc_in(mx, my, 0, 462, gtext_w(GF_DEFAULT, "ABORT"))) done = 1;
+    }
+}
+
 static void gbl_cockpit_controls(void)
 {
-    char drv[16][16];
-    int ndrv = 0, base_k[16], k, done = 0, prev_bg = g_bg_entry, has_kbd = 0;
-    int sel_extra[16];
-    cc_config cfg;
-    {   /* the drivers: GIDDI\*.DLL */
-        DIR *dd = opendir(giddi_dir());
-        struct dirent *de;
-        while (dd && (de = readdir(dd)) && ndrv < 16) {
-            size_t n = strlen(de->d_name);
-            if (n < 5 || n > 12 || strcasecmp(de->d_name + n - 4, ".dll")) continue;
-            snprintf(drv[ndrv], sizeof drv[0], "%.*s", (int)(n - 4), de->d_name);
-            for (k = 0; drv[ndrv][k]; k++) drv[ndrv][k] = (char)tolower((unsigned char)drv[ndrv][k]);
-            if (!cc_driver_title(drv[ndrv])) continue;   /* (the original asks the driver; an unknown one is not shown) */
-            ndrv++;
-        }
-        if (dd) closedir(dd);
-        qsort(drv, (size_t)ndrv, sizeof drv[0], gbl_cc_cmp);
-    }
-    for (k = 0; k < ndrv; k++) {
-        int j;
-        base_k[k] = -1; sel_extra[k] = 0;
-        for (j = 0; j < CC_DEVICES; j++) if (!strcmp(drv[k], CC_DEVNAME[j])) base_k[k] = j;
-        if (!strcmp(drv[k], "keyboard")) has_kbd = 1;
-    }
-    if (!has_kbd) { gbl_frame_dialog("Error: keyboard.dll not found.#Ok", 0); return; }
+    int k, done = 0, prev_bg = g_bg_entry;
+    cc_drivers_load(&g_ccdv, gbl_cc_giddi(), 1);
+    if (cc_find(&g_ccdv, "keyboard") < 0) { gbl_frame_dialog("Error: keyboard.dll not found.#Ok", 0); return; }
+    cc_clear(&g_cccfg);
+    memset(g_cccfg.name, 0, sizeof g_cccfg.name);
+    memset(g_cccfg.table, 0, sizeof g_cccfg.table);
+    snprintf(g_cccfg.name, sizeof g_cccfg.name, "NO CONFIG");
+    memset(g_ccsel, 0, sizeof g_ccsel);
+    g_ccshown = cc_find(&g_ccdv, "keyboard");
+    g_ccsel[g_ccshown] = 1;
+    g_cccustom = 0;
+    gbl_cc_load(0);
+    g_ccdirty = 0;
     load_bg(3);   /* background idx 4 (entry 3), 0x21f49 */
     g_cclogo = open_smk("AMWLOGO1");
     g_cclogo_t = 0;
-    cc_init();
     while (!done) {
         gbl_input *in;
-        int mx, my, fh = gtext_h(GF_DEFAULT);
+        int mx, my, fh = gtext_h(GF_DEFAULT), full = gbl_cc_count() >= 4;
         cc_frame(1);
         gbl_frame_text(GF_DEFAULT, 0, 110, "Current Config:", 7);
-        gbl_frame_text(GF_DEFAULT, 80, 110, g_ccname, 7);
+        gbl_frame_text(GF_DEFAULT, 80, 110, g_cccfg.name, 7);
         gbl_frame_text(GF_DEFAULT, 0, 132, "SELECT INPUT DEVICES", 7);
-        for (k = 0; k < ndrv; k++) {
-            int on = base_k[k] >= 0 ? g_ccsel[base_k[k]] : sel_extra[k];
-            gbl_frame_text(GF_DEFAULT, 0, 154 + 11 * k, cc_driver_title(drv[k]), on ? 0x10 : -1);
-        }
+        for (k = 0; k < g_ccdv.n; k++)   /* 0x1ffe0 */
+            gbl_frame_text(GF_DEFAULT, 0, 154 + 11 * k, g_ccdv.d[k].title, g_ccsel[k] ? 0x10 : full ? 7 : -1);
         gbl_frame_text(GF_DEFAULT, 0, 400, "ACCEPT", -1);
         gbl_frame_text(GF_DEFAULT, 0, 422, "CUSTOM CONFIGURATION", -1);
         gbl_frame_text(GF_DEFAULT, 0, 444, "ABORT", -1);
@@ -1079,22 +1289,18 @@ static void gbl_cockpit_controls(void)
         if (!in->lclick && !in->rclick) continue;
         mx = in->mx; my = in->my;
         if (mx < 0 || mx >= 100) continue;
-        if (my >= 154 && my < 154 + 11 * (ndrv - 1) + fh && (my - 154) % 11 < fh) {   /* 0x20040: a device on / off */
+        if (my >= 154 && my < 154 + 11 * (g_ccdv.n - 1) + fh && (my - 154) % 11 < fh) {   /* 0x20040: a driver on / off */
             k = (my - 154) / 11;
-            if (k < ndrv) {
-                if (base_k[k] >= 0) { if (g_ccdev[base_k[k]].present || base_k[k] == 2) g_ccsel[base_k[k]] = !g_ccsel[base_k[k]]; }
-                else sel_extra[k] = !sel_extra[k];
+            if (k < g_ccdv.n && strcmp(g_ccdv.d[k].shortname, "keyboard")) {
+                if (g_ccsel[k]) { g_ccsel[k] = 0; g_ccdirty = 1; }
+                else if (!full) { g_ccsel[k] = 1; g_ccdirty = 1; }
             }
         } else if (my >= 400 && my < 400 + fh) {   /* ACCEPT (0x20180) */
-            if (cc_merge_defaults(&cfg, giddi_dir(), g_ccsel) == 0 && cc_write_inputmap(g_grd, g_gtx, g_headless, &cfg) == 0) {
-                snprintf(g_ccname, sizeof g_ccname, "Default Config");
-                done = 1;
-            }
+            if (g_ccdirty) { cc_merge_defaults(&g_cccfg, gbl_cc_giddi(), &g_ccdv, g_ccsel); gbl_cc_write(); }
+            done = 1;
         } else if (my >= 422 && my < 422 + fh) {   /* CUSTOM CONFIGURATION (0x201b0): the editor page */
-            cc_merge_defaults(&cfg, giddi_dir(), g_ccsel);
-            snprintf(cfg.name, sizeof cfg.name, "%s", "Default Config");
-            cc_editor(g_grd, g_gtx, g_headless, &cfg);
-            g_in.lclick = g_in.rclick = g_in.ldown = g_in.rdown = g_in.lup = 0; g_in.key = 0;   /* its loop took the events */
+            cc_merge_defaults(&g_cccfg, gbl_cc_giddi(), &g_ccdv, g_ccsel);
+            gbl_cc_editor();
             done = 1;
         } else if (my >= 444 && my < 444 + fh) done = 1;   /* ABORT (0x1f470) */
     }

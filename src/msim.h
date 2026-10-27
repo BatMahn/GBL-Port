@@ -13,6 +13,7 @@
 
 #include "ai.h"
 #include "combat.h"
+#include "fx.h"
 #include "mech3d.h"
 #include "mtbl.h"
 #include "prj.h"
@@ -49,7 +50,8 @@ typedef struct {
 #define MSIM_THING_OF(t)   (-1000 - (t))
 
 typedef struct {
-    float x, y, z, vx, vy, vz;   /* cm, cm per tick */
+    float x, y, z, vx, vy, vz;   /* cm, cm per tick; GBL: it starts 2 x its pool object's radius ahead of the mount (0x54730),
+                                  * at the table speed x the course over its octagonal length (0x40500) */
     float ax, ay, az;            /* acceleration, cm/tick^2 (+0x14..+0x1c): at launch (0, -drop flag x planet gravity, 0);
                                   * a guided missile's is replaced by the guidance each tick, gravity and all (0x10045910) */
     float life;                  /* ticks left */
@@ -63,6 +65,9 @@ typedef struct {
     int   first;                 /* drawing only: the first projectile of its weapon's volley (combat volley_start) - the
                                   * Titanium engine gives that one a light (mercsw 0x1006c470 / 0x1006cd6c) */
     int   ams_d;                 /* GBL: an AMS's intercept distance rolled for it (slot +0x54, 0x54bb0), cm; -1 not rolled */
+    int   pool;                  /* GBL: which of its kind's pool objects it took - the first free one in the mission's pool
+                                  * records' order (0x53823's scan of the 255 slots), 0..: its start offset (pool_r, 0x54730)
+                                  * and, for drawing, its card (the Flamer's cards differ by entry) */
 } msim_shot;
 
 /* the engine's integer servo (0x1003b700 set-up, 0x1003b740 step): value += (now - t) x (target - value) / tau in ticks,
@@ -121,8 +126,16 @@ typedef struct {
     float        fx_rot[9];       /* while fx_rot_ok: the orientation of the effect on_effect is starting - a muzzle flash's /
                                    * jet flame's mount node (0x10044a70: the node's world matrix copied to the effect object) */
     int          fx_rot_ok;
-    int          fx_refused;      /* set by on_effect when the effect pool refused the effect (0x10045d00: a neighbour of the
-                                  * type within 5 m, or no free slot) - then neither the effect nor its chunks */
+    int          fx_refused;      /* the effect pool refused the effect being started (GBL 0x52040: no pool object of the type
+                                  * free - the scene's pool records may have none - or a neighbour of the type within 5 m) -
+                                  * then neither the effect, its chunks nor its area damage; set by msim's own pool (fxw) or,
+                                  * when that is not loaded, by on_effect */
+    /* GBL: the effect pool (0x52040 / 0x52670: 255 slots made from the mission's pool records' XPLO objects - fx_load_scene
+     * on the scene): msim starts every effect in it (fxw) and then calls on_effect with fx_index = the live entry (its slot,
+     * start, end, follow and orientation) for the front end to show; -1 while on_effect runs for anything else */
+    fx_defs     *fxd;
+    fx_world    *fxw;
+    int          fx_index;
     void       (*on_sound)(void *user, int sound, const float pos[3]);   /* a positional sound at pos (footsteps ...); -1 = the collision clang; pos NULL = a cockpit sound at volume 0x32 */
     void       (*on_radio)(void *user, const char *sound);   /* a mission radio message (SNDS name), voice channel */
     /* the player's death sequence starts (controller case 4's first run, 0x1001a180: 0x1001be40 the death explosion), just
@@ -170,6 +183,8 @@ typedef struct {
     float       *online_at;      /* per actor: sim ms the mech comes online (start-up, engine 0x1001a180 state 0 -> 2) */
     float        player_online_at;
     unsigned    *fly_seen;       /* [actor + 1] (0 the player): the blown-off locations already sent flying (blow_offs) */
+    unsigned char *scattered;    /* [actor]: a wreck another unit ran into, blown apart (GBL MW2.EXE 0x20320 -> 0x20d60): all
+                                  * its pieces flying or gone - out of the probes, shots, contacts and drawing */
     float       *radius;         /* per actor: contact radius, cm (MGEO int[6]; engine 0x1000ba20 touches at r1 + r2) */
     float        player_radius;
     float        player_vel[3];  /* the player's velocity, cm/tick (x, y, z; set by the front end): mech contacts use the
@@ -191,7 +206,9 @@ typedef struct {
     int         *seen_node;      /* per actor: the star's node last applied (0x10014520 runs on a change) */         /* per actor: whom it attacks (state 3), -1 the player, -2 none */    /* PLNT payload +0x38 == 0: explosions may take the scene light (0x1003de48 -> DAT_1025a6a8) */
     float       *centre_h;       /* per actor: centre above the feet, cm (MGEO int[0]: the climbable rise) */
     float        player_centre_h;
-    int         *cmd;            /* per actor: commanded AI state (2 attack, 5 follow, 7 patrol, 8 godirect, 11 shutdown), 0 none */
+    float       *fly_y;          /* per actor: GBL class 2 (aircraft, hovercraft, submarines): the height it holds, cm -
+                                  * the MGEO int[0] of its skeleton's MGDF, absolute (GBL MW2.EXE 0x278ac); NAN for others */
+    int         *cmd;           /* per actor: commanded AI state (2 attack, 5 follow, 7 patrol, 8 godirect, 11 shutdown), 0 none */
     int         *cmd_target;     /* per actor: the commanded target actor (attack / defend), -1 none */
     int         *engage;         /* per actor: engine +0x154 "engage at will" (0x100124a0: 0 in the player's star, 1 elsewhere) */
     int         *mate_target;    /* per actor: the enemy it was last fighting (engine condition 6, 0x10013090), -1 none */
@@ -228,14 +245,17 @@ typedef struct {
     int          reticle_actor, reticle_bld;   /* the unit the player's aim ray last struck (0x10044810 -> DAT_1025a664, kept
                                                 * while the ray strikes nothing): an actor, or a thing (building); -1 none */
     msim_aim     player_aim;       /* the player's aim range servos (unit +0xa8 / +0x98) */
-    /* area damage (0x10046490 -> 0x10046700): live effects of the damaging types (0x1025b180) with their place, radius
-     * (the effect object's geometry +0x40) and end tick; Combat Variables SPLASH DAMAGE (MW2DIF +2, DAT_1024ac6c + 2) */
+    /* area damage (GBL 0x52670 -> 0x52900): live effects of the damaging types (0xb0d04 +0x18) with their place, radius
+     * (the pool slot object's geometry +0x40 - fx_defs.radius of the scene's pool, fx_start) and end tick; only effects the
+     * pool started (none for a type the mission's pool records lack); Combat Variables SPLASH DAMAGE (MW2DIF +2) */
     struct msim_area { int type; float pos[3], r; int32_t end;
                        int follow;   /* GBL: the unit the effect follows (effect flags 1, 0x52670: the burning effect on the unit
                                       * it hit - -1 the player, an actor), -2 none */
-                       int32_t start; } area[64];
+                       int32_t start; } area[256];
     int          area_count, splash;
-    float        fx_radius[36];   /* per effect type (GBL has 36, base 32) */
+    /* GBL 0x54730: a projectile starts 2 x its pool object's geometry radius ahead of its mount along its course (weapons
+     * without flags 0x40): that radius per weapon kind and pool entry (the kind's BTHG objects in the pool records' order) */
+    float        pool_r[16][64];
     /* Ghost Bear's Legacy */
     int          gbl_pool[16];    /* projectiles per weapon kind: MW2_SHT1's BTHG pool objects of the kind (0x53823 takes a free
                                    * slot of the weapon's kind, none free: no projectile) */

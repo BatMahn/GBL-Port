@@ -11,7 +11,10 @@
  *                keyboard's: the plain cursor-pad names are the keypad (LeftArrow = keypad 4, Home = keypad 7,
  *                Insert = keypad 0, Delete = keypad .), "Grey" ones the separate cursor block and the keypad's grey
  *                operators (GreySlash, GreyStar, GreyPlus, GreyMinus).
- * Only keyboard conditions are evaluated so far; joystick / mouse lines make a block never match (NOT YET).
+ * The devices are the GIDDI drivers the shell's Cockpit Controls names (src/cockpitcfg.c): the keyboard; the sticks
+ * (joystick, fltstck, msjstick, tmaster and GBL's wingman, vpilot, avenger) read from the first SDL joystick; the mouse;
+ * the port's gamepad (an SDL game controller). The head trackers (vio1, vio2, vfx1) have no reader: their blocks never
+ * hold (the rest of the file works as written).
  */
 #ifndef MW2_INPUTMAP_H
 #define MW2_INPUTMAP_H
@@ -25,18 +28,25 @@
 #define IM_MAX_RULES 512
 #define IM_MAX_BINDS 256
 
-typedef struct { int sign, device, code; } im_cond;   /* device 0 keyboard (code: scancode, or -1/-2/-3 Ctrl/Shift/Alt),
-                                                       * 1 a stick (joystick / fltstck / msjstick / tmaster), 2 mouse, 3 other;
-                                                       * stick / mouse code: 100 + axis (0 Left/Right, 1 Up/Down, 2 Rudder /
-                                                       * Twist, 3 Throttle), 200 + hat direction (0 up 1 right 2 down 3 left),
-                                                       * else the button number */
+typedef struct { int sign, device, code, gate, raw; } im_cond;
+                                                      /* device 0 keyboard (code: scancode, or -1/-2/-3 Ctrl/Shift/Alt),
+                                                       * 1 a stick (joystick / fltstck / msjstick / tmaster / wingman / vpilot /
+                                                       * avenger), 2 mouse, 3 a driver without a reader (vio1, vio2, vfx1),
+                                                       * 4 the port's gamepad; stick / mouse / gamepad code: 100 + axis (sticks:
+                                                       * 0 Left/Right, 1 Up/Down, 2 Rudder / Twist, 3 Throttle; the gamepad: SDL's
+                                                       * LeftX LeftY RightX RightY LeftTrigger RightTrigger), 200 + hat x 4 +
+                                                       * direction (0 up 1 right 2 down 3 left), 300 + axis x 2 + (1: positive)
+                                                       * an axis past half way as a button, else the button number (the
+                                                       * gamepad: SDL's A .. DPadRight, 15 / 16 the triggers past half way);
+                                                       * gate: +n the stick's button n - 1 must be held, -n must not (the
+                                                       * Spaceball's "&C" / "&D" axes); raw: no driver shaping */
 /* the live state of the non-keyboard devices (set by the front end each frame) */
 /* the mouse as the GIDDI driver keeps it (MOUSE.DLL): INT 33h reset, limits 0..(1024 - 1) x 8 on both axes (fn 7 / 8,
  * 0x10bc1 / 0x10cc7), 1 mickey per 8 pixels on both (fn 0Fh CX = DX = 1, 0x10dcd), the pointer centred (fn 4,
  * 0x10870); its event handler (fn 0Ch) leaves the position in 0x4f2 / 0x4f4, read >> 3 (0x107b0) - a 1024 x 1024 box
  * moved 1 unit a mickey and stopped at its edges; an axis reads ((2 pos - 1024) << 16) / 1024 (0x10350). Kept here as
  * the offset from the centre, -512..511; one SDL relative-motion unit is taken as one mickey (port) */
-typedef struct { SDL_Joystick *joy; Uint32 mouse_buttons; int mouse_x, mouse_y; } im_devstate;
+typedef struct { SDL_Joystick *joy; Uint32 mouse_buttons; int mouse_x, mouse_y; SDL_GameController *pad; } im_devstate;
 static im_devstate g_im_dev;
 typedef struct { char name[40]; int ncond; im_cond c[6]; } im_rule;
 typedef struct { char action[40]; SDL_Keycode key; int ctrl, alt, shift; } im_bind;
@@ -107,6 +117,76 @@ static SDL_Scancode im_key_scancode(SDL_Keycode k)
     return SDL_SCANCODE_UNKNOWN;
 }
 
+/* an INPUT.MAP device name: the driver's device class (see im_cond) */
+static int im_device(const char *b)
+{
+    static const char *const STICK[] = {"joystick", "fltstck", "msjstick", "tmaster", "wingman", "vpilot", "avenger"};
+    size_t i;
+    if (strcasecmp(b, "keyboard") == 0) return 0;
+    if (strcasecmp(b, "mouse") == 0) return 2;
+    if (strcasecmp(b, "gamepad") == 0) return 4;
+    for (i = 0; i < sizeof STICK / sizeof STICK[0]; i++) if (strcasecmp(b, STICK[i]) == 0) return 1;
+    return 3;
+}
+
+/* an input name of a stick, the mouse or the gamepad (the names each GIDDI driver gives its inputs; src/cockpitcfg.c) */
+static void im_input_code(im_cond *k, const char *dev, const char *c)
+{
+    static const struct { const char *n; int code; } IN[] = {   /* the base drivers (joystick, fltstck, msjstick, tmaster) */
+        {"Left/Right", 100}, {"Up/Down", 101}, {"Rudder", 102}, {"Twist", 102}, {"Throttle", 103},
+        {"HatUp", 200}, {"HatRight", 201}, {"HatDown", 202}, {"HatLeft", 203},
+        {"Button1", 0}, {"Trigger", 0}, {"LeftBtn", 0}, {"Button2", 1}, {"TopBtn", 1}, {"RearBtn", 1},
+        {"MiddleBtn", 2}, {"BottomBtn", 3}, {"RightBtn", 3}};
+    /* WINGMAN.DLL (TMASTER.DLL's code with four buttons): Trigger, Button1-3, the hat */
+    static const struct { const char *n; int code; } WING[] = {
+        {"Left/Right", 100}, {"Up/Down", 101}, {"Rudder", 102}, {"Trigger", 0}, {"Button1", 1}, {"Button2", 2}, {"Button3", 3},
+        {"HatUp", 200}, {"HatRight", 201}, {"HatDown", 202}, {"HatLeft", 203}};
+    /* VPILOT.DLL (FLTSTCK.DLL's code): the yoke In/Out and Left/Right, rudder, throttle; six buttons, two hats */
+    static const struct { const char *n; int code; } VP[] = {
+        {"Left/Right", 100}, {"In/Out", 101}, {"Rudder", 102}, {"Throttle", 103},
+        {"Button1", 0}, {"Button2", 1}, {"Button3", 2}, {"Button4", 3}, {"Button5", 4}, {"Button6", 5},
+        {"LHatUp", 200}, {"LHatRight", 201}, {"LHatDown", 202}, {"LHatLeft", 203},
+        {"RHatUp", 204}, {"RHatRight", 205}, {"RHatDown", 206}, {"RHatLeft", 207}};
+    /* AVENGER.DLL (Spaceball Avenger, six axes Tx Ty Tz Rx Ry Rz and buttons A-F; read as a six-axis SDL joystick in
+     * that axis order - ASSUMED). AVENGER.TXT: Tz is the throttle only while C is held, Rx / Ry turn the torso unless D
+     * is held, the pilot's view while it is; TurnLeft / TurnRight / JumpJet / LookUp / LookDown are the motions as
+     * buttons (half way - ASSUMED; JumpJet = Ty up, taken as negative - ASSUMED); no shaping (ASSUMED) */
+    static const struct { const char *n; int code, gate; } AV[] = {
+        {"Tx", 100, 0}, {"Ty", 101, 0}, {"Tz&C", 102, 3}, {"Rx", 103, -4}, {"Ry", 104, -4}, {"Rx&D", 103, 4}, {"Ry&D", 104, 4},
+        {"ButtonA", 0, 0}, {"ButtonB", 1, 0}, {"ButtonC", 2, 0}, {"ButtonD", 3, 0}, {"ButtonE", 4, 0}, {"ButtonF", 5, 0},
+        {"TurnLeft", 300, 0}, {"TurnRight", 301, 0}, {"JumpJet", 302, 0}, {"LookUp", 306, 0}, {"LookDown", 307, 0}};
+    /* the gamepad (port addition): SDL_GameController's axes and buttons, then the triggers and the stick directions as
+     * buttons */
+    static const char *const PADA[] = {"LeftX", "LeftY", "RightX", "RightY", "LeftTrigger", "RightTrigger"};
+    static const char *const PADB[] = {"A", "B", "X", "Y", "Back", "Guide", "Start", "LeftStick", "RightStick", "LeftShoulder",
+        "RightShoulder", "DPadUp", "DPadDown", "DPadLeft", "DPadRight", "LT", "RT"};
+    static const struct { const char *n; int code; } PADD[] = {
+        {"LeftStickLeft", 300}, {"LeftStickRight", 301}, {"LeftStickUp", 302}, {"LeftStickDown", 303},
+        {"RightStickLeft", 304}, {"RightStickRight", 305}, {"RightStickUp", 306}, {"RightStickDown", 307}};
+    size_t q;
+    k->code = -100;
+    if (k->device == 4) {
+        k->raw = 1;
+        for (q = 0; q < sizeof PADA / sizeof PADA[0]; q++) if (strcasecmp(PADA[q], c) == 0) k->code = 100 + (int)q;
+        for (q = 0; q < sizeof PADB / sizeof PADB[0]; q++) if (strcasecmp(PADB[q], c) == 0) k->code = (int)q;
+        for (q = 0; q < sizeof PADD / sizeof PADD[0]; q++) if (strcasecmp(PADD[q].n, c) == 0) k->code = PADD[q].code;
+        return;
+    }
+    if (strcasecmp(dev, "wingman") == 0) { for (q = 0; q < sizeof WING / sizeof WING[0]; q++) if (strcasecmp(WING[q].n, c) == 0) k->code = WING[q].code; return; }
+    if (strcasecmp(dev, "vpilot") == 0) { for (q = 0; q < sizeof VP / sizeof VP[0]; q++) if (strcasecmp(VP[q].n, c) == 0) k->code = VP[q].code; return; }
+    if (strcasecmp(dev, "avenger") == 0) {
+        k->raw = 1;
+        for (q = 0; q < sizeof AV / sizeof AV[0]; q++) if (strcasecmp(AV[q].n, c) == 0) { k->code = AV[q].code; k->gate = AV[q].gate; }
+        return;
+    }
+    for (q = 0; q < sizeof IN / sizeof IN[0]; q++) if (strcasecmp(IN[q].n, c) == 0) k->code = IN[q].code;
+    if (k->device == 2) {   /* the mouse: LeftBtn 1, MiddleBtn 2, RightBtn 3 (SDL numbering) */
+        if (strcasecmp(c, "LeftBtn") == 0) k->code = SDL_BUTTON_LEFT;
+        else if (strcasecmp(c, "MiddleBtn") == 0) k->code = SDL_BUTTON_MIDDLE;
+        else if (strcasecmp(c, "RightBtn") == 0) k->code = SDL_BUTTON_RIGHT;
+    }
+}
+
 static void im_parse_gamekey(inputmap *m, FILE *f)
 {
     char line[256];
@@ -150,25 +230,9 @@ static void im_parse_input(inputmap *m, FILE *f)
         if (r && sscanf(p, "%63s %63s %63s", a, b, c) == 3 && r->ncond < 6) {
             im_cond *k = &r->c[r->ncond++];
             k->sign = a[0] == '-' ? -1 : 1;
-            k->device = strcasecmp(b, "keyboard") == 0 ? 0 : strcasecmp(b, "mouse") == 0 ? 2 :
-                        (strcasecmp(b, "joystick") == 0 || strcasecmp(b, "fltstck") == 0 || strcasecmp(b, "msjstick") == 0 ||
-                         strcasecmp(b, "tmaster") == 0) ? 1 : 3;
+            k->device = im_device(b);
             if (k->device == 0) k->code = im_scancode(c);
-            else {
-                static const struct { const char *n; int code; } IN[] = {
-                    {"Left/Right", 100}, {"Up/Down", 101}, {"Rudder", 102}, {"Twist", 102}, {"Throttle", 103},
-                    {"HatUp", 200}, {"HatRight", 201}, {"HatDown", 202}, {"HatLeft", 203},
-                    {"Button1", 0}, {"Trigger", 0}, {"LeftBtn", 0}, {"Button2", 1}, {"TopBtn", 1}, {"RearBtn", 1},
-                    {"MiddleBtn", 2}, {"BottomBtn", 3}, {"RightBtn", 3}};
-                size_t q;
-                k->code = -100;
-                for (q = 0; q < sizeof IN / sizeof IN[0]; q++) if (strcasecmp(IN[q].n, c) == 0) k->code = IN[q].code;
-                if (k->device == 2) {   /* the mouse: LeftBtn 1, MiddleBtn 2, RightBtn 3 (SDL numbering) */
-                    if (strcasecmp(c, "LeftBtn") == 0) k->code = SDL_BUTTON_LEFT;
-                    else if (strcasecmp(c, "MiddleBtn") == 0) k->code = SDL_BUTTON_MIDDLE;
-                    else if (strcasecmp(c, "RightBtn") == 0) k->code = SDL_BUTTON_RIGHT;
-                }
-            }
+            else im_input_code(k, b, c);
         }
     }
     m->have_input = 1;
@@ -256,15 +320,49 @@ static float im_stick_shape(int ax, float v)
     return sm[k];
 }
 
+/* the gamepad's axis (port addition): sticks -1..1 with a dead zone of 15 % (the rest scaled to full), the triggers
+ * 0..1 (5 %) - ASSUMED, the usual SDL game controller treatment */
+static float im_pad_axis(int ax)
+{
+    float v, a, dz;
+    if (!g_im_dev.pad || ax < 0 || ax >= SDL_CONTROLLER_AXIS_MAX) return 0;
+    v = (float)SDL_GameControllerGetAxis(g_im_dev.pad, (SDL_GameControllerAxis)ax) / 32767.0f;
+    if (v < -1) v = -1;
+    if (v > 1) v = 1;
+    dz = ax >= SDL_CONTROLLER_AXIS_TRIGGERLEFT ? 0.05f : 0.15f;
+    a = v < 0 ? -v : v;
+    a = a <= dz ? 0.0f : (a - dz) / (1.0f - dz);
+    return v < 0 ? -a : a;
+}
+
+/* a stick's raw axis -1..1 */
+static float im_joy_axis(int ax)
+{
+    if (!g_im_dev.joy || ax < 0 || ax >= SDL_JoystickNumAxes(g_im_dev.joy)) return 0;
+    return (float)SDL_JoystickGetAxis(g_im_dev.joy, ax) / 32767.0f;
+}
+
+/* the condition's gate (the Spaceball's "&C" / "&D" axes): the stick button it needs held / released */
+static int im_gate_ok(const im_cond *c)
+{
+    int b, on;
+    if (!c->gate) return 1;
+    b = (c->gate < 0 ? -c->gate : c->gate) - 1;
+    on = g_im_dev.joy && b < SDL_JoystickNumButtons(g_im_dev.joy) && SDL_JoystickGetButton(g_im_dev.joy, b);
+    return c->gate > 0 ? on : !on;
+}
+
 static float im_cond_axis(const im_cond *c)
 {
     float v = 0;
     if (c->code < 100 || c->code >= 200) return 0;
     if (c->device == 1 && g_im_dev.joy) {
         int ax = c->code - 100;
-        if (ax < SDL_JoystickNumAxes(g_im_dev.joy)) v = (float)SDL_JoystickGetAxis(g_im_dev.joy, ax) / 32767.0f;
-        v = im_stick_shape(ax, v);
+        v = im_joy_axis(ax);
+        if (!c->raw) v = im_stick_shape(ax, v);
+        if (!im_gate_ok(c)) v = 0;
     } else if (c->device == 2) v = c->code == 100 ? (float)g_im_dev.mouse_x / 512.0f : c->code == 101 ? (float)g_im_dev.mouse_y / 512.0f : 0;   /* MOUSE.DLL 0x10350 */
+    else if (c->device == 4) v = im_pad_axis(c->code - 100);
     return c->sign < 0 ? -v : v;
 }
 
@@ -273,11 +371,20 @@ static int im_cond_held(const im_cond *c, const Uint8 *ks)
     int on;
     if (c->device != 0) {
         if (c->code >= 100 && c->code < 200) return 1;   /* an axis: the block's other conditions decide */
-        if (c->device == 1 && g_im_dev.joy) {
-            if (c->code >= 200) { Uint8 h = SDL_JoystickNumHats(g_im_dev.joy) > 0 ? SDL_JoystickGetHat(g_im_dev.joy, 0) : 0;
-                                  static const Uint8 HB[4] = {SDL_HAT_UP, SDL_HAT_RIGHT, SDL_HAT_DOWN, SDL_HAT_LEFT}; on = (h & HB[c->code - 200]) != 0; }
+        if (c->code >= 300 && c->code < 400) {           /* an axis past half way, as a button */
+            int ax = (c->code - 300) / 2, pos = (c->code - 300) & 1;
+            float v = c->device == 1 ? im_joy_axis(ax) : c->device == 4 ? im_pad_axis(ax) : 0;
+            on = pos ? v > 0.5f : v < -0.5f;
+        } else if (c->device == 1 && g_im_dev.joy) {
+            if (c->code >= 200) { int hat = (c->code - 200) / 4;
+                                  Uint8 h = SDL_JoystickNumHats(g_im_dev.joy) > hat ? SDL_JoystickGetHat(g_im_dev.joy, hat) : 0;
+                                  static const Uint8 HB[4] = {SDL_HAT_UP, SDL_HAT_RIGHT, SDL_HAT_DOWN, SDL_HAT_LEFT}; on = (h & HB[(c->code - 200) & 3]) != 0; }
             else on = c->code >= 0 && c->code < SDL_JoystickNumButtons(g_im_dev.joy) && SDL_JoystickGetButton(g_im_dev.joy, c->code);
         } else if (c->device == 2) on = c->code > 0 && (g_im_dev.mouse_buttons & SDL_BUTTON(c->code)) != 0;
+        else if (c->device == 4 && g_im_dev.pad) {
+            if (c->code == 15 || c->code == 16) on = im_pad_axis(c->code == 15 ? SDL_CONTROLLER_AXIS_TRIGGERLEFT : SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > 0.5f;
+            else on = c->code >= 0 && c->code < SDL_CONTROLLER_BUTTON_MAX && SDL_GameControllerGetButton(g_im_dev.pad, (SDL_GameControllerButton)c->code);
+        }
         else on = 0;
         return c->sign > 0 ? on : !on;
     }
@@ -290,7 +397,7 @@ static int im_cond_held(const im_cond *c, const Uint8 *ks)
 }
 
 /* the control's axis value now: the sum over its blocks whose other conditions hold (an analog control in INPUT.MAP:
- * throttle, legs_pan_delta, torso_pan, torso_tilt, ...) on device 1 (stick) or 2 (mouse); *present = it has such a block
+ * throttle, legs_pan_delta, torso_pan, torso_tilt, ...) on device 1 (stick), 2 (mouse) or 4 (gamepad); *present = it has such a block
  * (2: and one whose other conditions hold now - the engine reads an axis only then, 0x100396e0) */
 static float im_axis(const inputmap *m, const char *control, const Uint8 *ks, int device, int *present)
 {

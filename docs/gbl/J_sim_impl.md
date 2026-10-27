@@ -107,9 +107,24 @@ Sources read: /home/claude/gbl/re/mw2gbl_decomp.c + mw2gbl.elf (GBL sim), shellg
   SRM 32, LRM 48, bullet 32, PPC 8, gauss 6, flamer 32, torpedo 8, Arrow IV 5, NARC 3; loaded in msim_init). Test: Torpedo
   max 8 alive, Arrow IV <= 2 (refire), NARC 1.
 - missile offset at launch for kinds 3 4 9 10 12 (0x53823 -> 0x54730) in GBL (base 3 / 4).
+- start point (agent V): 0x54730 then moves the projectile's object 2 x its pool object's geometry radius (+0x6c -> +0x40:
+  the POLY's vertices x OBJ scale, merged objects for flags 0x1000, farthest vertex from the box centre - 0x50e60 / 0x39230
+  / 0x389f0) along the course (0x1e210), for every kind unless the weapon has flags 0x40 (the Flamer); 0x516b0 flies the
+  projectile from its object's position, so the stretch from the mount is never hit-tested. MW2_SHT1: lasers 2 x 660,
+  missiles 2 x 220, bullets / slugs 2 x 1000 (BULLET's two objects span z 0..2000), PPC 2 x 360, gauss 2 x 141, torpedo
+  2 x 306, Arrow IV 2 x 553, NARC 2 x 253 cm; per mission (petesht1 lasers 2 x 1100). msim `pool_r[kind][entry]`,
+  `spawn_shot_h`; glview no longer draws the model ahead. DOSBox A/B: the original MW2.EXE against a copy with the jne at
+  VA 0x54879 (file 0x71879) made jmp (no push) - BASSSCN1 Dire Wolf, locked torpedoes: unpatched the torpedo first shows
+  some 4-6 m out, patched it passes right over the camera (ref V_tl_* / V_tn_*, w/push_ab.png).
+- course length (0x53823 -> 0x40500): the direction is normalised by the octagonal estimate (4 max + mid + min) / 4, so a
+  shot off the axes leaves up to 15 % above the table speed; the same length in the guidance (0x51cd0) and its 1 m test.
 - guided per the table's +0x28 (`msim_weapon_guided`), lock window min from +0x4c (`lock_min`, base values unchanged).
 - Torpedo (flags 0x10): 0x51cd0's eased guidance - the acceleration moves toward the steering by ticks/0x2d8 of the
-  difference.
+  difference. Agent V re-read 0x51cd0's code (VA 0x51e4f..0x51ed8) and the call (0x51b74: target class +0x38 != 0 and age
+  +0x24 > 0, the age advanced by 0x51660 before): the port matched already. DOSBox BASSSCN1 (V_tl_*): locked torpedoes
+  bend down onto the lower target over 1-2 s, as the port's; R's "port torpedoes climb straight" was an unlocked run
+  (homing -2: no guidance, drop 0 - straight along the aim line) against a locked DOS one. Arrow IV (flags 5) / NARC (0x85):
+  the plain steering.
 - kinds 8 / 9 / 10 / 12 in the update 0x516b0: no kind-specific movement or hit code (only kind 7 sets hit flag 0x10, and
   flags 0x80 the NARC bit) - they move and hit like any projectile. Torpedo: no water test found (ASSUMED: flies anywhere).
 - GBL 0x516b0: the proximity flag (+0x3d & 0x80) with no homing class -> the projectile ends where it is with its plain
@@ -123,8 +138,15 @@ Sources read: /home/claude/gbl/re/mw2gbl_decomp.c + mw2gbl.elf (GBL sim), shellg
 - fx_impact_type (0x52040): GBL types up to 0x23; visuals 0x22 / 0x23 take the missiles' mapping (ground 0x0c, player 0x11,
   structure 0x13, a unit their own 34 / 35) and the 0x10b chunks (missile_fx). fx_spawn's 5 m neighbour rule in GBL: types
   < 0x17 or > 0x21 without the splash flag.
+- effect pool (agent V): msim starts every effect in its own pool (`fx_start`: fx_spawn on the scene's pool records,
+  fx_load_scene) as 0x52040 does - a type with no XPLO object in the mission's pool records is never started (no area
+  damage: PETESCN1's petesht1 has no 10 / 35, MW2_SHT2 no 7 / 13 / 21-26 / 34 / 35), a type whose objects are all live or
+  with neighbours within 5 m (octagonal distance) is refused; the front end shows the entry it was given (fx_adopt,
+  msim.fx_index). Before, only glview refused (the sweep had no pool at all).
 - area damage GBL 0x52670 -> 0x52900 (`gbl_area_damage`): every damaging effect; a follow effect (flags 1: burning) rides the
-  unit it struck (an effect not on a unit lasts 0xb6 ticks); reach = the effect's radius, nuke age x 0x1c cm, Arrow IV age x
+  unit it struck (an effect not on a unit lasts 0xb6 ticks); reach = the radius of the pool object the effect took (its
+  slot's geometry +0x40 in the scene's pool records, fx_defs.radius - zackSHT1: missile blasts 141 cm against MW2_SHT1's
+  564, petesht1 1129; was MW2_SHT1's card size for every mission), nuke age x 0x1c cm, Arrow IV age x
   0x18 cm; mechs hit only with SPLASH DAMAGE on, or always for 0x16 / 0x23: octagonal distance < unit radius + reach ->
   +0x20 x ticks (16.16) on locations 2-8, a quarter on the head (x2 for a destroyed unit), +0x24 x ticks heat.
 - INFERNO finding: its direct damage and target heat are 0; the heat comes only from effect 10 "burning" (visual 10 -> type

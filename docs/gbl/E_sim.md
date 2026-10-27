@@ -219,8 +219,9 @@ token streams of the two decompiles with FUN_/DAT_/LAB_ names, numbers and regis
   (base 0x52080): every frame `if (entry->fn0) fn0(mech)`; firing `n = entry->fn1(mech, entry, slot)` = projectiles
   spent (0 stops the volley). Flags (entry +0x08, copied to the projectile slot +4): 1 = volley sound on the first
   projectile, 2 = sound on every projectile (priority 0x432 instead of 0x32), 4 = selectable in weapon groups
-  (0x53af0 / 0x53d00 test `& 4`), 0x10 (Torpedo), 0x20 = animate textures +0x0c..+0x0c+7 while firing (Flamer:
-  118-125, 0x53823 FUN_00038880/38830), 0x40 = projectile model not stretched along its velocity (0x54730), 0x80 = NARC
+  (0x53af0 / 0x53d00 test `& 4`), 0x10 (Torpedo: eased guidance, 0x51cd0), 0x20 = animate textures +0x0c..+0x0c+7 while
+  firing (Flamer: 118-125, 0x53823 FUN_00038880/38830), 0x40 = the projectile NOT moved 2 x its pool object's radius ahead
+  of the mount (0x54730; every other weapon is - J_sim_impl 2.3), 0x80 = NARC
   beacon (on a hit the target's +0x20 struct +0x112 |= 1, 0x516b0).
 - Decoded entries (dump: /tmp/E_w/dumpw3.py; the port's struct order: type, repeat, per_volley, speed, damage, heat,
   refire, interval, life, target_heat, ammo/t, range, f3c, drop, sound, visual):
@@ -319,6 +320,53 @@ token streams of the two decompiles with FUN_/DAT_/LAB_ names, numbers and regis
   Dispatcher GBL 0x46e00 (base 0x46060): new case 0x42 toggles DAT_000a7174 (chat entry, used by 0x46a00 / 0x323b5)
   so the base ids 0x42..0x9e are +1 in GBL (e.g. time compression 0x89 -> 0x8a, groups 0x8e-0x90 -> 0x8f-0x91); new
   case 0xa0 = TOGGLE_AMS (0x548d0). The port maps actions by name (GAMEKEY.MAP), so only the two new names matter.
+
+### 2.5b Non-walking movers: class 2 flies at a fixed height (agent U, 2026-10-26)
+- Class table 0xa6518 (9 x 0x20: class, create, init, ?, control, player-only x2, ?): classes 1 2 4 5 6 8 all use the
+  mech controller (create 0x28a00, init 0x26a50, move 0x26d00, control 0x27b00); 3 turret (0x2f300..), 7 door
+  (0x33c90..). No separate flight model: speed = the MEK walk speed, turn = the mech rule, yaw only (no pitch / roll
+  per frame, no banking), the same AI (no class test in it).
+- New in GBL (base DOS 0x26995 and the 3D editions have none): the move ends with `cmp $2,(class)` -> y = controller
+  +0xd0 (0x278ac), the MGEO int[0] that MGDF loads (0x500a6 -> 0x4ca90). For class 2 that value is an absolute height:
+  AIRCRF1D 3950 m (ZACK's Jaguar fighters, the JumpShip deck ~3904 m), AIRCRFTD 95 m (BRON / TIM helicopters), SUBA /
+  SUBB / SUBD 185 / 194 / 250 m (PETE's submarines), VEHICLEB 1.75 m (MARO hover limo), VEHICLEH 0.55 m (TAUP). The unit
+  is level there every step, "grounded" (no fall, no jump lift, vy 0); dead, it stays where it was (state 4 returns).
+- Class 5 / 8 (AIRCRFTE / X / Y gunships, DROPA) have no such rule: they move as walkers; AIRCRFTE's model itself is
+  built 100 m above its root.
+- DOSBox (original MW2.EXE, "MW2 ZACKSCN1", invulnerable): U_zack_5..150 - the fighters fly in at the deck's height from
+  ~30 s, shoot, and the friendly turrets bring them down ("Enemy vehicle destroyed" from ~90 s). BRON (U_bron_3..90):
+  helicopters / gunships over the player.
+- Port: msim fly_y (msim_init, msim_step: y = fly_y, ground = y, no jets / gravity). ASSUMED: the model's root drawn at
+  that height (the port's walker mapping puts the feet at engine y - MGEO int[0]; for class 2 that would be y 0, which
+  the ZACK capture rules out).
+- ZACKARE3: a DUMMY-model object that a GT chunk makes a class-2 thing (hp 0: indestructible), on a looping 5 s path
+  over the deck - the destroy target of the fighters (ZACKENS1, table 1 node 2) and of the Jaguar turrets (ZACKENT1-4).
+  The port had dropped every DUMMY object, so the node had no target and passed at once (the fighters idled 1.4 km out).
+  Now kept as an invisible point (no faces, no collision - ASSUMED for the DUMMY model's one-vertex face); the only
+  such object in the GBL data.
+
+### 2.5c Wrecks in a unit's way; the AI's obstacle scan (agent W, 2026-10-26)
+- MAROSCN1's hover limousine circled the wreck of the Falcon Nova killed on its road at (21620, -2299) for good (the
+  sweep stalled at 664 s). Three DOS rules the port lacked:
+- Running into a wreck blows it apart (0x1fef0, the move test of every mech-controller unit in state 2 or 4, every frame
+  -> 0x20320, the unit contacts): a unit (not yet blown apart: physics +0x110 bit 0x100) whose centre is nearer the
+  mover's new centre than the two radii (+0xec; octagonal (4 max + mid + min) / 4) is a contact unless it is a wreck
+  (state +0xa4 == 4): then 0x20d60 throws every node of its object tree off (0x2b9c0 -> 0x2b880 with 999: nodes with an
+  OBJL location fly as blown-off parts, 128-slot pool; DUMMY, location 0 or pool full: just leave the collision list),
+  sets +0x110 |= 0x100, plays sound 0xb5 at it, and the move goes on as if nothing were there. (0x274ec / 0x27762: a
+  moving wreck that hits something blows itself apart - the port's wrecks never move: not modelled.) DOSBox
+  /home/claude/gbl/ref/W_m9_*: the "palex" cheat (0x46530, Ctrl+Alt+Shift + "palex" -> 0x25680 on the target: a death
+  with nothing blown off) on the Nova standing on the limousine's road; at 123-125 s the limousine reaches it, the wreck
+  flies apart and the limousine drives on (montage /home/claude/agents/W/w/m9_scatter.png). Port: msim scatter_wrecks /
+  scatter_wreck (msim.scattered[]); a blown-apart wreck is out of the AI probes, the shot test and the drawing.
+- The scan's hold between checks (0x2de80, called by the AI movement 0x2d4e0 / 0x2d590 / 0x2d6b0 and the autopilot
+  0x24fc0, which steer to the goal only when it returns 0): between checks (now < +0x18a) it returns the remembered
+  obstacle (+0x186 != 0, set and cleared with the side +0x18e), so while a side is set the inputs written last are held -
+  the avoidance turn or, after a check that found the way clear, that frame's goal steering - for the 0x5b-tick re-check.
+  The port's AI steered to the goal every frame between checks (the player's autopilot already held).
+- The scan's height: 0x2e230 casts the probes at unit +0x54. A GBL class 2 unit's +0x54 is its MGEO int[0] itself
+  (0x278ac -> 0x278d0): the limousine probes at 1.75 m, not 1.75 + 1.75.
+- Also: the AI probe now leaves out blown-off parts (they leave the collision list, 0x2c280), as the shot test did.
 
 ### 2.6 Not found / checked negative
 - No sim code specific to Elementals or Inner Sphere mechs: no new unit classes, skeleton names or class tests in the

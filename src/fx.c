@@ -7,17 +7,18 @@
 #include "wtable.h"   /* the weapon table's muzzle effects */
 
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-/* GBL MW2.EXE 0xb0d04 (36 x 0x2c): { duration ticks, sound, light } - the base engine's rows (0x1025b168, their 3Dfx
- * durations kept) with GBL's changes: 10 "burning" (was empty: 910 ticks, sound 467, lit), 22 the nuke 1820 ticks (5460),
+/* GBL MW2.EXE 0xb0d04 (36 x 0x2c): { +0 duration ticks, +8 sound, +0x10 light }, as GBL has them (its durations,
+ * e.g. 273 / 254 / 582); GBL's changes over the base rows: 10 "burning" (was empty: 910 ticks, sound 467, lit), 22 the nuke 1820 ticks (5460),
  * 32 / 33 the Torpedo's 36-tick flashes, 34 the torpedo blast (254, sound 457), 35 Arrow IV (254, sound 465) */
 static const int TABLE[FX_TYPES][3] = {   /* duration, sound, light */
-    {271, 251, 0}, {271, 251, 0}, {271, 251, 0}, {253, 210, 1}, {253, 210, 1}, {90, 250, 0},
-    {579, 235, 1}, {398, 188, 0}, {90, 248, 0}, {162, 239, 0}, {910, 467, 1}, {1810, -1, 0},
-    {398, 210, 1}, {579, 246, 1}, {72, 249, 0}, {72, 249, 0}, {72, 249, 0}, {108, 255, 1},
-    {144, 252, 0}, {362, 210, 1}, {362, 210, 1}, {579, 235, 1}, {1820, 209, 1}, {36, -1, 0},
+    {273, 251, 0}, {273, 251, 0}, {273, 251, 0}, {254, 210, 1}, {254, 210, 1}, {91, 250, 0},
+    {582, 235, 1}, {400, 188, 0}, {91, 248, 0}, {163, 239, 0}, {910, 467, 1}, {1820, -1, 0},
+    {400, 210, 1}, {582, 246, 1}, {72, 249, 0}, {72, 249, 0}, {72, 249, 0}, {109, 255, 1},
+    {145, 252, 0}, {364, 210, 1}, {364, 210, 1}, {582, 235, 1}, {1820, 209, 1}, {36, -1, 0},
     {36, -1, 0}, {72, -1, 0}, {36, -1, 0}, {36, -1, 0}, {36, -1, 0}, {36, -1, 0},
     {36, -1, 0}, {36, -1, 0}, {36, -1, 0}, {36, -1, 0}, {254, 457, 1}, {254, 465, 1},
 };
@@ -107,14 +108,68 @@ static void card_polys(fx_defs *d, int type, int si, const wtb_object *o, const 
     }
 }
 
-int fx_load(prj_archive *a, fx_defs *d)
+int fx_pool_records(prj_archive *a, const char *scene, char names[][17], int max)
+{
+    bwd_mission m;
+    int n = 0, k, q;
+    if (scene && scene[0] && bwd_mission_load(a, scene, &m) == 0) {
+        for (k = 0; k < m.record_count && n < max; k++)
+            for (q = 0; q < m.records[k].chunk_count; q++)
+                if (strcmp(m.records[k].chunks[q].tag, "XPLO") == 0 || strcmp(m.records[k].chunks[q].tag, "BTHG") == 0) {
+                    snprintf(names[n++], 17, "%s", m.records[k].name);
+                    break;
+                }
+        bwd_mission_free(&m);
+    }
+    if (n == 0 && max > 0) snprintf(names[n++], 17, "MW2_SHT1");
+    return n;
+}
+
+float fx_model_radius(prj_archive *a, int model, const float scale[3])
+{
+    prj_record mr;
+    wtb_model m;
+    float r = -1.0f;
+    int pt = prj_find_type(a, "POLY");
+    if (model < 0 || pt < 0 || prj_read(a, pt, model, &mr) != PRJ_OK) return -1.0f;
+    if (wtb_parse(mr.data, mr.size, &m) == 0) {
+        int o, first = 0, last = 0, v, q, merge = 0;
+        float mn[3] = {1e30f, 1e30f, 1e30f}, mx[3] = {-1e30f, -1e30f, -1e30f}, r2 = 0;
+        for (o = 0; o < m.object_count; o++) {   /* which objects end up in the geometry the object is made with */
+            if (o == 0 || (m.objects[o].flags & 0x2000)) { first = last = o; merge = (m.objects[o].flags & 0x1000) != 0; }
+            else if (merge || (m.objects[o].flags & 0x1000)) { last = o; merge = 1; }
+        }
+        for (o = first; o <= last && o < m.object_count; o++)
+            for (v = 0; v < m.objects[o].vert_count; v++) {
+                const float p[3] = {(float)m.objects[o].verts[v].x * scale[0], (float)m.objects[o].verts[v].y * scale[1], (float)m.objects[o].verts[v].z * scale[2]};
+                for (q = 0; q < 3; q++) { if (p[q] < mn[q]) mn[q] = p[q]; if (p[q] > mx[q]) mx[q] = p[q]; }
+            }
+        for (q = 0; q < 3; q++) { mn[q] = mn[q] <= mx[q] ? floorf((mn[q] + mx[q]) * 0.5f) : 0.0f; }   /* the centre (>> 1) */
+        for (o = first; o <= last && o < m.object_count; o++)
+            for (v = 0; v < m.objects[o].vert_count; v++) {
+                const float d0 = (float)m.objects[o].verts[v].x * scale[0] - mn[0], d1 = (float)m.objects[o].verts[v].y * scale[1] - mn[1],
+                            d2 = (float)m.objects[o].verts[v].z * scale[2] - mn[2];
+                if (d0 * d0 + d1 * d1 + d2 * d2 > r2) r2 = d0 * d0 + d1 * d1 + d2 * d2;
+            }
+        r = floorf(sqrtf(r2) + 0.5f);   /* ROUND */
+        wtb_free(&m);
+    }
+    prj_record_free(&mr);
+    return r;
+}
+
+int fx_load(prj_archive *a, fx_defs *d) { return fx_load_scene(a, d, NULL); }
+
+int fx_load_scene(prj_archive *a, fx_defs *d, const char *scene)
 {
     prj_record r;
     bwd_chunk *c;
-    int n, k, model = -1, scale = 1, run[FX_FRAMES], nrun = 0, run_closed = 0;
+    int n, k, model = -1, scale = 1, run[FX_FRAMES], nrun = 0, run_closed = 0, pr, npool;
+    char pool[8][17];
     float sc3[3] = {1, 1, 1};
     memset(d, 0, sizeof *d);
     for (k = 0; k < FX_TYPES; k++) d->anim[k] = -1;
+    for (k = 0; k < FX_TYPES * 32; k++) { d->card_slot[k / 32][k % 32] = -1; d->card_xplo[k / 32][k % 32] = -1; d->card_restart[k / 32][k % 32] = 1; }
 
     /* frames: mw2_xpl1 */
     if (prj_read_named(a, "BWD", "MW2_XPL1", &r) == 0) {
@@ -142,80 +197,105 @@ int fx_load(prj_archive *a, fx_defs *d)
         prj_record_free(&r);
     }
 
-    /* pool objects: MW2_SHT1 (OBJ then XPLO) */
-    if (prj_read_named(a, "BWD", "MW2_SHT1", &r) != 0) return -1;
-    n = bwd_chunks(r.data, r.size, NULL, 0);
-    c = n > 0 ? calloc((size_t)n, sizeof *c) : NULL;
-    if (!c) { prj_record_free(&r); return -1; }
-    bwd_chunks(r.data, r.size, c, n);
-    for (k = 0; k < n; k++) {
-        if (strcmp(c[k].tag, "OBJ") == 0 && c[k].size >= 52) {
-            model = (uint16_t)rd16(c[k].data + 48);
-            scale = (int32_t)(c[k].data[6] | c[k].data[7] << 8 | c[k].data[8] << 16 | (uint32_t)c[k].data[9] << 24);   /* OBJ scale x */
-            if (scale < 1) scale = 1;
-            {
-                int q;
-                for (q = 0; q < 3; q++) {
-                    const uint8_t *d3 = c[k].data + 6 + 4 * q;
-                    sc3[q] = (float)(int32_t)(d3[0] | d3[1] << 8 | d3[2] << 16 | (uint32_t)d3[3] << 24);
-                    if (sc3[q] == 0) sc3[q] = 1;   /* 0x100420b0: 0 -> 1 */
-                }
-            }
-        }
-        else if (strcmp(c[k].tag, "XPLO") == 0 && c[k].size >= 6) {
-            int texslot = rd16(c[k].data + 2), type = rd16(c[k].data + 4);
-            int si;
-            if (type < 0 || type >= FX_TYPES) continue;
-            si = d->slots[type]++;
-            if (si > 0 && si < FX_CARD_SLOTS && d->card_n[type][0] > 0 && model >= 0) {   /* a card type's later pool slot: its own model */
-                prj_record mr;
-                if (prj_read(a, prj_find_type(a, "POLY"), model, &mr) == 0) {
-                    wtb_model m;
-                    if (wtb_parse(mr.data, mr.size, &m) == 0 && m.object_count > 0) { card_polys(d, type, si, &m.objects[0], sc3); wtb_free(&m); }
-                    prj_record_free(&mr);
-                }
-            }
-            if (si == 0) {
-                prj_record mr;
-                d->anim[type] = texslot >= 0 && texslot < 512 ? texslot : -1;
-                if (model >= 0 && prj_read(a, prj_find_type(a, "POLY"), model, &mr) == 0) {   /* card size */
-                    wtb_model m;
-                    if (wtb_parse(mr.data, mr.size, &m) == 0 && m.object_count > 0) {
-                        const wtb_object *o = &m.objects[0];
-                        int mnx = 1 << 30, mxx = -(1 << 30), mny = 1 << 30, mxy = -(1 << 30), v;
-                        for (v = 0; v < o->vert_count; v++) {
-                            if (o->verts[v].x < mnx) mnx = o->verts[v].x;
-                            if (o->verts[v].x > mxx) mxx = o->verts[v].x;
-                            if (o->verts[v].y < mny) mny = o->verts[v].y;
-                            if (o->verts[v].y > mxy) mxy = o->verts[v].y;
-                        }
-                        if (o->vert_count) { d->half_w[type] = (float)(mxx - mnx) * 0.5f * (float)scale; d->half_h[type] = (float)(mxy - mny) * 0.5f * (float)scale; }
-                        if (o->poly_count > 0 && (o->polys[0].color & 0xf000) == 0x3000) {   /* 0x10026fc7 -> 0x1002a8e0 */
-                            int ft = -1, tp = -1, q;
-                            for (q = 0; q < o->polys[0].n; q++) {
-                                const wtb_vertex *vv = &o->verts[o->polys[0].idx[q]];
-                                if (vv->a != 0) continue;
-                                if (vv->b == 0) tp = o->polys[0].idx[q]; else ft = o->polys[0].idx[q];
-                            }
-                            if (ft >= 0 && tp >= 0) {
-                                d->bb[type] = 1;
-                                d->bb_foot[type][0] = (float)(o->verts[ft].x * scale); d->bb_foot[type][1] = (float)(o->verts[ft].y * scale); d->bb_foot[type][2] = (float)(o->verts[ft].z * scale);
-                                d->bb_top[type][0] = (float)(o->verts[tp].x * scale); d->bb_top[type][1] = (float)(o->verts[tp].y * scale); d->bb_top[type][2] = (float)(o->verts[tp].z * scale);
-                            }
-                        }
-                        /* the card's colour picks its texture slot: bit 15 set -> 0x100 + low byte (DEATH0,
-                         * JET0, MZL0); otherwise bits 4-11 (LAS0, XPL0, PPC0, BUL0: equal to XPLO's field) */
-                        if (o->poly_count > 0 && (o->polys[0].color & 0x8000)) d->anim[type] = 0x100 | (o->polys[0].color & 0xFF);
-                        card_polys(d, type, 0, o, sc3);
-                        wtb_free(&m);
+    /* pool objects: the mission's pool records (OBJ then XPLO) - MW2_SHT1, or the scene's own (fx_pool_records) */
+    npool = fx_pool_records(a, scene, pool, 8);
+    for (pr = 0; pr < npool; pr++) {
+        if (prj_read_named(a, "BWD", pool[pr], &r) != 0) { if (pr == 0) return -1; continue; }
+        n = bwd_chunks(r.data, r.size, NULL, 0);
+        c = n > 0 ? calloc((size_t)n, sizeof *c) : NULL;
+        if (!c) { prj_record_free(&r); return -1; }
+        bwd_chunks(r.data, r.size, c, n);
+        model = -1;
+        for (k = 0; k < n; k++) {
+            if (strcmp(c[k].tag, "OBJ") == 0 && c[k].size >= 52) {
+                model = (uint16_t)rd16(c[k].data + 48);
+                scale = (int32_t)(c[k].data[6] | c[k].data[7] << 8 | c[k].data[8] << 16 | (uint32_t)c[k].data[9] << 24);   /* OBJ scale x */
+                if (scale < 1) scale = 1;
+                {
+                    int q;
+                    for (q = 0; q < 3; q++) {
+                        const uint8_t *d3 = c[k].data + 6 + 4 * q;
+                        sc3[q] = (float)(int32_t)(d3[0] | d3[1] << 8 | d3[2] << 16 | (uint32_t)d3[3] << 24);
+                        if (sc3[q] == 0) sc3[q] = 1;   /* 0x100420b0: 0 -> 1 */
                     }
-                    prj_record_free(&mr);
+                }
+            }
+            else if (strcmp(c[k].tag, "XPLO") == 0 && c[k].size >= 6) {
+                int texslot = rd16(c[k].data + 2), type = rd16(c[k].data + 4);
+                int si;
+                if (type < 0 || type >= FX_TYPES) continue;
+                si = d->slots[type]++;
+                if (si < 32) {   /* GBL: the slot this pool object's card shows, and the one its start restarts */
+                    prj_record mr;
+                    d->radius[type][si] = fx_model_radius(a, model, sc3);
+                    d->card_xplo[type][si] = texslot >= 0 && texslot < 512 ? texslot : -1;
+                    d->card_slot[type][si] = d->card_xplo[type][si];
+                    if (model >= 0 && prj_read(a, prj_find_type(a, "POLY"), model, &mr) == 0) {
+                        wtb_model m;
+                        if (wtb_parse(mr.data, mr.size, &m) == 0) {
+                            if (m.object_count > 0 && m.objects[0].poly_count > 0 && (m.objects[0].polys[0].color & 0xf000) == 0x3000) {
+                                int cs = (m.objects[0].polys[0].color >> 4) & 0xff, ks = d->card_xplo[type][si];
+                                d->card_slot[type][si] = cs;
+                                /* the shown slot runs from the effect's start when it is the restarted one or has the same
+                                 * frames (every base type: LAS / XPL0 / XPL4 / PPC / BUL ...) - else from its own restarts */
+                                d->card_restart[type][si] = ks == cs || (ks >= 0 && d->tex[ks].frames == d->tex[cs].frames &&
+                                    memcmp(d->tex[ks].cel, d->tex[cs].cel, sizeof d->tex[cs].cel) == 0 && d->tex[ks].rate == d->tex[cs].rate);
+                            }
+                            wtb_free(&m);
+                        }
+                        prj_record_free(&mr);
+                    }
+                }
+                if (si > 0 && si < FX_CARD_SLOTS && d->card_n[type][0] > 0 && model >= 0) {   /* a card type's later pool slot: its own model */
+                    prj_record mr;
+                    if (prj_read(a, prj_find_type(a, "POLY"), model, &mr) == 0) {
+                        wtb_model m;
+                        if (wtb_parse(mr.data, mr.size, &m) == 0 && m.object_count > 0) { card_polys(d, type, si, &m.objects[0], sc3); wtb_free(&m); }
+                        prj_record_free(&mr);
+                    }
+                }
+                if (si == 0) {
+                    prj_record mr;
+                    d->anim[type] = texslot >= 0 && texslot < 512 ? texslot : -1;
+                    if (model >= 0 && prj_read(a, prj_find_type(a, "POLY"), model, &mr) == 0) {   /* card size */
+                        wtb_model m;
+                        if (wtb_parse(mr.data, mr.size, &m) == 0 && m.object_count > 0) {
+                            const wtb_object *o = &m.objects[0];
+                            int mnx = 1 << 30, mxx = -(1 << 30), mny = 1 << 30, mxy = -(1 << 30), v;
+                            for (v = 0; v < o->vert_count; v++) {
+                                if (o->verts[v].x < mnx) mnx = o->verts[v].x;
+                                if (o->verts[v].x > mxx) mxx = o->verts[v].x;
+                                if (o->verts[v].y < mny) mny = o->verts[v].y;
+                                if (o->verts[v].y > mxy) mxy = o->verts[v].y;
+                            }
+                            if (o->vert_count) { d->half_w[type] = (float)(mxx - mnx) * 0.5f * (float)scale; d->half_h[type] = (float)(mxy - mny) * 0.5f * (float)scale; }
+                            if (o->poly_count > 0 && (o->polys[0].color & 0xf000) == 0x3000) {   /* 0x10026fc7 -> 0x1002a8e0 */
+                                int ft = -1, tp = -1, q;
+                                for (q = 0; q < o->polys[0].n; q++) {
+                                    const wtb_vertex *vv = &o->verts[o->polys[0].idx[q]];
+                                    if (vv->a != 0) continue;
+                                    if (vv->b == 0) tp = o->polys[0].idx[q]; else ft = o->polys[0].idx[q];
+                                }
+                                if (ft >= 0 && tp >= 0) {
+                                    d->bb[type] = 1;
+                                    d->bb_foot[type][0] = (float)(o->verts[ft].x * scale); d->bb_foot[type][1] = (float)(o->verts[ft].y * scale); d->bb_foot[type][2] = (float)(o->verts[ft].z * scale);
+                                    d->bb_top[type][0] = (float)(o->verts[tp].x * scale); d->bb_top[type][1] = (float)(o->verts[tp].y * scale); d->bb_top[type][2] = (float)(o->verts[tp].z * scale);
+                                }
+                            }
+                            /* the card's colour picks its texture slot: bit 15 set -> 0x100 + low byte (DEATH0,
+                             * JET0, MZL0); otherwise bits 4-11 (LAS0, XPL0, PPC0, BUL0: equal to XPLO's field) */
+                            if (o->poly_count > 0 && (o->polys[0].color & 0x8000)) d->anim[type] = 0x100 | (o->polys[0].color & 0xFF);
+                            card_polys(d, type, 0, o, sc3);
+                            wtb_free(&m);
+                        }
+                        prj_record_free(&mr);
+                    }
                 }
             }
         }
+        free(c);
+        prj_record_free(&r);
     }
-    free(c);
-    prj_record_free(&r);
     return 0;
 }
 
@@ -234,8 +314,11 @@ int fx_spawn(fx_world *w, const fx_defs *d, int type, const float pos[3], int32_
         if ((type < 0x17 || type > 0x21) && !(fx_flags(type) & 2)) {
                              /* 0x10045d00: neighbours of the type within 5 m (0x102485f0) - DISPLAY DETAIL high allows two
                               * (three together), low none; GBL 0x52040: also types above 0x21, not a splash type (flags 2) */
-            float dx = e->pos[0] - pos[0], dy = e->pos[1] - pos[1], dz = e->pos[2] - pos[2];
-            if (dx * dx + dy * dy + dz * dz < 500.0f * 500.0f && ++near > (fx_detail_low ? 0 : 2)) return -1;
+            /* GBL 0x52040: the distance as the octagonal estimate (4 max + mid + min) >> 2 of the axis offsets */
+            float dx = fabsf(e->pos[0] - pos[0]), dy = fabsf(e->pos[1] - pos[1]), dz = fabsf(e->pos[2] - pos[2]), t;
+            if (dx < dy) { t = dx; dx = dy; dy = t; }
+            if (dx < dz) { t = dx; dx = dz; dz = t; }
+            if ((dx * 4.0f + dy + dz) * 0.25f < 500.0f && ++near > (fx_detail_low ? 0 : 2)) return -1;
         }
     }
     if (alive >= d->slots[type] || free_i < 0) return -1;   /* no free pool slot of the type */
@@ -246,7 +329,39 @@ int fx_spawn(fx_world *w, const fx_defs *d, int type, const float pos[3], int32_
     memcpy(w->e[free_i].pos, pos, sizeof w->e[free_i].pos);
     w->e[free_i].start = now;
     w->e[free_i].end = now + fx_duration(type);
+    w->e[free_i].follow = -2;
+    w->e[free_i].has_rot = 0;
+    if (slot < 32 && d->card_xplo[type][slot] >= 0) fx_anim_restart(w, d->card_xplo[type][slot], now);   /* GBL 0x52040 */
     return free_i;
+}
+
+int fx_adopt(fx_world *w, const fx_defs *d, const fx_live *src)
+{
+    int k;
+    for (k = 0; k < FX_LIVE; k++)
+        if (!w->e[k].alive) {
+            w->e[k] = *src;
+            if (src->slot >= 0 && src->slot < 32 && d->card_xplo[src->type][src->slot] >= 0) fx_anim_restart(w, d->card_xplo[src->type][src->slot], src->start);
+            return k;
+        }
+    return -1;
+}
+
+void fx_anim_restart(fx_world *w, int slot, int32_t now)
+{
+    if (slot >= 0 && slot < 512) w->epoch[slot] = now;
+}
+
+int fx_slot_frame(const fx_defs *d, const fx_world *w, int slot, int32_t now)
+{
+    const fx_anim *an;
+    int32_t t;
+    if (slot < 0 || slot >= 512) return -1;
+    an = &d->tex[slot];
+    if (an->frames <= 0) return -1;
+    t = now - (w ? w->epoch[slot] : 0);
+    if (t < 0) t = 0;
+    return an->cel[(int)(t / (an->rate > 0 ? an->rate : 45)) % an->frames];
 }
 
 void fx_update(fx_world *w, int32_t now)
@@ -256,11 +371,14 @@ void fx_update(fx_world *w, int32_t now)
         if (w->e[k].alive && now >= w->e[k].end) w->e[k].alive = 0;
 }
 
-int fx_frame(const fx_defs *d, const fx_live *e, int32_t now)
+int fx_frame(const fx_defs *d, const fx_world *w, const fx_live *e, int32_t now)
 {
     const fx_anim *an;
     int f;
-    if (!e->alive || d->anim[e->type] < 0) return -1;
+    if (!e->alive) return -1;
+    if (e->slot >= 0 && e->slot < 32 && d->card_slot[e->type][e->slot] >= 0 && !d->card_restart[e->type][e->slot])
+        return fx_slot_frame(d, w, d->card_slot[e->type][e->slot], now);   /* GBL: its card's own slot, running on */
+    if (d->anim[e->type] < 0) return -1;
     an = &d->tex[d->anim[e->type]];
     if (an->frames <= 0) return -1;
     f = (int)((now - e->start) / (an->rate > 0 ? an->rate : 45)) % an->frames;   /* 0x1002ce50: loops */

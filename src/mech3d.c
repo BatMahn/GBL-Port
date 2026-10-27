@@ -270,7 +270,7 @@ int world3d_append(prj_archive *a, const char *record, int with_damaged, mech3d 
     prj_record rec;
     bwd_chunk *chunks = NULL;
     wnode *nodes = NULL;
-    int n, k, i, poly_type, rc = -1, max = MAX_NODES * 4, scrg_obj = -1;
+    int n, k, i, poly_type, rc = -1, max = MAX_NODES * 4, scrg_obj = -1, marker;
 
     if (prj_read_named(a, "BWD", record, &rec) != PRJ_OK) return -1;
     poly_type = prj_find_type(a, "POLY");
@@ -302,7 +302,19 @@ int world3d_append(prj_archive *a, const char *record, int with_damaged, mech3d 
         if (!nodes[i].present) continue;
         out->node_count++;
         if (prj_read(a, poly_type, nodes[i].model, &mr) != PRJ_OK) continue;
-        if (strcasecmp(mr.name, "DUMMY") == 0 || strncasecmp(mr.name, "S_1DUMMY", 8) == 0 || mr.size == 0 ||
+        marker = 0;
+        if (strcasecmp(mr.name, "DUMMY") == 0) {
+            /* a DUMMY object that a GT chunk makes a thing with a class (+0x12): the engine creates it like any thing
+             * (0x36ea0, the GT 0x4e5a0 attaches it to the nodes naming its record) and a path task moves it - an invisible
+             * point. Kept as a part with no faces and no collision (ASSUMED: the DUMMY model's one-vertex face draws
+             * nothing and stops nothing). The only one in the GBL data: ZACKARE3, the "target" point that loops over the
+             * JumpShip's deck - the fighters' (ZACKENS1) and the Jaguar turrets' (ZACKENT1-4) destroy order */
+            for (k = 0; k < n && !marker; k++)
+                if (strcmp(chunks[k].tag, "GT") == 0 && chunks[k].size >= 20 &&
+                    (int16_t)(chunks[k].data[0] | chunks[k].data[1] << 8) == i && (chunks[k].data[18] | chunks[k].data[19]))
+                    marker = 1;
+        }
+        if (((strcasecmp(mr.name, "DUMMY") == 0 || strncasecmp(mr.name, "S_1DUMMY", 8) == 0) && !marker) || mr.size == 0 ||
             (!with_damaged && strncasecmp(mr.name, "SA", 2) == 0)) { prj_record_free(&mr); continue; }
         if (wpos(nodes, i, pos, &yaw, 0) != 0) { prj_record_free(&mr); continue; }
         p = realloc(out->parts, (size_t)(out->part_count + 1) * sizeof *p);
@@ -323,6 +335,8 @@ int world3d_append(prj_archive *a, const char *record, int with_damaged, mech3d 
         /* the projectile / effect pool (MW2_SHT1: lasers, bullets, explosion and PPC cards at 0,0,0) is never linked into
          * the world until used (the front end draws shots and effects itself): its cards were drawn at the map origin */
         if (strncasecmp(record, "MW2_SHT", 7) == 0) p->hidden = 1;
+        /* (GBL: a scene's own pool record - PETESCN1's petesht1, BRAN / ZACK zackSHT1, TEAL tealsht1: "xxxxSHTn" - the same) */
+        if (strlen(record) == 8 && strncasecmp(record + 4, "SHT", 3) == 0 && record[7] >= '0' && record[7] <= '9') p->hidden = 1;
         /* OBJECT DENSITY: the type 0xc0 objects come and go (engine 0x1000de50 unlinks / relinks them; Combat Variables
          * and the in-game menu) - loaded always, hidden while it is LOW */
         p->facing = (nodes[i].objtype & 0xf0) == 0x10 || (nodes[i].objtype & 0xf0) == 0x60;   /* (see mech3d.h) */
@@ -330,6 +344,11 @@ int world3d_append(prj_archive *a, const char *record, int with_damaged, mech3d 
         if (p->sparse && world3d_density_low) p->hidden = 1;
         if (wtb_parse(mr.data, mr.size, &p->model) != 0) { prj_record_free(&mr); continue; }
         prj_record_free(&mr);
+        if (marker) {   /* the point only: its vertex (0, 0, 0) stays, its one-vertex face goes; no collision */
+            int ob;
+            for (ob = 0; ob < p->model.object_count; ob++) p->model.objects[ob].poly_count = 0;
+            p->coll = 4;
+        }
         {   /* the OBJ scale (payload +6, three i32, whole units; 0 counts as 1): the engine builds each world object's model
              * with its vertices multiplied by it (3Dfx 0x10025450 -> 0x100420b0, then 0x10042140 loads each vertex as x scale + offset;
              * DOS 0x36480 -> 0x4fea0, 0x4fef0 integer x scale). MARO's fire / smoke cards are 4-6 x their model (FIR1_3 scale 4:
@@ -1264,7 +1283,17 @@ static void wp_mul(const wp_xf *a, const wp_xf *b, wp_xf *o)
     *o = r;
 }
 
-static int wp_root(const wp_rec *r, int i) { int p = r->parent[i]; return p < 0 || p >= WP_NODES || p == i || !r->present[p]; }
+/* a root: no parent - or a parent with OBJ parent -2, which the engine bakes into the world geometry with the block
+ * matrix and gives no scene node (GBL DOS 0x36ea0: parent -2 -> 0x3be55 / 0x3ae05, node slot 0x113830 = 0), so its
+ * children are made with parent node 0 (0x51410 <- 0x113830[parent] = 0) and stand at the scene's top level: a path on
+ * such a child is in world coordinates like a root's (BRANSCN1 BRANARE2 OBJ 8 "lift", child of OBJ 0: the platform the
+ * player starts on rises 142251 -> 144151 - DOSBox T_bran_04..10, and with point 1 patched 100 m higher the player rides
+ * it 100 m up, T_branA_*) */
+static int wp_root(const wp_rec *r, int i)
+{
+    int p = r->parent[i];
+    return p < 0 || p >= WP_NODES || p == i || !r->present[p] || r->parent[p] == -2;
+}
 
 static int wp_world(const wp_rec *r, int i, wp_xf *out, int depth)
 {
