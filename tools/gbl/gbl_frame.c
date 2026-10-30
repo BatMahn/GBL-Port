@@ -1050,8 +1050,14 @@ static void gbl_combat_variables(void)
  * first; a click on the selected one steps it to the shown driver's next input (FUN_0001f510); an axis takes a
  * selected control that is not a button control (axis binding); a button: on a button control the input, on a
  * directional control the first then (its second input selected) the second of a two-button binding.
- * Not ported: typing a new configuration name (0x1ecc0), the "map to same control" warnings after Save Custom, the
- * hidden ('*') keyboard inputs drawn grey. */
+ * The name (20, 286): a text item 150 px wide (record 0x7d3d0: x 0x14, the next line, width 0x96, draw 0x1e9d0, press
+ * 0x1ecc0, buffer 0x8ed68). A press on it (left or right, ASSUMED as the base shell's record) edits the name in place -
+ * the shell's line editor 0x1ecc0: drawn in the item's font and colour with a '_' after it; a character 0x20..0x7f other
+ * than '~' that the font has (0x27ee0) is added while the name is not 62 (0x3e) characters long and its width with the
+ * '_' stays under the item's 150 px (0x27ea0; each character on its own: a narrow one can still fit after a wide one did
+ * not); Backspace takes the last off; Enter (0xd), Esc (0x1b) or a mouse press ends - the text kept either way, the press
+ * does nothing else. Saved with the configuration (Save Custom n renames only "Default Config" / "Custom Config #..").
+ * Not ported: the "map to same control" warnings after Save Custom, the hidden ('*') keyboard inputs drawn grey. */
 
 static cc_drivers g_ccdv;
 static cc_config g_cccfg;
@@ -1124,6 +1130,8 @@ static void gbl_cc_editor(void)
     static const char *const CUST[5] = {"Default", "Custom 1", "Custom 2", "Custom 3", "Custom 4"};
     int level = 0, sel = -1, half = 0, scroll = 0, done = 0, k, fh = gtext_h(GF_DEFAULT);
     const int grey = 7, red = 0x10, white = -1;
+    char nbuf[64] = "";
+    int naming = 0;   /* the name being typed (0x1ecc0) */
     while (!done) {
         const cc_device *d = &g_ccdv.d[g_ccshown >= 0 && g_ccshown < g_ccdv.n ? g_ccshown : 0];
         int selbtn = sel >= 0 && g_cccfg.b[level][sel].type == 1, nb = d->nbutton;
@@ -1159,7 +1167,8 @@ static void gbl_cc_editor(void)
         for (k = 0; k < g_ccdv.n; k++) if (g_ccsel[k]) gbl_frame_text(GF_DEFAULT, 0, 132 + 11 * k, g_ccdv.d[k].title, k == g_ccshown ? red : white);
         gbl_frame_text(GF_DEFAULT, 0, 275, "Current Config:", grey);
         gbl_frame_text(GF_DEFAULT, 90, 275, CUST[g_cccustom >= 0 && g_cccustom < 5 ? g_cccustom : 0], grey);
-        gbl_frame_text(GF_DEFAULT, 20, 286, g_cccfg.name, white);
+        if (naming) { char t[80]; snprintf(t, sizeof t, "%s_", nbuf); gbl_frame_text(GF_DEFAULT, 20, 286, t, white); }
+        else gbl_frame_text(GF_DEFAULT, 20, 286, g_cccfg.name, white);
         for (k = 0; k < 4; k++) {
             char t[24];
             snprintf(t, sizeof t, "Load Custom %d", k + 1); gbl_frame_text(GF_DEFAULT, 0, 308 + 11 * k, t, white);
@@ -1170,9 +1179,37 @@ static void gbl_cc_editor(void)
         gbl_frame_text(GF_DEFAULT, 0, 462, "ABORT", white);
         gbl_draw_cursor(g_in.mx, g_in.my);
         in = gbl_frame();
-        if (in->quit || in->key == SDLK_ESCAPE) break;
+        if (in->quit) break;
+        if (naming) {   /* the line editor (0x1ecc0): nothing else reacts */
+            const char *t;
+            for (t = in->text; *t; t++) {
+                const unsigned char c = (unsigned char)*t;
+                const size_t n = strlen(nbuf);
+                char tmp[80];
+                if (c < 0x20 || c >= 0x80 || c == '~' || n >= 0x3e) continue;
+                { char one[2] = {(char)c, 0}; if (c != ' ' && gtext_w(GF_DEFAULT, one) <= 0) continue; }   /* 0x27ee0 */
+                snprintf(tmp, sizeof tmp, "%s%c_", nbuf, c);
+                if (gtext_w(GF_DEFAULT, tmp) < 150) { nbuf[n] = (char)c; nbuf[n + 1] = 0; }
+            }
+            if (in->key == SDLK_BACKSPACE && nbuf[0]) nbuf[strlen(nbuf) - 1] = 0;
+            if (in->key == SDLK_RETURN || in->key == SDLK_KP_ENTER || in->key == SDLK_ESCAPE || in->lclick || in->rclick) {
+                memset(g_cccfg.name, 0, sizeof g_cccfg.name);
+                snprintf(g_cccfg.name, sizeof g_cccfg.name, "%s", nbuf);
+                naming = 0;
+                if (!g_headless) SDL_StopTextInput();
+                if (getenv("GBL_EVENTS")) printf("cc: name '%s'\n", g_cccfg.name);   /* TEST ONLY */
+            }
+            continue;
+        }
+        if (in->key == SDLK_ESCAPE) break;
         if (!in->lclick && !in->rclick) continue;
         mx = in->mx; my = in->my; right = in->rclick && !in->lclick;
+        if (gbl_cc_in(mx, my, 20, 286, 150)) {   /* the name item (0x1ecc0) */
+            snprintf(nbuf, sizeof nbuf, "%s", g_cccfg.name);
+            naming = 1;
+            if (!g_headless) SDL_StartTextInput();
+            continue;
+        }
         if (gbl_cc_in(mx, my, 375, 110, gtext_w(GF_DEFAULT, "NEXT PAGE"))) { level = (level + 1) % CC_LEVELS; continue; }   /* 0x1f300 */
         for (k = 0; k < CC_CONTROLS; k++) {
             cc_binding *b = &g_cccfg.b[level][k];

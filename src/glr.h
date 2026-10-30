@@ -182,10 +182,22 @@ typedef struct {
 void glr_set_titanium_extra(glr *r, texture *const bank0[GLR_SLOTS], const glr_ti_shade *shade);
 
 /* Draw into the currently bound framebuffer, viewport w x h. */
+void glr_gl_check(const char *stage);   /* MW2_GL_CHECK=1: OpenGL errors to stderr */
 void glr_draw(glr *r, const glr_view *v, int w, int h);
 void glr_draw_rect(glr *r, const glr_view *v, int x0, int y0, int w, int h);
 
 void glr_default_view(glr_view *v);
+/* MW2.EXE 0x3f320 (GBL 0x3fdd0) on the CPU: p (GL coordinates) through the last main DOS frame's integer projection ->
+ * the screen pixel (top-left origin, the view's own pixels) and the camera z (quarter cm). 1 in front and in the view, 0
+ * not, -1 no DOS frame drawn yet */
+int glr_dos_project(const glr *r, const float p[3], int *sx, int *sy, int *sz);
+/* MW2.EXE's sine / cosine (GBL 0x3b2c8: 16.16 degrees -> 2.29) and arctangent (GBL 0x3b475: the angle of (b, a), 16.16
+ * degrees) */
+int32_t glr_dos_sin(int32_t a);
+int32_t glr_dos_cos(int32_t a);
+int32_t glr_dos_atan2(int32_t a, int32_t b);
+/* that frame's zoom (16.16) x half width (the view's +0x94) and the view's size */
+void glr_dos_view(const glr *r, uint32_t *zhw, int *w, int *h);
 
 /* The DOS edition's colours (on with pal != NULL; call before uploading meshes): the polygon colour word is decoded the
  * DOS engine's way (bits 12-14 type, 8-11 ramp, 0-7 intensity or bitmap) and shaded per pixel into a palette index -

@@ -58,3 +58,12 @@
   - units the mission marks as untargetable can't be targeted (e.g. ANDY's Ravens);
   - the overheat alarm follows GBL's heat rules; looping world sounds (wind, machinery) start as in the original;
   - dropships and gunships are drawn at their flying height.
+- **DOS-look HUD to the pixel** (checked in DOSBox against GBL's MW2.EXE at 1024x768 and 640x480): the nav marker and
+  target bracket use the original's integer projection, radar blips and the radar's cone and edge use its own top-down
+  view, and the message bar is clipped as DOS clips it.
+- **Heat, throttle and jets bars** ease toward their values as in the original, and the dH/dT bar reads the original's
+  net heat.
+- **Targets, radar and missiles aim at a building's or vehicle's centre**, not its model origin.
+- **Missile reticle while reloading:** the plain ring while the selected weapon fires its volley or reloads, as in DOS.
+- **Cockpit Controls:** you can type the configuration's name (Backspace, Enter / Esc to finish).
+- **Joystick / mouse menu files:** the GIDDI\<driver>.STD files are read as the original reads them.

@@ -187,7 +187,21 @@ static void c3d_ti_environment(glr *r, c3d_scene *s, const char *mission, glr_vi
     prj_archive *keep = c3d_ti;
     texture *ground = s->slot[SKYGND_GROUND_SLOT];
     int k, dome = 0;
-    skygnd_ti_lookup(getenv("MW2_SKYGND"), mission, &c3d_ti_sg);
+    if (skygnd_ti_lookup(getenv("MW2_SKYGND"), mission, &c3d_ti_sg) != 0) {
+        /* a mission the Titanium SKYGND.PAR doesn't list (GBL's JESS): no lights at all would draw it black - the file's
+         * usual daylight set instead (amb 60, World A 255,255,200 from -1,-1,0, World B 155,155,155 from 1,1,0, sky
+         * 64,64,255; no fog). ASSUMED: what mercsw keeps for an unlisted mission was not traced */
+        static const int AMB[3] = {60, 60, 60}, WA[3] = {255, 255, 200}, WB[3] = {155, 155, 155}, SKY[3] = {64, 64, 255};
+        static const float WAV[3] = {-1, -1, 0}, WBV[3] = {1, 1, 0};
+        c3d_ti_sg.intensity = 60;
+        c3d_ti_sg.tile_ground = 15000.0f / 128.0f;
+        memcpy(c3d_ti_sg.amb, AMB, sizeof AMB); memcpy(c3d_ti_sg.wa, WA, sizeof WA); memcpy(c3d_ti_sg.wb, WB, sizeof WB);
+        memcpy(c3d_ti_sg.wa_vec, WAV, sizeof WAV); memcpy(c3d_ti_sg.wb_vec, WBV, sizeof WBV);
+        c3d_ti_sg.wa_type = c3d_ti_sg.wb_type = 1;
+        memcpy(c3d_ti_sg.sky, SKY, sizeof SKY);
+        c3d_ti_sg.shadowtable = 7;
+        printf("titanium: %.4s not in SKYGND.PAR - default daylight\n", mission);
+    }
     c3d_ti = NULL;   /* (the scene below is all Titanium: no overlay counting) */
     glr_set_titanium(r, NULL, NULL);
     if (c3d_ti_have_scene) { c3d_free_scene(&c3d_ti_scene); c3d_ti_have_scene = 0; }

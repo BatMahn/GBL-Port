@@ -39,6 +39,8 @@ typedef struct {
                               * (engine 0x100113f0 / 0x10011570, DOS 0x1f120 / 0x1f270) */
     char      rec[11];       /* world objects: the record that placed it, and its OBJ node index there (GT A / B) */
     int       obj_index;
+    int32_t   obj_scale[3], obj_offset[3], obj_rot[3];   /* world objects: the OBJ chunk's scale (0 counts as 1; already applied
+                              * to `model`'s vertices), offset and rotation - TEXTURES TITANIUM fits its model to them (world3d_ti_attach) */
     int       tex_offset;    /* added to texture slots 0x00 (camo) and 0x14 (insignia): the owner star's STAR value
                                 (engine 0x10042000: star record +0, set from the STAR chunk's first u32, 0x10042d40) */
     int       wire_hi;       /* image enhancement: drawn in the mechs' blue (an active building) */

@@ -50,7 +50,9 @@ typedef struct {
 
 typedef struct {
     GLuint  vao, vbo;
-    GLuint  tbo;       /* the DOS look: vbo as a buffer texture (R32F), so a Gouraud fragment can read its whole polygon */
+    GLuint  tbo;       /* the DOS look: the vbo's floats as an R32F 2D texture, 4096 a row (GLR_VTX_W; dvtx in the shaders), so
+                        * a Gouraud fragment can read its whole polygon. Not a buffer texture: macOS's OpenGL (on Metal) read
+                        * the world layer's as zeros - polygons vanished or were drawn from nothing */
     GLuint  sph_vbo;   /* per vertex: its object's bounding sphere (GL centre, radius) for the view-distance cull */
     GLuint  tic_vbo;   /* per vertex: the Titanium CPU colour (rgb) and its use (a: 0 none, 1 x the texel (lit), 2 the
                         * colour (a palette shade), 3 kind 2: the colour, drawn only with its textures off) */
@@ -91,11 +93,10 @@ struct glr {
     int    dos;
     int    dos_ie_tri;                      /* glr_set_dos_ie_triangles */
     int    prog_dos;                        /* r->prog is the DOS / ENHANCED looks' variant (glr_use_variant) */
-    GLuint nul_buf, nul_tbo;                /* a 1-texel R32F buffer texture: unit 3 never left empty (macOS GL falls back
-                                             * to a slow path for a shader whose samplerBuffer has nothing loadable bound) */
+    GLuint nul_tbo;                         /* a 1 x 1 R32F texture: unit 3 never left without one */
     GLuint dos_tex;                         /* 256 x 17: rows 0-15 the LUMA table (as indices), row 16 the palette (RGB) */
     GLint  u_dos, u_dos_tab, u_dos_lpos, u_dos_amb, u_dos_fogdist, u_dos_dir, u_dos_vtx, u_dos_smooth, u_vpo, u_dos_eye, u_dos_rx, u_dos_ry, u_dos_rz, u_dos_ps;
-    GLint  u_far, u_vp;
+    GLint  u_far, u_vp, u_dos_exact;
     /* the DOS cockpit set's polygons (glr_view: mech3d_part.dos_pit), in emission order: their world corners (game
      * coordinates) for the draw order (dos_pit_ranks) */
 #define GLR_PIT_MAX 128
@@ -116,6 +117,13 @@ struct glr {
     int    dome_n, dome_first[GLR_SLOTS], dome_count[GLR_SLOTS], dome_has[GLR_SLOTS];
     int   *dome_pfirst, *dome_pcount, *dome_pslot, dome_np;   /* per polygon, in the record's order */
     uint8_t dos_img[17][256][4];
+    /* the last main DOS frame's projection integers (glr_dos_project): rows x mantissas (2.29 x 16 bits), shifts, the eye
+     * (GL coordinates), the view's size; dos_ok once one was drawn; dos_rec: glr_draw (the main view) is drawing - the
+     * cockpit viewport and target viewer frames (glr_draw_rect) leave the record alone */
+    int64_t dos_R[3][3];
+    int     dos_sh[2], dos_vw, dos_vh, dos_ok, dos_rec;
+    uint32_t dos_zhw;   /* zoom (16.16) x the half width: the view's +0x94 (MW2.EXE 0x3f9e0) */
+    float   dos_eye[3];
     /* sprites (weapon effects) */
     GLuint spr_vao, spr_vbo;
     glr_particle *par;                      /* glr_set_particles */
@@ -138,7 +146,7 @@ struct glr {
      * vertex's camera integers and screen point reproduced from the port's float world points this way. u_dos_rx / ry / \
      * rz: the three rows / 2^27 (game coordinates, dos_cam_rows); u_dos_ps: xs, ys (port: the zoom from the projection's \
      * x focal) */ \
-    "uniform vec3 u_dos_eye, u_dos_rx, u_dos_ry, u_dos_rz; uniform ivec2 u_dos_ps;\n" \
+    "uniform vec3 u_dos_eye, u_dos_rx, u_dos_ry, u_dos_rz; uniform ivec2 u_dos_ps; uniform int u_dos_exact;\n" \
     "int dos_idiv(int n, int d) { int q = abs(n) / abs(d); return (n < 0) != (d < 0) ? -q : q; }\n" /* idiv: truncated */ \
     "float dos_rnd(float v) { return floor(v + 0.5); }\n" \
     "int dos_pq(int c, int s, int z) { int q; if (abs(c) < (1 << (30 - s))) q = dos_idiv(c << s, z); else q = int(trunc(float(c) * exp2(float(s)) / float(z))); return (q + 2) >> 2; }\n" \
@@ -163,13 +171,14 @@ static const char *VS =
     "layout(location=7) in vec4 a_tic;\n"
     "uniform mat4 u_mvp, u_view;\n"
     "uniform float u_far; uniform vec2 u_vp;\n"
-    "uniform int u_dos; uniform samplerBuffer u_dos_vtx;\n"
+    "uniform int u_dos; uniform sampler2D u_dos_vtx;\n"
+    "float dvtx(int i) { return texelFetch(u_dos_vtx, ivec2(i & 4095, i >> 12), 0).r; }\n"
     DOS_PROJ_GLSL
     "uniform int u_pit_rank[128];\n"   /* GLR_PIT_MAX: the DOS cockpit polygons' places in the draw order (dos_pit_ranks) */
     "out vec3 v_normal; out vec2 v_uv; out vec3 v_color; flat out int v_texsel; out vec3 v_viewpos; out vec3 v_world;\n"
     "out vec3 v_bary; flat out int v_emask, v_bb, v_tif, v_dnib; flat out vec4 v_sph;\n"
     "out vec3 v_tic; flat out int v_ticm;\n"
-    "flat out float v_dkey;\n"
+    "flat out float v_dkey; flat out int v_dtrust; flat out vec2 v_derr;\n"
     "noperspective out vec2 v_gs;\n"   /* the DOS Gouraud shade (a_uv), screen-linear as MW2.EXE 0x59e77 steps it */
     "void main() {\n"
     "  int e = int(a_edge + 0.5), pit = e / 65536;\n"
@@ -218,18 +227,18 @@ static const char *VS =
      * 2 px larger on screen - each vertex pushed out along its two edges' outward normals (miter, at most 8 px) - and the
      * fragment keeps exactly the DOS span's pixels (dos_gouraud); polygons crossing the near plane are left as they are */
     "#if DOS_LOOK\n"
-    "  if (u_dos != 0 && int(a_color.r + 0.5) == 3 && a_texsel > 0.5 && e < 256) {\n"
+    "  if (u_dos != 0 && u_dos_exact != 0 && int(a_color.r + 0.5) == 3 && a_texsel > 0.5 && e < 256) {\n"
     "    int s = int(a_texsel + 0.5) - 1, rel = gl_VertexID - s, t = rel / 3, cn = rel - 3 * t;\n"
     "    vec2 Q[18]; int n = 0; bool ok = true; vec2 h = 0.5 * u_vp;\n"
     "    for (int k = 0; k < 16; k++) {\n"
     "      int b = s + 3 * k;\n"
     "      for (int c = (k == 0 ? 0 : 1); c < 3; c++) {\n"
-    "        if (c == 2 && ((int(texelFetch(u_dos_vtx, b * 13 + 12).r + 0.5) % 32 / 3) & 2) == 0) break;\n"
-    "        vec4 wp = vec4(texelFetch(u_dos_vtx, (b + c) * 13).r, texelFetch(u_dos_vtx, (b + c) * 13 + 1).r, texelFetch(u_dos_vtx, (b + c) * 13 + 2).r, 1.0), q = u_mvp * wp;\n"
+    "        if (c == 2 && ((int(dvtx(b * 13 + 12) + 0.5) % 32 / 3) & 2) == 0) break;\n"
+    "        vec4 wp = vec4(dvtx((b + c) * 13), dvtx((b + c) * 13 + 1), dvtx((b + c) * 13 + 2), 1.0), q = u_mvp * wp;\n"
     "        if (q.z + q.w < 0.0 || q.w <= 0.0) ok = false; else { ivec2 sp = dos_scr(wp.xyz); Q[n] = vec2(float(sp.x) + 0.5, u_vp.y - float(sp.y) - 0.5) - h; }\n"
     "        n++;\n"
     "      }\n"
-    "      if (((int(texelFetch(u_dos_vtx, b * 13 + 12).r + 0.5) % 32 / 3) & 2) != 0) break;\n"
+    "      if (((int(dvtx(b * 13 + 12) + 0.5) % 32 / 3) & 2) != 0) break;\n"
     "    }\n"
     "    int j = cn == 0 ? 0 : t + cn;\n"
     "    if (ok && n >= 3 && j < n && gl_Position.w > 0.0) {\n"
@@ -264,17 +273,29 @@ static const char *VS =
      * camera z (quarter units: dos_camz; the list key DAT_0014fcc0 = 0) - and the level less ((key << 4) / LITE +24) >> 4,
      * not the pixel's depth in cm. The polygon's corners from this layer's buffer: its fan triangles back to the one that
      * starts it (edge bit 4) and on to the one that closes it (bit 2); -1 (the pixel depth) for a vertex not found there */
-    "  v_dkey = -1.0;\n"
+    "  v_dkey = -1.0; v_dtrust = 1; v_derr = vec2(0.0);\n"
+    /* the DOS integer projection checked against GL's for this corner: more than 3 px apart (seen on macOS) -> the fill
+     * draws the polygon from GL's points without the exact-span discards (dos_gouraud) */
+    "#if DOS_LOOK\n"
+    "  if (u_dos != 0) {\n"
+    "    vec4 q0 = u_mvp * vec4(a_pos, 1.0);\n"
+    "    if (q0.w > 1.0) {\n"
+    "      ivec2 sp = dos_scr(a_pos); vec2 g = q0.xy / q0.w * 0.5 * u_vp; vec2 c0 = vec2(ivec2(u_vp) / 2);\n"
+    "      v_derr = vec2(float(sp.x) - (c0.x + g.x), float(sp.y) - (c0.y - g.y));\n"
+    "      if (abs(v_derr.x) > 3.0 || abs(v_derr.y) > 3.0) v_dtrust = 0;\n"
+    "    }\n"
+    "  }\n"
+    "#endif\n"
     "#if DOS_LOOK\n"
     "  if (u_dos != 0) {\n"
     "    int vid = gl_VertexID, t = vid / 3, k, c;\n"
-    "    if (abs(texelFetch(u_dos_vtx, vid * 13).r - a_pos.x) + abs(texelFetch(u_dos_vtx, vid * 13 + 2).r - a_pos.z) < 0.01) {\n"
-    "      for (k = 0; k < 16 && t > 0; k++) { if (((int(texelFetch(u_dos_vtx, 3 * t * 13 + 12).r + 0.5) % 32 / 3) & 4) != 0) break; t--; }\n"
+    "    if (abs(dvtx(vid * 13) - a_pos.x) + abs(dvtx(vid * 13 + 2) - a_pos.z) < 0.01) {\n"
+    "      for (k = 0; k < 16 && t > 0; k++) { if (((int(dvtx(3 * t * 13 + 12) + 0.5) % 32 / 3) & 4) != 0) break; t--; }\n"
     "      float km = -1e9;\n"
     "      for (k = 0; k < 16; k++) {\n"
     "        int b = 3 * (t + k);\n"
-    "        for (c = 0; c < 3; c++) km = max(km, dos_camz(vec3(texelFetch(u_dos_vtx, (b + c) * 13).r, texelFetch(u_dos_vtx, (b + c) * 13 + 1).r, texelFetch(u_dos_vtx, (b + c) * 13 + 2).r)));\n"
-    "        if (((int(texelFetch(u_dos_vtx, b * 13 + 12).r + 0.5) % 32 / 3) & 2) != 0) break;\n"
+    "        for (c = 0; c < 3; c++) km = max(km, dos_camz(vec3(dvtx((b + c) * 13), dvtx((b + c) * 13 + 1), dvtx((b + c) * 13 + 2))));\n"
+    "        if (((int(dvtx(b * 13 + 12) + 0.5) % 32 / 3) & 2) != 0) break;\n"
     "      }\n"
     "      v_dkey = km;\n"
     "    }\n"
@@ -292,7 +313,7 @@ static const char *FS =
     "in vec3 v_normal; in vec2 v_uv; in vec3 v_color; flat in int v_texsel; in vec3 v_viewpos; in vec3 v_world; flat in int v_dnib;\n"
     "in vec3 v_bary; flat in int v_emask, v_bb, v_tif; flat in vec4 v_sph;\n"
     "in vec3 v_tic; flat in int v_ticm;\n"
-    "flat in float v_dkey;\n"
+    "flat in float v_dkey; flat in int v_dtrust; flat in vec2 v_derr;\n"
     "uniform int u_point; uniform vec3 u_lpos;\n"
     /* the Titanium lights (mercsw 0x1002ecaa): u_tilit 1 objects, 2 the ground (one colour, 0x1005527e); the ambient, two
      * world lights (type 1 directional - the unit vector the light travels along -, 2 point - its position), the
@@ -337,7 +358,8 @@ static const char *FS =
     "uniform int u_dos, u_dos_dir; uniform sampler2D u_dos_tab; uniform vec3 u_dos_lpos; uniform float u_dos_amb, u_dos_fogdist;\n"
     /* the DOS Gouraud fill (glr_dos_gouraud below): the layer's vertices (13 floats each) as a buffer texture, the MVP, the
      * viewport (origin, size); u_dos_smooth: the port's dos_shading=smooth */
-    "uniform samplerBuffer u_dos_vtx; uniform mat4 u_mvp; uniform vec2 u_vp, u_vpo; uniform int u_dos_smooth;\n"
+    "uniform sampler2D u_dos_vtx; uniform mat4 u_mvp; uniform vec2 u_vp, u_vpo; uniform int u_dos_smooth;\n"
+    "float dvtx(int i) { return texelFetch(u_dos_vtx, ivec2(i & 4095, i >> 12), 0).r; }\n"
     "noperspective in vec2 v_gs;\n"
     "uniform float u_alpha;\n"
     /* the Titanium edition (mercsw.dll): its vertex fog - x 1 = on, y the full-fog depth Z (0: none), w the camera's
@@ -407,8 +429,8 @@ static const char *FS =
      * vertices as 0x3dfb7 about the viewport's centre and walks the chains to its row; the pixels GL covers outside
      * the DOS span take its end. dos_shading=smooth (not the original): the colours blended at c + 0.25 - the
      * dither's mean - within the polygon's own shades */
-    "vec4 dos_gclip(int i) { int b = i * 13; return u_mvp * vec4(texelFetch(u_dos_vtx, b).r, texelFetch(u_dos_vtx, b + 1).r, texelFetch(u_dos_vtx, b + 2).r, 1.0); }\n"
-    "float dos_gshade(int i, float g) { int b = i * 13; return texelFetch(u_dos_vtx, b + 7).r + texelFetch(u_dos_vtx, b + 6).r * g; }\n"
+    "vec4 dos_gclip(int i) { int b = i * 13; return u_mvp * vec4(dvtx(b), dvtx(b + 1), dvtx(b + 2), 1.0); }\n"
+    "float dos_gshade(int i, float g) { int b = i * 13; return dvtx(b + 7) + dvtx(b + 6) * g; }\n"
     "int dos_q(float p) { return (int(trunc(p * 4.0)) + 2) >> 2; }\n"   /* 0x3dfb7: quarter pixels, + 2 >> 2 */
     "ivec2 dos_gvtx(vec4 q) { vec2 p = q.xy / q.w * 0.5 * u_vp; ivec2 c = ivec2(u_vp) / 2; return ivec2(c.x + dos_q(p.x), c.y - dos_q(p.y)); }\n"
     DOS_PROJ_GLSL
@@ -424,36 +446,50 @@ static const char *FS =
     "               int(uint(C[a] + 0x8000) + t * uint(dos_idiv(C[b] - C[a], cnt))));\n"
     "}\n"
     "vec3 dos_gouraud(float lev) {\n"
+    "#if DOS_DEBUG\n"
+    "  if (v_texsel <= 0) return vec3(0.5, 0.5, 0.5);\n"
+    "#endif\n"
     "  float g = (lev + 1.0) / 16.0, px = floor(gl_FragCoord.x), py = floor(gl_FragCoord.y);\n"
     "  float cc = v_gs.y + v_gs.x * g + 0.5, cmin = -1e9, cmax = 1e9;\n"   /* (no polygon: interpolated, screen parity) */
     "  int k = int(px), r = int(py);\n"
     "  uint val = 0u; bool exact = false;\n"
     "  if (v_texsel > 0) {\n"
     "    vec4 P[18]; float C[18]; int I[18]; ivec2 V[20]; int CF[20]; int n = 0, m = 0, s = v_texsel - 1, L1 = int(lev) + 1;\n"
+    "    bool trust = v_dtrust != 0 && u_dos_exact != 0;\n"
     "    for (int t = 0; t < 16; t++) {\n"
     "      int b = s + 3 * t;\n"
     "      if (t == 0) { P[0] = dos_gclip(b); C[0] = dos_gshade(b, g); I[0] = b; n = 1; }\n"
     "      P[n] = dos_gclip(b + 1); C[n] = dos_gshade(b + 1, g); I[n] = b + 1; n++;\n"
-    "      if (((int(texelFetch(u_dos_vtx, b * 13 + 12).r + 0.5) % 32 / 3) & 2) != 0) { P[n] = dos_gclip(b + 2); C[n] = dos_gshade(b + 2, g); I[n] = b + 2; n++; break; }\n"
+    "      if (((int(dvtx(b * 13 + 12) + 0.5) % 32 / 3) & 2) != 0) { P[n] = dos_gclip(b + 2); C[n] = dos_gshade(b + 2, g); I[n] = b + 2; n++; break; }\n"
     "    }\n"
     "    cmin = 1e9; cmax = -1e9;\n"
     "    for (int i = 0; i < n; i++) {\n"   /* the near plane (z + w >= 0), the shade carried */
     "      vec4 a = P[i], b = P[(i + 1) % n]; float da = a.z + a.w, db = b.z + b.w;\n"
     "      cmin = min(cmin, C[i]); cmax = max(cmax, C[i]);\n"
-    "      if (da >= 0.0) { int b2 = I[i] * 13; V[m] = dos_scr(vec3(texelFetch(u_dos_vtx, b2).r, texelFetch(u_dos_vtx, b2 + 1).r, texelFetch(u_dos_vtx, b2 + 2).r)); CF[m] = int(floor(C[i] * 65536.0 + 0.5)); m++; }\n"
+    "      if (da >= 0.0) { int b2 = I[i] * 13;\n"
+    /* the first corner checked here too (the vertex shader's check passed on macOS while this stage's integer projection
+     * still disagreed): more than 3 px from GL's point -> GL's points, no exact-span discards */
+    "        if (m == 0 && trust) { ivec2 ds = dos_scr(vec3(dvtx(b2), dvtx(b2 + 1), dvtx(b2 + 2))), dg = dos_gvtx(a);\n"
+    "#if DOS_DEBUG\n"
+    "          return vec3(clamp(0.5 + float(ds.x - dg.x) / 64.0, 0.0, 1.0), clamp(0.5 + float(ds.y - dg.y) / 64.0, 0.0, 1.0), max(abs(ds.x - dg.x), abs(ds.y - dg.y)) <= 3 ? 1.0 : 0.0);\n"
+    "#endif\n"
+    "          if (max(abs(ds.x - dg.x), abs(ds.y - dg.y)) > 3) trust = false;\n"
+    "          V[m] = trust ? ds : dg; }\n"
+    "        else V[m] = trust ? dos_scr(vec3(dvtx(b2), dvtx(b2 + 1), dvtx(b2 + 2))) : dos_gvtx(a);\n"
+    "        CF[m] = int(floor(C[i] * 65536.0 + 0.5)); m++; }\n"
     "      if ((da >= 0.0) != (db >= 0.0)) { float t = da / (da - db); V[m] = dos_gvtx(mix(a, b, t)); CF[m] = int(floor(mix(C[i], C[(i + 1) % n], t) * 65536.0 + 0.5)); m++; }\n"
     "    }\n"
     "    if (m >= 3) {\n"
     "      int top = 0, ybot = V[0].y;\n"
     "      for (int i = 0; i < m; i++) { if (V[i].y <= V[top].y) top = i; ybot = max(ybot, V[i].y); }\n"   /* 0x59f58: the last of the least y */
     "      int y0 = int(u_vp.y) - 1 - (int(py) - int(u_vpo.y)), y = clamp(y0, V[top].y, ybot);\n"   /* the DOS row (y down) */
-    "      if (m == n && y0 != y) discard;\n"   /* not near-clipped: the DOS span's rows only (see the vertex shader) */
+    "      if (trust && m == n && y0 != y) discard;\n"   /* not near-clipped: the DOS span's rows only (see the vertex shader) */
     "      ivec2 e1 = dos_gchain(V, CF, m, top, -1, y, ybot), e2 = dos_gchain(V, CF, m, top, 1, y, ybot);\n"
     "      if (e2.x <= e1.x) { ivec2 t2 = e1; e1 = e2; e2 = t2; }\n"   /* 0x5a1d5 */
     "      int x0 = e1.x >> 16, w = (e2.x >> 16) - x0;\n"
     "      int st = w != 0 ? dos_idiv(e2.y - e1.y, max(w >> 1, 1)) : 0;\n"
     "      k = int(px) - int(u_vpo.x) - x0;\n"
-    "      if (m == n && (k < 0 || k > w)) discard;\n"   /* and its pixels, both ends inclusive (0x5a213) */
+    "      if (trust && m == n && (k < 0 || k > w)) discard;\n"   /* and its pixels, both ends inclusive (0x5a213) */
     "      k = clamp(k, 0, w); r = y - V[top].y;\n"
     "      val = uint(e1.y) + uint(k >> 1) * uint(st); exact = true;\n"
     "      cc = float(int(val)) / 65536.0;\n"
@@ -600,7 +636,11 @@ static GLuint compile(GLenum type, const char *src, int dos)
     const char *nl = strchr(src, '\n'), *part[3];
     GLint len[3];
     part[0] = src; len[0] = (GLint)(nl - src + 1);
-    part[1] = dos ? "#define DOS_LOOK 1\n" : "#define DOS_LOOK 0\n"; len[1] = (GLint)strlen(part[1]);
+    /* MW2_DOS_DEBUG=1 (a diagnostic): the DOS fill paints each polygon by how far the DOS integer projection of its
+     * provoking corner lies from GL's (red x, green y: 0.5 = equal, +-1/64 per pixel; blue 1 = within 3 px) */
+    part[1] = dos ? (getenv("MW2_DOS_DEBUG") ? "#define DOS_LOOK 1\n#define DOS_DEBUG 1\n" : "#define DOS_LOOK 1\n#define DOS_DEBUG 0\n")
+                  : "#define DOS_LOOK 0\n#define DOS_DEBUG 0\n";
+    len[1] = (GLint)strlen(part[1]);
     part[2] = nl + 1; len[2] = (GLint)strlen(nl + 1);
     glShaderSource(s, 3, part, len);
     glCompileShader(s);
@@ -647,6 +687,7 @@ static void glr_locate(glr *r)
 #undef U
     r->u_far = glGetUniformLocation(r->prog, "u_far");
     r->u_vp = glGetUniformLocation(r->prog, "u_vp");
+    r->u_dos_exact = glGetUniformLocation(r->prog, "u_dos_exact");
     r->u_tint = glGetUniformLocation(r->prog, "u_tint");
     r->u_tinton = glGetUniformLocation(r->prog, "u_tinton");
     r->u_dsign = glGetUniformLocation(r->prog, "u_dsign");
@@ -735,14 +776,12 @@ glr *glr_create(void)
     glGenTextures(1, &r->dos_tex);
     {
         static const float z = 0;
-        glGenBuffers(1, &r->nul_buf);
-        glBindBuffer(GL_TEXTURE_BUFFER, r->nul_buf);
-        glBufferData(GL_TEXTURE_BUFFER, sizeof z, &z, GL_STATIC_DRAW);
-        glBindBuffer(GL_TEXTURE_BUFFER, 0);
         glGenTextures(1, &r->nul_tbo);
         glActiveTexture(GL_TEXTURE3);
-        glBindTexture(GL_TEXTURE_BUFFER, r->nul_tbo);
-        glTexBuffer(GL_TEXTURE_BUFFER, GL_R32F, r->nul_buf);
+        glBindTexture(GL_TEXTURE_2D, r->nul_tbo);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, 1, 1, 0, GL_RED, GL_FLOAT, &z);
         glActiveTexture(GL_TEXTURE0);
     }
     glGenTextures(1, &r->ptab_tex);
@@ -756,7 +795,6 @@ void glr_destroy(glr *r)
     glDeleteTextures(2, r->env_tex);
     glDeleteTextures(1, &r->dos_tex);
     glDeleteTextures(1, &r->nul_tbo);
-    glDeleteBuffers(1, &r->nul_buf);
     glDeleteTextures(1, &r->ptab_tex);
     glDeleteBuffers(1, &r->env_vbo);
     glDeleteVertexArrays(1, &r->env_vao);
@@ -1376,12 +1414,23 @@ static int set_layer(glr *r, int li, const mech3d *m, const uint8_t palette[256]
     glBindVertexArray(L->vao);
     glBindBuffer(GL_ARRAY_BUFFER, L->vbo);
     glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(n * FLOATS_PER_VERTEX * sizeof *buf), buf, GL_STATIC_DRAW);
-    glActiveTexture(GL_TEXTURE3);               /* (the DOS Gouraud fill reads its polygon from it; set up on unit 3, the
-                                                 * buffer sampler's, so no other unit ever holds a buffer texture) */
-    glBindTexture(GL_TEXTURE_BUFFER, L->tbo);
-    glTexBuffer(GL_TEXTURE_BUFFER, GL_R32F, L->vbo);
-    glBindTexture(GL_TEXTURE_BUFFER, r->nul_tbo);
-    glActiveTexture(GL_TEXTURE0);
+    {   /* the same floats as an R32F texture, 4096 a row (the DOS Gouraud fill reads its polygon from it; set up on unit
+         * 3, its sampler's) */
+        size_t nf = (size_t)n * FLOATS_PER_VERTEX, rows = (nf + 4095) / 4096;
+        float *t;
+        if (rows < 1) rows = 1;
+        if ((t = calloc(rows * 4096, sizeof *t))) {
+            if (nf) memcpy(t, buf, nf * sizeof *t);
+            glActiveTexture(GL_TEXTURE3);
+            glBindTexture(GL_TEXTURE_2D, L->tbo);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, 4096, (GLsizei)rows, 0, GL_RED, GL_FLOAT, t);
+            glBindTexture(GL_TEXTURE_2D, r->nul_tbo);
+            glActiveTexture(GL_TEXTURE0);
+            free(t);
+        }
+    }
     {
         static const int sizes[6] = {3, 3, 2, 3, 1, 1};
         size_t off = 0;
@@ -1878,7 +1927,27 @@ void glr_set_dos(glr *r, const uint8_t pal[256][3], const uint8_t *luma)
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 }
 
-void glr_draw(glr *r, const glr_view *v, int w, int h) { glr_draw_rect(r, v, 0, 0, w, h); }
+/* MW2_GL_CHECK=1 (a diagnostic): report OpenGL errors after each drawing stage, once per stage and error, to stderr -
+ * for drivers that refuse a draw silently (macOS) */
+void glr_gl_check(const char *stage)
+{
+    static int on = -1;
+    static char seen[64][48];
+    static int nseen;
+    GLenum e;
+    if (on < 0) on = getenv("MW2_GL_CHECK") != NULL;
+    if (!on) return;
+    while ((e = glGetError()) != GL_NO_ERROR) {
+        char key[48];
+        int k, dup = 0;
+        snprintf(key, sizeof key, "%.36s %x", stage, (unsigned)e);
+        for (k = 0; k < nseen; k++) if (!strcmp(seen[k], key)) dup = 1;
+        if (dup) continue;
+        if (nseen < 64) snprintf(seen[nseen++], sizeof seen[0], "%s", key);
+        fprintf(stderr, "GL error 0x%x after %s\n", (unsigned)e, stage);
+    }
+}
+void glr_draw(glr *r, const glr_view *v, int w, int h) { glr_gl_check("frame start"); r->dos_rec = 1; glr_draw_rect(r, v, 0, 0, w, h); r->dos_rec = 0; glr_gl_check("world draw (end)"); }
 
 /* Draw into the window rectangle x, y (from the bottom left), w x h: a cockpit viewport (rear / down view). */
 /* The DOS cockpit set's draw order (MW2.EXE): each polygon facing the eye (0x3e1de; glview culls the same way) has its
@@ -1948,6 +2017,70 @@ static int32_t dos_sin(int32_t a)
     return (u3 & 0x2000000u) ? -v : v;
 }
 static int32_t dos_cos(int32_t a) { return dos_sin(a + 0x5a0000); }
+/* MW2.EXE's arctangent (GBL 0x3b475 = DOS 0x3a9e5, the same code): its 257-entry table (built at start-up by GBL 0x3b522 =
+ * DOS 0x3aa92: atan(i / 256) x 3754936.210460003 through the x87, chopped; entry 256 = 45 degrees) interpolated by the
+ * quotient's low 16 bits */
+static const int32_t DOS_ATAN[257] = {
+    0, 14667, 29334, 44001, 58666, 73329, 87990, 102648,
+    117303, 131955, 146602, 161245, 175883, 190516, 205143, 219764,
+    234378, 248985, 263585, 278176, 292759, 307333, 321898, 336454,
+    350999, 365533, 380057, 394569, 409070, 423558, 438033, 452496,
+    466945, 481380, 495800, 510206, 524597, 538973, 553332, 567676,
+    582002, 596312, 610604, 624878, 639134, 653372, 667590, 681790,
+    695969, 710129, 724268, 738386, 752483, 766559, 780613, 794645,
+    808654, 822640, 836604, 850543, 864459, 878351, 892219, 906061,
+    919879, 933671, 947437, 961178, 974892, 988580, 1002241, 1015874,
+    1029481, 1043059, 1056610, 1070133, 1083627, 1097092, 1110528, 1123935,
+    1137313, 1150661, 1163979, 1177266, 1190524, 1203750, 1216946, 1230111,
+    1243244, 1256346, 1269416, 1282455, 1295461, 1308435, 1321376, 1334285,
+    1347160, 1360003, 1372813, 1385589, 1398332, 1411041, 1423716, 1436357,
+    1448964, 1461537, 1474075, 1486579, 1499048, 1511482, 1523881, 1536245,
+    1548574, 1560868, 1573126, 1585349, 1597536, 1609687, 1621802, 1633882,
+    1645925, 1657933, 1669904, 1681839, 1693737, 1705599, 1717425, 1729214,
+    1740967, 1752683, 1764362, 1776004, 1787609, 1799178, 1810710, 1822205,
+    1833662, 1845083, 1856467, 1867813, 1879123, 1890395, 1901630, 1912828,
+    1923989, 1935113, 1946199, 1957249, 1968261, 1979235, 1990173, 2001073,
+    2011937, 2022763, 2033551, 2044303, 2055017, 2065695, 2076335, 2086938,
+    2097504, 2108033, 2118525, 2128980, 2139399, 2149780, 2160124, 2170432,
+    2180703, 2190937, 2201134, 2211295, 2221419, 2231506, 2241557, 2251572,
+    2261550, 2271492, 2281398, 2291267, 2301100, 2310897, 2320659, 2330384,
+    2340073, 2349727, 2359345, 2368927, 2378473, 2387984, 2397460, 2406900,
+    2416305, 2425675, 2435009, 2444309, 2453574, 2462803, 2471998, 2481159,
+    2490284, 2499376, 2508432, 2517455, 2526443, 2535397, 2544317, 2553203,
+    2562055, 2570873, 2579657, 2588408, 2597126, 2605810, 2614461, 2623079,
+    2631663, 2640215, 2648733, 2657219, 2665672, 2674093, 2682481, 2690837,
+    2699160, 2707452, 2715711, 2723938, 2732134, 2740297, 2748429, 2756530,
+    2764599, 2772637, 2780644, 2788619, 2796564, 2804478, 2812360, 2820213,
+    2828035, 2835826, 2843587, 2851318, 2859018, 2866689, 2874330, 2881941,
+    2889522, 2897074, 2904597, 2912090, 2919554, 2926989, 2934394, 2941771, 2949120,
+};
+/* the angle of (b, a) - a the sine side - in 16.16 degrees: |a| / |b| (the smaller over the larger) as (n << 24) / d,
+ * table entry (q >> 16) + its slope x (q & 0xffff) >> 16 rounded; 90 - it when |a| > |b|, 180 - it when b < 0, negated
+ * when a < 0; |a| == |b|: 45 */
+static int32_t dos_atan2(int32_t a, int32_t b)
+{
+    uint32_t n = (uint32_t)(a < 0 ? -(int64_t)a : a), d = (uint32_t)(b < 0 ? -(int64_t)b : b), t;
+    int fl = (a < 0 ? 1 : 0) | (b < 0 ? 2 : 0);
+    int32_t r;
+    if (n >= d) {
+        if (n == d) { r = 0x2d0000; goto sign; }
+        t = n; n = d; d = t; fl |= 4;
+    }
+    if (n == 0) r = 0;
+    else {
+        uint32_t q = (uint32_t)(((uint64_t)n << 24) / d), i = q >> 16, f = q & 0xffff;
+        uint32_t l = f * (uint32_t)(DOS_ATAN[i + 1] - DOS_ATAN[i]);
+        r = DOS_ATAN[i] + (int32_t)(l >> 16) + (int32_t)((l >> 15) & 1);
+    }
+sign:
+    if (fl & 4) r = 0x5a0000 - r;
+    if (fl & 2) r = 0xb40000 - r;
+    if (fl & 1) r = -r;
+    return r;
+}
+int32_t glr_dos_sin(int32_t a) { return dos_sin(a); }
+int32_t glr_dos_cos(int32_t a) { return dos_cos(a); }
+int32_t glr_dos_atan2(int32_t a, int32_t b) { return dos_atan2(a, b); }
 static void dos_cam_rows(float yaw_deg, float pitch_deg, int64_t rows[3][3])
 {
     int32_t a = (int32_t)lrint(-(double)pitch_deg * 65536.0), b = (int32_t)lrint((double)yaw_deg * 65536.0), m[9];
@@ -1973,6 +2106,36 @@ static int64_t dos_round16(int64_t v) { return (v >> 16) + ((v >> 15) & 1); }
 
 static int64_t dos_rdiv(int64_t n, int64_t d) { int64_t q = (n < 0 ? -n : n) / (d < 0 ? -d : d); return (n < 0) != (d < 0) ? -q : q; }
 static int dos_pq64(int64_t c, int s, int64_t z) { return (int)((dos_rdiv(c * ((int64_t)1 << s), z) + 2) >> 2); }
+
+/* MW2.EXE 0x3f320 (GBL 0x3fdd0, the same code): a point through the last main DOS frame's projection integers (the HUD's
+ * markers: the target bracket GBL 0x29c40 / 0x29db0 and the nav marker 0x297f0 by way of 0x29be0). d = round(W) - round(E) (whole cm), each camera row
+ * (zoom mantissas folded in, 0x3ece0) >> 27 rounded (shrd + adc); z <= the view's near x 4 (DAT_0014feb0 = +0x3c x 4,
+ * +0x3c = (zoom x half width >> 17) + 1 from 0x3ef30) counts as behind and is projected at |z| (0 -> 1); x = ((x << xs)
+ * / z + 2 >> 2) + the centre (x0 + x1 + 1) >> 1, y = (y1 - y0) - (((y << ys) / z + 2 >> 2) + (y0 + y1 + 1) >> 1) -
+ * one row above the 3D vertices' 0x3dfb7 (centre - q). Returns 1 in front and inside the view (x0..x1, y0..y1), 0 if
+ * not, -1 without a DOS frame. p: GL coordinates (as the vertices); z: the camera z (quarter cm) */
+void glr_dos_view(const glr *r, uint32_t *zhw, int *w, int *h) { *zhw = r->dos_zhw; *w = r->dos_vw; *h = r->dos_vh; }
+int glr_dos_project(const glr *r, const float p[3], int *sx, int *sy, int *sz)
+{
+    int64_t d[3], c[3];
+    int k, z, beh;
+    const int cx = r->dos_vw >> 1, cy = r->dos_vh >> 1, near4 = (int)(((r->dos_zhw >> 17) + 1) * 4);
+    if (!r->dos_ok) return -1;
+    d[0] = (int64_t)floor((double)p[0] + 0.5) - (int64_t)floor((double)r->dos_eye[0] + 0.5);
+    d[1] = (int64_t)floor((double)p[1] + 0.5) - (int64_t)floor((double)r->dos_eye[1] + 0.5);
+    d[2] = (int64_t)floor(-(double)p[2] + 0.5) - (int64_t)floor(-(double)r->dos_eye[2] + 0.5);
+    for (k = 0; k < 3; k++) {
+        int64_t t = r->dos_R[k][0] * d[0] + r->dos_R[k][1] * d[1] + r->dos_R[k][2] * d[2];
+        c[k] = (int32_t)((t >> 27) + ((t >> 26) & 1));
+    }
+    z = (int)c[2];
+    if (sz) *sz = z;
+    beh = z <= near4;
+    if (beh) z = z < 0 ? -z : z == 0 ? 1 : z;
+    *sx = cx + dos_pq64(c[0], r->dos_sh[0], z);
+    *sy = (r->dos_vh - 1) - (dos_pq64(c[1], r->dos_sh[1], z) + cy);
+    return !beh && *sx >= 0 && *sx <= r->dos_vw - 1 && *sy >= 0 && *sy <= r->dos_vh - 1;
+}
 static void dos_qsort(int *id, int *key, int lo, int hi)   /* 0x3cea0, element by element */
 {
     while (hi > lo) {
@@ -2137,8 +2300,8 @@ void glr_draw_rect(glr *r, const glr_view *v, int x0, int y0, int w, int h)
     }
     glUniform2f(r->u_texsize, 1, 1);            /* environment UVs are in texture repeats */
     glUniform1i(r->u_textured, 1);
-    glActiveTexture(GL_TEXTURE3);               /* the buffer sampler's unit: a loadable buffer texture for every draw */
-    glBindTexture(GL_TEXTURE_BUFFER, r->nul_tbo);
+    glActiveTexture(GL_TEXTURE3);               /* the polygon texture's unit: a texture bound for every draw */
+    glBindTexture(GL_TEXTURE_2D, r->nul_tbo);
     glActiveTexture(GL_TEXTURE0);
     {
         static const float off[4] = {0, 0, 0, 0};
@@ -2352,6 +2515,20 @@ void glr_draw_rect(glr *r, const glr_view *v, int x0, int y0, int w, int h)
         glUniform1f(r->u_dos_fogdist, v->dos_fogdist);
         glUniform1i(r->u_dos_dir, v->point_light ? 0 : v->dos_dir);
         glUniform1i(r->u_dos_smooth, v->dos_sky_smooth);   /* the port's dos_shading=smooth */
+        {   /* the DOS fill's exact spans (the original's integer projection and coverage; the polygons' 2 px growth): on
+             * by default; off on macOS, whose OpenGL (on Metal) gets that path wrong - polygons vanished or turned black -
+             * where the fill is drawn as before (GL's coverage). MW2_DOS_EXACT=0 / 1 overrides */
+            static int exact = -1;
+            if (exact < 0) {
+#ifdef __APPLE__
+                exact = 0;
+#else
+                exact = 1;
+#endif
+                if (getenv("MW2_DOS_EXACT")) exact = atoi(getenv("MW2_DOS_EXACT")) != 0;
+            }
+            glUniform1i(r->u_dos_exact, exact);
+        }
         glUniform1i(r->u_dos_tc, v->dos_tc && !v->wire);      /* gbl ENHANCED: true colour + the Titanium fog */
         {   /* the projection's integers (MW2.EXE 0x3ef30): zoom 16.16 (from the x focal; clamped 0x8000..0x100000) x the
              * half width, normalised to a 16-bit mantissa (top bit 15) and a shift (top bit - 13); y the same from
@@ -2387,6 +2564,12 @@ void glr_draw_rect(glr *r, const glr_view *v, int x0, int y0, int w, int h)
             glUniform3f(r->u_dos_ry, (float)((double)R[1][0] / 134217728.0), (float)((double)R[1][1] / 134217728.0), (float)((double)R[1][2] / 134217728.0));
             glUniform3f(r->u_dos_rz, (float)((double)R[2][0] / 134217728.0), (float)((double)R[2][1] / 134217728.0), (float)((double)R[2][2] / 134217728.0));
             glUniform2i(r->u_dos_ps, sh2[0], sh2[1]);
+            if (r->dos_rec) {   /* (glr_dos_project: the HUD's markers through the same integers) */
+                memcpy(r->dos_R, R, sizeof r->dos_R);
+                r->dos_sh[0] = sh2[0]; r->dos_sh[1] = sh2[1]; r->dos_vw = w; r->dos_vh = h; r->dos_ok = 1;
+                r->dos_zhw = (uint32_t)((uint64_t)zoom * hw);
+                memcpy(r->dos_eye, eye, sizeof r->dos_eye);
+            }
             if (r->pit_n > 0) {   /* the cockpit set's draw order */
                 int rk[GLR_PIT_MAX];
                 dos_pit_ranks(r, (const int64_t (*)[3])R, eye, w, h, sh2, rk);
@@ -2396,8 +2579,10 @@ void glr_draw_rect(glr *r, const glr_view *v, int x0, int y0, int w, int h)
     }
     glActiveTexture(GL_TEXTURE0);
     glUniform1i(r->u_tilit, v->ti_light && !r->dos ? 1 : 0);   /* Titanium: the objects' lights (0x1002ecaa) */
+    glr_gl_check("sky and setup");
     for (int li = 0; li < GLR_LAYERS; li++) {
     const glr_layer *L = &r->layer[li];
+    glr_gl_check(li == 0 ? "before world layer" : "before layer 1+");
     if (r->ti_slots && !r->dos) ti_colours(r, li, v, view, eye);   /* the Titanium per-vertex colours */
     if (v->solo && li == 0) continue;
     {   static const float off0[4] = {0, 0, 0, 0}; glUniform4fv(r->u_mono, 1, li == 1 ? v->mono : off0); }
@@ -2407,7 +2592,7 @@ void glr_draw_rect(glr *r, const glr_view *v, int x0, int y0, int w, int h)
         glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);   /* the wireframe's edges come from the fragment shader */
     }
     glBindVertexArray(L->vao);
-    glActiveTexture(GL_TEXTURE3); glBindTexture(GL_TEXTURE_BUFFER, r->dos ? L->tbo : r->nul_tbo); glActiveTexture(GL_TEXTURE0);
+    glActiveTexture(GL_TEXTURE3); glBindTexture(GL_TEXTURE_2D, r->dos ? L->tbo : r->nul_tbo); glActiveTexture(GL_TEXTURE0);
     for (s = 0; s <= GLR_SLOTS; s++) {
         if (L->batch_count[s] <= 0) continue;
         if (s < GLR_SLOTS) {
@@ -2495,6 +2680,7 @@ void glr_draw_rect(glr *r, const glr_view *v, int x0, int y0, int w, int h)
         glDisable(GL_BLEND);
     }
     }
+    glr_gl_check("after the layers");
     glBindVertexArray(0);
     glUniform1i(r->u_dos, 0);
     glUniform1i(r->u_dos_tc, 0);

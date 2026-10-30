@@ -55,12 +55,15 @@ static im_devstate g_im_dev;
 #define IM_MAX_COND 8   /* conditions in a block: the sim takes 8 (0x47ed0, "chord too big" past them) */
 typedef struct { char name[40]; int ncond; im_cond c[IM_MAX_COND]; } im_rule;
 typedef struct { char action[40]; SDL_Keycode key; int ctrl, alt, shift; } im_bind;
+#define IM_MAX_DRV 16   /* device names kept in the order the conditions name them (the sim loads at most 5, see im_load_std) */
 typedef struct {
     im_rule rules[IM_MAX_RULES];
     int     nrules;
     im_bind binds[IM_MAX_BINDS];
     int     nbinds;
     int     have_gamekey, have_input;
+    char    drv[IM_MAX_DRV][16];   /* the drivers the conditions name, first mention first (GBL MW2.EXE 0x48220) */
+    int     ndrv;
 } inputmap;
 
 /* INPUT.MAP keyboard key names: GIDDI\KEYBOARD.DLL's list, in its order - entry i is DOS scan code i + 1 (the sim looks a
@@ -351,6 +354,11 @@ static void im_parse_input(inputmap *m, FILE *f)
             if (r->ncond >= IM_MAX_COND) { fprintf(stderr, "INPUT.MAP line %d: chord too big - the rest is ignored\n", lineno); r = NULL; break; }
             k = &r->c[r->ncond++];
             k->sign = a[0] == '-' ? -1 : 1;
+            {   /* the driver: looked up / loaded as the condition names it (GBL 0x48a50 -> 0x48220) */
+                int q;
+                for (q = 0; q < m->ndrv && strcasecmp(m->drv[q], b) != 0; q++) ;
+                if (q == m->ndrv && m->ndrv < IM_MAX_DRV) snprintf(m->drv[m->ndrv++], sizeof m->drv[0], "%.15s", b);
+            }
             k->device = im_device(b);
             if (k->device == 0) k->code = im_scancode(c);
             else im_input_code(k, b, c);
@@ -368,6 +376,35 @@ static int im_load(inputmap *m, const char *gamekey, const char *input)
     if (gamekey && (f = fopen(gamekey, "rb"))) { im_parse_gamekey(m, f); fclose(f); }
     if (input && (f = fopen(input, "rb"))) { im_parse_input(m, f); fclose(f); }
     return m->have_gamekey && m->have_input ? 0 : -1;
+}
+
+/* The drivers' own map files (GBL MW2.EXE 0x48f30 = DOS 0x483b0, right after input.map is read): for each driver loaded so far - in the
+ * order the conditions first named it, a driver counting only when giddi\<name>.dll loads, at most 5 (0x48220: "4 <
+ * count" refuses a sixth) - "giddi\<name>.std" is read the way
+ * input.map is (0x48c10: its blocks join the others; an unknown control ends that file's reading); a missing one is
+ * skipped. A driver a .std names is loaded then and its own .std read in turn (the loop runs to the growing count).
+ * The shipped ones (FLTSTCK, JOYSTICK, MOUSE, MSJSTICK, TMASTER; no KEYBOARD.STD) bind the menu controls to the
+ * device: menu_item = Up/Down, menu_value = Left/Right, menu_enter / menu_abort = two buttons. (Those controls are
+ * processed while a menu is up - 0x48a50 flags "menu_" controls, 0x494f0 polls them whatever 0x497e0 / 0x497f0 set - and
+ * the menu key reader 0x17f00 turns them into keys for a menu whose flag bit 0 is set; but in DOSBox (GBL MW2.EXE,
+ * BASSSCN1, the install's INPUT.MAP with the mouse, so MOUSE.STD is read) neither the mouse's moves nor its held left
+ * button move or pick the in-mission MAIN MENU - so the port reads the files but drives no menu with them.)
+ * open(rel) opens a file by its DOS path ("GIDDI\\JOYSTICK.STD", any case) or returns NULL. Returns the files read. */
+static int im_load_std(inputmap *m, FILE *(*open)(const char *rel))
+{
+    int i, loaded = 0, nread = 0, have = m->have_input;
+    for (i = 0; i < m->ndrv && loaded < 5; i++) {
+        char rel[64];
+        FILE *f;
+        snprintf(rel, sizeof rel, "GIDDI\\%s.DLL", m->drv[i]);
+        if (!(f = open(rel))) continue;   /* the driver does not load: not in the table */
+        fclose(f);
+        loaded++;
+        snprintf(rel, sizeof rel, "GIDDI\\%s.STD", m->drv[i]);
+        if ((f = open(rel))) { im_parse_input(m, f); fclose(f); nread++; }
+    }
+    m->have_input = have;
+    return nread;
 }
 
 /* any INPUT.MAP condition on device d (2 = the mouse) */

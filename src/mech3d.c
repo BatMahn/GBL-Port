@@ -251,7 +251,7 @@ typedef struct {
     uint16_t model;
     int coll;
     int objtype;
-    int32_t scale[3];
+    int32_t scale[3], rot[3];
 } wnode;
 
 /* world transform of node i: position and accumulated yaw */
@@ -298,6 +298,7 @@ int world3d_append(prj_archive *a, const char *record, int with_damaged, mech3d 
         nodes[o.index].coll = o.coll;
         nodes[o.index].objtype = o.objtype;
         memcpy(nodes[o.index].scale, o.scale, sizeof o.scale);
+        memcpy(nodes[o.index].rot, o.rotation, sizeof o.rotation);
     }
     {   /* SCRG {i16 object}: the record's scrub patch (engine 0x1003e693 -> 0x100113f0, DOS 0x4ed5b -> 0x1f120) */
         int sc = -1;
@@ -364,6 +365,9 @@ int world3d_append(prj_archive *a, const char *record, int with_damaged, mech3d 
              * 55 x 48 m), the training mountains 3 x taller (TRNJARE2 1 3 1), PROVMTN2's 0xc0 copies mirrored (1 -2 1) */
             int sx = nodes[i].scale[0] ? nodes[i].scale[0] : 1, sy = nodes[i].scale[1] ? nodes[i].scale[1] : 1;
             int sz = nodes[i].scale[2] ? nodes[i].scale[2] : 1, ob, q;
+            p->obj_scale[0] = sx; p->obj_scale[1] = sy; p->obj_scale[2] = sz;
+            memcpy(p->obj_offset, nodes[i].offset, sizeof p->obj_offset);
+            memcpy(p->obj_rot, nodes[i].rot, sizeof p->obj_rot);
             if (sx != 1 || sy != 1 || sz != 1)
                 for (ob = 0; ob < p->model.object_count; ob++)
                     for (q = 0; q < p->model.objects[ob].vert_count; q++) {
@@ -1882,6 +1886,63 @@ int mech3d_ti_load(prj_archive *ti, const char *record, int repr, mech3d *out)
     return 0;
 }
 
+/* A world object's Titanium model placed as the DOS object (DOS GBL decides placement and motion, Titanium gives the model
+ * only; the model is drawn at the DOS part's position and carried by its paths):
+ * - the Titanium record places it as GBL's does (same OBJ scale, offset, parent and rotation): its vertices x that scale,
+ *   as the editions build a world model (world3d_append; mercsw's loader not traced - INFERRED);
+ * - placed otherwise, its vertices were made for Titanium's own placement and do not fit the DOS one: the model is fitted
+ *   per axis into the box the DOS model (with its OBJ scale) fills. JESSARE1's hangar door halves S_1DOORA / B: the same
+ *   vertices, GBL OBJ scale 2, 1, 1, Titanium's 1, 1, 1 (and its own door paths) - at Titanium's scale the halves were half
+ *   as wide and the opening's left part stood open; the fit is GBL's x 2. BRANARE2's lift V_1PLTFR (GBL scale 3, 1, 3 at
+ *   600, 4251, 600 off the dropship; Titanium scale 1 at 0, 0, 0 with the placement in its vertices, ~2.5 x the size) and
+ *   the lift tube V_1PLTTB: drawn ~17 m above GBL's platform before. (ASSUMED: the fit - Titanium's engine has no DOS
+ *   placement to follow; the box is what GBL's placement fixes.) */
+static void ti_world_place(wtb_model *m, const mech3d_part *p, const bwd_obj *o)
+{
+    int k, ob, q, same = o && o->parent == p->parent_obj, ts[3], ds[3];
+    float dlo[3] = {1e30f, 1e30f, 1e30f}, dhi[3] = {-1e30f, -1e30f, -1e30f}, tlo[3] = {1e30f, 1e30f, 1e30f}, thi[3] = {-1e30f, -1e30f, -1e30f};
+    float mul[3], add[3];
+    for (k = 0; k < 3; k++) {
+        ts[k] = o && o->scale[k] ? o->scale[k] : 1;
+        ds[k] = p->obj_scale[k] ? p->obj_scale[k] : 1;
+        if (!o || ts[k] != ds[k] || o->offset[k] != p->obj_offset[k] || o->rotation[k] != p->obj_rot[k]) same = 0;
+    }
+    for (ob = 0; ob < p->model.object_count; ob++)
+        for (q = 0; q < p->model.objects[ob].vert_count; q++) {
+            const wtb_vertex *v = &p->model.objects[ob].verts[q];
+            float c[3]; c[0] = (float)v->x; c[1] = (float)v->y; c[2] = (float)v->z;
+            for (k = 0; k < 3; k++) { if (c[k] < dlo[k]) dlo[k] = c[k]; if (c[k] > dhi[k]) dhi[k] = c[k]; }
+        }
+    for (ob = 0; ob < m->object_count; ob++)
+        for (q = 0; q < m->objects[ob].vert_count; q++) {
+            const wtb_vertex *v = &m->objects[ob].verts[q];
+            float c[3]; c[0] = (float)v->x; c[1] = (float)v->y; c[2] = (float)v->z;
+            for (k = 0; k < 3; k++) { if (c[k] < tlo[k]) tlo[k] = c[k]; if (c[k] > thi[k]) thi[k] = c[k]; }
+        }
+    if (same || dlo[0] > dhi[0] || tlo[0] > thi[0] || (o && (o->rotation[0] != p->obj_rot[0] || o->rotation[1] != p->obj_rot[1] || o->rotation[2] != p->obj_rot[2]))) {
+        if (ts[0] == 1 && ts[1] == 1 && ts[2] == 1) return;   /* (rotated differently, or nothing to fit: the record's scale) */
+        for (ob = 0; ob < m->object_count; ob++)
+            for (q = 0; q < m->objects[ob].vert_count; q++) {
+                wtb_vertex *v = &m->objects[ob].verts[q];
+                v->x *= ts[0]; v->y *= ts[1]; v->z *= ts[2];
+            }
+        return;
+    }
+    for (k = 0; k < 3; k++) {
+        mul[k] = thi[k] - tlo[k] > 0.5f ? (dhi[k] - dlo[k]) / (thi[k] - tlo[k]) : 1.0f;
+        add[k] = (dlo[k] + dhi[k]) * 0.5f - (tlo[k] + thi[k]) * 0.5f * mul[k];
+    }
+    if (getenv("MW2_TI_LOG")) printf("titanium: fitted %s obj %d %s x %.2f %.2f %.2f + %.0f %.0f %.0f\n", p->rec, p->obj_index, p->model_name,   /* TEST hook */
+                                     (double)mul[0], (double)mul[1], (double)mul[2], (double)add[0], (double)add[1], (double)add[2]);
+    for (ob = 0; ob < m->object_count; ob++)
+        for (q = 0; q < m->objects[ob].vert_count; q++) {
+            wtb_vertex *v = &m->objects[ob].verts[q];
+            v->x = (int32_t)lrintf((float)v->x * mul[0] + add[0]);
+            v->y = (int32_t)lrintf((float)v->y * mul[1] + add[1]);
+            v->z = (int32_t)lrintf((float)v->z * mul[2] + add[2]);
+        }
+}
+
 int world3d_ti_attach(prj_archive *ti, mech3d *world, wtb_model **store)
 {
     char rec[11] = "";
@@ -1934,17 +1995,39 @@ int world3d_ti_attach(prj_archive *ti, mech3d *world, wtb_model **store)
                 }
             }
         }
-        for (k = 0; k < nc; k++) {
-            bwd_obj o;
-            if (bwd_obj_decode(&chunks[k], &o) != 0 || o.index != p->obj_index) continue;
-            if (prj_find_type(ti, "POLY") >= 0 && prj_read(ti, poly, o.model, &mr) != PRJ_OK) {
+        {
+            bwd_obj o, o2;
+            int at = -1, placed = 1, id = strcasecmp(p->model_name, "DUMMY") != 0 ? prj_find_id(ti, poly, p->model_name) : -1;
+            for (k = 0; k < nc && at < 0; k++)
+                if (bwd_obj_decode(&chunks[k], &o) == 0 && o.index == p->obj_index) at = k;
+            if (at < 0) continue;   /* (no object at that index: the mission archive's own model) */
+            /* the Titanium record's object at the same OBJ index - unless that is another model and the record places the
+             * DOS object's own model elsewhere: then that one (the Titanium records of some GBL scenes are laid out
+             * differently: SACHARE1 has GBL's falling waterfall slices T_1WAFLA / T_1WAFLT and the fall T_1WTFLW at indices
+             * 3-12, Titanium its fixed slices T_1WAFLB-T at 4-22 - by index, slice T_1WAFLB (60 m up) stood in for
+             * T_1WAFLT and slice T_1WAFLE for the whole fall; CATHDRP1 and the other dropships lack V_1PLTFR, the
+             * following objects one index lower) */
+            if (id >= 0 && o.model != (uint16_t)id) {
+                int moved = 0;
+                for (k = 0; k < nc && !moved; k++)
+                    if (bwd_obj_decode(&chunks[k], &o2) == 0 && o2.model == (uint16_t)id) { o = o2; moved = 1; }
+                if (!moved && prj_read(ti, poly, o.model, &mr) == PRJ_OK) {
+                    /* not placed there, and the model at the index is one the DOS record places as another object
+                     * (SACHARE1 index 9: GBL T_1WAFLA, Titanium T_1WAFLG - GBL's index 19): not a renamed object - the
+                     * Titanium archive's model of the DOS name, unplaced by its record */
+                    int j;
+                    for (j = 0; j < world->part_count && placed; j++)
+                        if (j != i && strcmp(world->parts[j].rec, p->rec) == 0 && strcasecmp(world->parts[j].model_name, mr.name) == 0) placed = 0;
+                    prj_record_free(&mr);
+                }
+            }
+            if (prj_read(ti, poly, placed ? o.model : (uint16_t)id, &mr) != PRJ_OK) {
                 /* the Titanium record places a model its archive lacks (TNJ1SCRI's scrub TNJ1SCR1): nothing to draw there
                  * (ASSUMED: the engine draws no model it cannot load) - an empty model */
-                p->ti_model = &(*store)[i];
-                found++;
-                break;
+                if (placed) { p->ti_model = &(*store)[i]; found++; }
+                continue;
             }
-            if (prj_read(ti, poly, o.model, &mr) == PRJ_OK) {
+            {
                 /* the same object renamed (S_BTFCTL -> S_1TFCTL, SAATFBSA -> SA1TFBSA, S_1BQDGQ -> S_1BLDGQ, V_BDRPWS ->
                  * V_1DRPW: at most 2 characters differ); the effect pool MW2_SHT1 is laid out differently (LAS0_0 there
                  * is XPL0_0 here) and TRNJAREA's flags are wind socks: those differ more and are left alone */
@@ -1952,23 +2035,13 @@ int world3d_ti_attach(prj_archive *ti, mech3d *world, wtb_model **store)
                 for (q2 = 0; q2 < (l1 > l2 ? l1 : l2); q2++)
                     if (q2 >= l1 || q2 >= l2 || toupper((unsigned char)p->model_name[q2]) != toupper((unsigned char)mr.name[q2])) diff++;
                 if (diff <= 2 && strcasecmp(mr.name, "DUMMY") != 0 && wtb_parse(mr.data, mr.size, &(*store)[i]) == 0 && (*store)[i].object_count > 0) {
-                    {   /* the Titanium record's own OBJ scale, as the other editions build their world models (world3d_append;
-                         * mercsw's loader not traced - INFERRED) */
-                        int sx = o.scale[0] ? o.scale[0] : 1, sy = o.scale[1] ? o.scale[1] : 1, sz = o.scale[2] ? o.scale[2] : 1, ob, q3;
-                        if (sx != 1 || sy != 1 || sz != 1)
-                            for (ob = 0; ob < (*store)[i].object_count; ob++)
-                                for (q3 = 0; q3 < (*store)[i].objects[ob].vert_count; q3++) {
-                                    wtb_vertex *v = &(*store)[i].objects[ob].verts[q3];
-                                    v->x *= sx; v->y *= sy; v->z *= sz;
-                                }
-                    }
+                    ti_world_place(&(*store)[i], p, placed ? &o : NULL);
                     if (!(*store)[i].extended) mech3d_ti_normals(&(*store)[i]);
                     p->ti_model = &(*store)[i];
                     found++;
                 }
                 prj_record_free(&mr);
             }
-            break;
         }
     }
     if (have) { free(chunks); prj_record_free(&r); }
