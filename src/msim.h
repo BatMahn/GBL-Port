@@ -156,6 +156,8 @@ typedef struct {
     unsigned     player_class;   /* USERSTAR GPS +0x18: UserStar's class for the objective nodes */
     char         player_skel[17], player_loadout[17];   /* from USERSTAR.BWD (shell), else Timber Wolf */
     int32_t      now;            /* ms */
+    int32_t      shot_ticks;     /* GBL 0x15820 / 0x51660: the timer ticks (182 a second) the projectiles have been flown to -
+                                  * each step flies them once by the whole ticks since (DAT_000a5c48) */
     /* mission end (engine 0x10009f50 / 0x100374e0): the player's star (table 0) result or the player's
      * destruction starts a 1820-tick (10 s) end sequence, then the mission is over */
     int          outcome;        /* 0 running / none, 2 successful, 3 failed, 4 time exceeded */

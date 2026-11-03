@@ -6,6 +6,10 @@
  *     -v             every node change and the sim's log
  *     -nofire        the player never fires (only the fallbacks destroy things)
  *     -installstars  use the install's USERSTAR / EN0nSTAR files instead of a fresh fixed lance (temp dir)
+ *     -lock          the player locks his destroy targets with his first guided weapon (as a player would, the
+ *                    selector on it, 2 s on target: guided shots home) and may stand on a floor up to 200 m below a
+ *                    target that holds a height of its own (GBL class 2: PETESCN1's submarines, 160 m over the sea
+ *                    floor - out of reach else); off by default (the baseline runs)
  *   env: MW2_SWEEP_TRACE=1 the player's state every second (=n: every n steps of 50 ms), MW2_SWEEP_BRG=1 the firing-position scores,
  *        MW2_SWEEP_ACTOR=n actor n's position / AI state every 5 s, MW2_SWEEP_STAR_SIZE=1..3 the player's star size
  *        (default: the mission's BRF2 SDSC default, as the campaign shell starts it; capped at the SDSC maximum)
@@ -55,7 +59,7 @@
 #define NOFLOOR_CM 5000.0f   /* a teleport point's floor must be within 50 m below the target's level (BRANSCN1 113 m, ZACKSCN1 3.9 km; HOFFSCN1's visit target stands 28 m over its ground) */
 #define PI_F 3.14159265f
 
-static int g_verbose, g_nofire;
+static int g_verbose, g_nofire, g_lock;
 static int g_fwant[MTBL_MAX_NODES];   /* table 0 protect nodes whose FAILURE a wanted node needs (an 'F' item) */
 static const char *g_stars_dir;   /* own star files: USERSTAR is rewritten per scene with the mission's star size */
 static lance_slot g_fr[3];
@@ -620,6 +624,12 @@ static int run_scene(prj_archive *a, const char *scene)
                     aim_at(&s, hc[0], hy0 + (hy1 - hy0) * AIM_H[at.aim & 3], hc[2]);
                     s.player_target = e; s.player_attacks = 1;
                     if (at.aim || displaced) { s.player_aim_free = 1; s.player_target = -1; }   /* along the aim line at the chosen height */
+                    if (g_lock) {   /* -lock: the selector on the first guided weapon, the target selected (msim's lock test) */
+                        int q;
+                        s.player_lock_target = e;
+                        for (q = 0; q < s.player_unit.weapon_count; q++)
+                            if (msim_weapon_guided(s.player_unit.weapons[q].weapon)) { s.player_sel_w = q; break; }
+                    }
                     if (at.since > 25.0f + (float)at.start_health / 40.0f) {   /* fallback: hits through the combat API until it goes */
                         int guard = 0, w0 = s.player_unit.weapon_count > 0 ? s.player_unit.weapons[0].weapon : 0;
                         anom(&nanom, scene, "node %d %s: %s (%s, actor %d) not destroyed by projectiles (health %d of %d)%s - finished with combat_hit",
@@ -740,6 +750,9 @@ static int run_scene(prj_archive *a, const char *scene)
                 if (fabsf(g2 - place_y_ref) <= r * 0.9f) gy = g2;
                 else if (place_y_ref - gy <= 20000.0f && inside_area(&s, bad, best, s.player[0], gy, s.player[2])) drop_y = place_y_ref;
             }
+            if (g_lock && at.actor >= 0 && at.actor < n && s.fly_y && !isnan(s.fly_y[at.actor]) && place_y_ref - gy > nofloor &&
+                place_y_ref - gy <= 20000.0f && inside_area(&s, bad, best, s.player[0], gy, s.player[2]))
+                place_y_ref = gy;   /* -lock: under a class 2 target (its guided shots climb to it) */
             if (drop_y < 0 && (place_y_ref - gy > nofloor || !inside_area(&s, bad, best, s.player[0], gy, s.player[2]))) {
                 /* no floor near the target's level (space / station maps: BRANSCN1's upper deck, ZACKSCN1's carrier deck
                  * 4 km up), or a floor outside the mission area in 3D (ZACKSCN1's fighters at y 0 under the carrier deck):
@@ -913,6 +926,7 @@ int main(int argc, char **argv)
     for (; first < argc && argv[first][0] == '-'; first++) {
         if (strcmp(argv[first], "-v") == 0) g_verbose = 1;
         else if (strcmp(argv[first], "-nofire") == 0) g_nofire = 1;   /* debugging: the player never fires (fallbacks only) */
+        else if (strcmp(argv[first], "-lock") == 0) g_lock = 1;
         else if (strcmp(argv[first], "-t") == 0 && first + 1 < argc) g_max_s = (float)atof(argv[++first]);
         else if (strcmp(argv[first], "-installstars") == 0) own_stars = 0;
     }

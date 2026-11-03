@@ -4326,11 +4326,17 @@ static int g_pl_imp3, g_pl_land3;
  * below it. The start-up is state 1 (0x27b05: 0x444 + rand(0x16c) ticks): BASSSCN1's start point BASSST01 is at y 9000
  * over ground at 8683, so in DOS the mech drops straight down; the port's terrain impact (the 3D move refused by the
  * slope, reflected x -0.25) had slid it 16 cm across - the cockpit eye 16 cm off the start point, the nav marker under
- * the player drawn at x 522 for DOSBox's 512 (1024 x 768). Only the start-up is gated here: shut down (state 3) the
- * engine skips the tests as well - not ported (outside the cockpit eye work; a coasting mech still collides) */
+ * the player drawn at x 522 for DOSBox's 512 (1024 x 768). Shut down (state 3: s / Ctrl+s 0x28695, the heat shutdown
+ * 0x252b0) the tests are skipped too: a coasting mech goes through mechs, objects and terrain faces, its velocity still
+ * easing to the drive's (0x27b05 zeroes the drive outside state 2, 0x26d05 approaches heading x c[0xb] at 1/45 a tick),
+ * stood on 0x1c370's ground (the highest surface within 10 m of the centre: a low box is stepped onto, a tall one walked
+ * into). A mech walking into the shut-down player still tests its sphere (0x20320 does not look at the other's state).
+ * The restart is state 0 -> 1 (0x28695 / 0x252b0 -> 0x27b05 case 0): no tests until up again (player_online_at) */
 static int pl_move_tests(void)
 {
-    return !(g_sim_ok && !g_sim.player_unit.destroyed && g_sim.now < g_sim.player_online_at && !getenv("MW2_NO_STARTUP"));
+    if (!g_sim_ok || g_sim.player_unit.destroyed) return 1;   /* state 4: tested */
+    if (g_sim.player_unit.shutdown) return 0;                 /* state 3 */
+    return !(g_sim.now < g_sim.player_online_at && !getenv("MW2_NO_STARTUP"));   /* states 0 / 1 */
 }
 static int pl_move(float dt, float top)
 {

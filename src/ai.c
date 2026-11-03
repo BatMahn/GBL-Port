@@ -563,9 +563,11 @@ void ai_step(const ai_library *lib, ai_mind *m, const ai_view *v, float dt)
                     else if (m->state != AI_GODIRECT) m->target = 0;
                     if (m->state == AI_GODIRECT && r->cond_ref == 0x2101 && r->ref == 0x25) { m->to_navref = 1; m->target = 0; }
                     if (from == AI_TARGET && m->state == AI_GODIRECT) m->target = m->to_navref ? 0 : m->target;
-                    if (m->state == AI_TARGET) {   /* entry 0x10013790 case 2: next fire decision rand(10) x 22 ticks on; leaving
-                                                    * patrol (7) with no nav assigned, a 30 m nav point here (0x1001cab0) */
-                        m->next_fire = (float)(ai_rand(m, 10) * 22u);
+                    if (m->state == AI_TARGET) {   /* entry 0x10013790 case 2: next fire decision rand(10) x 18 ticks on (GBL
+                                                    * 0x22ef0 case 2: +0x156 = now + rand(10) x 0x12; the 3D editions' x 22
+                                                    * is the later decisions' step, 0x16 in GBL 0x2eb60 too); leaving patrol (7) with
+                                                    * no nav assigned, a 30 m nav point here (0x1001cab0) */
+                        m->next_fire = (float)(ai_rand(m, 10) * 18u);
                         if (from == AI_PATROL && v->unit_led && !m->nav_ok) { m->nav_ok = 1; m->nav_x = v->self_x; m->nav_z = v->self_z; }
                     }
                 }

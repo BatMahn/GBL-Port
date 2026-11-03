@@ -127,6 +127,15 @@ Sources read: /home/claude/gbl/re/mw2gbl_decomp.c + mw2gbl.elf (GBL sim), shellg
   the plain steering.
 - kinds 8 / 9 / 10 / 12 in the update 0x516b0: no kind-specific movement or hit code (only kind 7 sets hit flag 0x10, and
   flags 0x80 the NARC bit) - they move and hit like any projectile. Torpedo: no water test found (ASSUMED: flies anywhere).
+- once a FRAME (agent AD): the main loop 0x15af0 calls 0x51660 once per frame with DAT_000a5c48 = the whole timer ticks
+  (182 / s, 0x63633) since the last frame (0x15820; < 1 -> 0). 0x51660: age +0x24 += ticks, life +0x28 -= ticks, then
+  0x516b0 one step p += (v + a t / 2) t, v += a t, the segment against the collision list, the ground (0x1c370 only when
+  y < 0); nothing struck and life < 1 -> ends with no effect; else 0x51cd0 steers (the Torpedo's ease (t << 16) / 0x2d8
+  per frame). msim: `shot_ticks`, the whole ticks since the last step, one step per projectile (a hitch split into steps
+  of at most 36 ticks - ASSUMED). DOSBox (cycles=max) frame rate from GBL's own display (0xaf8d4 = 1, VA 0x49ef0): 38-57
+  fps = 3-5 ticks a frame. Port PETESCN1, a locked torpedo 150 m under a submarine: 144 / 45 fps / per tick within 4 cm /
+  0.12 deg, 10 fps 1.4 m / 1.7 deg; 400 m off-axis: 10 vs 60 fps 2.6 m / 16 deg (the eased guidance is lightly damped:
+  at 18 ticks a step its porpoising grows, at 3-6 it dies down).
 - GBL 0x516b0: the proximity flag (+0x3d & 0x80) with no homing class -> the projectile ends where it is with its plain
   effect (used by AMS intercepts of unguided missiles and a lost target).
 

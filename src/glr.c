@@ -227,7 +227,7 @@ static const char *VS =
      * 2 px larger on screen - each vertex pushed out along its two edges' outward normals (miter, at most 8 px) - and the
      * fragment keeps exactly the DOS span's pixels (dos_gouraud); polygons crossing the near plane are left as they are */
     "#if DOS_LOOK\n"
-    "  if (u_dos != 0 && u_dos_exact != 0 && int(a_color.r + 0.5) == 3 && a_texsel > 0.5 && e < 256) {\n"
+    "  if (u_dos != 0 && u_dos_exact != 0 && int(a_color.r + 0.5) <= 3 && a_texsel > 0.5 && e < 256) {\n"
     "    int s = int(a_texsel + 0.5) - 1, rel = gl_VertexID - s, t = rel / 3, cn = rel - 3 * t;\n"
     "    vec2 Q[18]; int n = 0; bool ok = true; vec2 h = 0.5 * u_vp;\n"
     "    for (int k = 0; k < 16; k++) {\n"
@@ -559,6 +559,10 @@ static const char *FS =
     "#if DOS_LOOK\n"
     "  if (u_dos != 0) {\n"
     "    int kind = int(v_color.r + 0.5); float base = floor(v_color.g + 0.5), C = floor(v_color.b + 0.5);\n"
+    /* the flat colour types 0 / 1 (0x3c610 -> 0x5a900) and the affine textured type 7 (0x382f0 -> 0x5ccc9): the same
+     * exact spans as the Gouraud fill (dos_gouraud's discards; its shade unused) - the rows from the top vertex's to the
+     * bottom one's and each from the left chain's x >> 16 to the right one's, both inclusive, chains from x + 0.5 */
+    "    if (kind <= 2 && v_texsel > 0 && u_dos_exact != 0) dos_gouraud(0.0);\n"
     "    if (kind == 0) { o_color = u_dos_tc != 0 ? dos_tc_out(dos_colour(base)) : vec4(dos_colour(base), 1.0); return; }\n"
     /* kind 4: a type 3 billboard - its texel indices as they are (0x38ae3 returns a 0x3000 word unshaded) */
     "    if (kind == 4 && u_dos_tc != 0) { vec4 tc = dos_tc_tex(15.0, false); if (tc.a < 0.5) discard; o_color = dos_tc_out(tc.rgb); return; }\n"
@@ -1376,7 +1380,10 @@ static int set_layer(glr *r, int li, const mech3d *m, const uint8_t palette[256]
                          * textured one: minus its texture switch class (notex_class) */
                         f[11] = batch >= GLR_SLOTS && !part->tint && !(r->dos && !model->extended) ? (float)((ti_flat && tk4 ? v->a & 0xff : pidx) + 1) : batch < GLR_SLOTS ? (float)-notex_cls : 0.0f;
                         if (tk2) f[11] = (float)-k2cls;   /* (v_ticm 3: drawn only with its class's textures off) */
-                        if (r->dos && !model->extended && tk4 && batch == GLR_SLOTS) f[11] = (float)(pfirst + 1);   /* DOS Gouraud: its fan's first vertex + 1 (dos_gouraud) */
+                        /* DOS Gouraud: its fan's first vertex + 1 (dos_gouraud); the flat colour types 0 / 1 and the affine
+                         * textured type 7 too - their fills (0x5a900, 0x5ccc9) step the same spans */
+                        if (r->dos && !model->extended && ((batch == GLR_SLOTS && (tk4 || ((q->color >> 12) & 7) <= 1)) ||
+                                                           (batch < GLR_SLOTS && ((q->color >> 12) & 7) == 7))) f[11] = (float)(pfirst + 1);
                         if (tik == 1 && batch >= GLR_TI && batch < GLR_TB) f[11] = (float)-k2cls;   /* (textured kinds 5-7: their switch class) */
                         if (tik) {
                             float *t = tic + pos[batch] * 4;

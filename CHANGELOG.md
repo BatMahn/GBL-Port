@@ -30,6 +30,9 @@
 - **Weapons and effects:** GBL's new projectiles are drawn in all three looks: the Torpedo, Arrow IV, NARC and the
   Flamer. The burning effect follows the 'Mech it hit. Each mission uses its own projectile and effect sets, with their
   own blast sizes, and shots start ahead of the 'Mech as in the original. Torpedo guidance matches it too.
+- **Projectiles move once a frame, as in the original:** each shot advances by the frame's time in one step and then
+  steers. A locked torpedo's curve now follows the original's at the same frame rate (checked in the underwater
+  mission, PETE: torpedoes climb to the submarines and home in on the 'Mechs).
 - **Aircraft and hovercraft fly:** fighters, helicopters, submarines and hovercraft hold their height as in GBL. The
   JumpShip fighters in the last mission now attack the ship.
 - **Wrecks:** a unit that runs into a wreck blows it apart, as in the original, so escorts no longer get stuck (MARO).
@@ -63,6 +66,12 @@
   view, and the message bar is clipped as DOS clips it.
 - **Dropping in at the start:** a 'Mech that starts above the ground drops straight down during the start-up, as in the
   original. It used to slide a little across the slope it landed on, which moved the cockpit view and the HUD markers.
+- **Powering up and shutting down:** lancemates and enemies stay where they landed until they have powered up, with
+  their torsos centred, and the start-up takes 6 to 8 seconds as in the original. A shut-down 'Mech coasts to a stop
+  without bumping into anything, the shutdown order powers a lancemate down, and the next order starts it up again.
+- **Thin parts in the DOS look:** flat-coloured and most textured polygons now cover the same pixels as the original's
+  fill, as the shaded ones already did, so slivers such as the turrets' gun barrels stay solid instead of breaking into
+  dots (not on macOS, where the exact DOS fill is off).
 - **Heat, throttle and jets bars** ease toward their values as in the original, and the dH/dT bar reads the original's
   net heat.
 - **Targets, radar and missiles aim at a building's or vehicle's centre**, not its model origin.
