@@ -12,7 +12,7 @@
 
 typedef struct sfx_s sfx;
 
-/* Opens an SDL audio device (SDL_INIT_AUDIO must be initialised). NULL if unavailable. */
+/* Opens an SDL audio device stream (SDL_INIT_AUDIO must be initialised). NULL if unavailable. */
 sfx *sfx_create(prj_archive *a);
 void sfx_destroy(sfx *s);
 /* Play SNDS record `index` (1-based PRJ index). volume 0..1, pan -1 (left) .. 1 (right). */

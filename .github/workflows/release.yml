@@ -14,8 +14,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install SDL2
-        run: brew install sdl2
+      - name: Install SDL3
+        run: brew install sdl3 pkgconf
 
       - name: Build
         run: make gbl
@@ -35,22 +35,40 @@ jobs:
 
   build-debian:
     runs-on: ubuntu-22.04   # the oldest supported Ubuntu: the package also installs on newer Ubuntu / Debian
+    env:
+      SDL3_VERSION: 3.2.24
     steps:
       - uses: actions/checkout@v4
 
       - name: Install build deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential libsdl2-dev libgl1-mesa-dev
+          sudo apt-get install -y build-essential cmake ninja-build pkg-config \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev libxss-dev libxtst-dev \
+            libxkbcommon-dev libwayland-dev wayland-protocols libdecor-0-dev libdrm-dev libgbm-dev \
+            libasound2-dev libpulse-dev libpipewire-0.3-dev libdbus-1-dev libudev-dev libibus-1.0-dev
+
+      # Ubuntu has no SDL3 package: build it from the release tarball; the .deb ships libSDL3.so.0 in /usr/lib/gblport
+      # (gbl finds it there through its rpath). X11 / Wayland / ALSA / PulseAudio / PipeWire are loaded at run time.
+      - name: Build SDL3
+        run: |
+          curl -sSfL -o sdl3.tar.gz https://github.com/libsdl-org/SDL/releases/download/release-${SDL3_VERSION}/SDL3-${SDL3_VERSION}.tar.gz
+          tar xzf sdl3.tar.gz
+          cmake -S SDL3-${SDL3_VERSION} -B sdl3-build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=$PWD/sdl3 \
+            -DCMAKE_INSTALL_LIBDIR=lib -DSDL_STATIC=OFF -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF
+          cmake --build sdl3-build
+          cmake --install sdl3-build
+          echo "PKG_CONFIG_PATH=$PWD/sdl3/lib/pkgconfig" >> $GITHUB_ENV
+          echo "SDL3_LIB=$PWD/sdl3/lib/libSDL3.so.0" >> $GITHUB_ENV
 
       - name: Build
-        run: make gbl
+        run: make gbl RPATH='$$ORIGIN/../lib/gblport'
 
       - name: Package
         run: |
           VERSION=${GITHUB_REF_NAME#v}
           case "$VERSION" in [0-9]*) ;; *) VERSION=0.0.0~${GITHUB_SHA::7} ;; esac
-          sh packaging/linux/build_deb.sh "$VERSION"
+          sh packaging/linux/build_deb.sh "$VERSION" "$SDL3_LIB"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -62,7 +80,7 @@ jobs:
     container: fedora:latest
     steps:
       - name: Install build deps
-        run: dnf install -y git rpm-build rpmdevtools gcc make SDL2-devel mesa-libGL-devel
+        run: dnf install -y git rpm-build rpmdevtools gcc make pkgconf-pkg-config SDL3-devel
 
       - uses: actions/checkout@v4
 
@@ -83,29 +101,28 @@ jobs:
           path: dist/*.rpm
 
   build-windows:
-    runs-on: ubuntu-24.04   # cross-compiled with MinGW-w64; ships SDL2.dll beside gbl.exe
+    runs-on: ubuntu-24.04   # cross-compiled with MinGW-w64; ships SDL3.dll beside gbl.exe
     env:
-      SDL2_VERSION: 2.32.10
+      SDL3_VERSION: 3.2.24
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install MinGW-w64 and SDL2 (MinGW development package)
+      - name: Install MinGW-w64 and SDL3 (MinGW development package)
         run: |
           sudo apt-get update
-          sudo apt-get install -y mingw-w64 zip
-          curl -sSfL -o sdl2.tar.gz https://github.com/libsdl-org/SDL/releases/download/release-${SDL2_VERSION}/SDL2-devel-${SDL2_VERSION}-mingw.tar.gz
-          tar xzf sdl2.tar.gz
-          SDL=$PWD/SDL2-${SDL2_VERSION}/x86_64-w64-mingw32
-          sed -i "s|^prefix=.*|prefix=$SDL|" $SDL/bin/sdl2-config
+          sudo apt-get install -y mingw-w64 zip pkg-config
+          curl -sSfL -o sdl3.tar.gz https://github.com/libsdl-org/SDL/releases/download/release-${SDL3_VERSION}/SDL3-devel-${SDL3_VERSION}-mingw.tar.gz
+          tar xzf sdl3.tar.gz
+          SDL=$PWD/SDL3-${SDL3_VERSION}/x86_64-w64-mingw32
           echo "SDL=$SDL" >> $GITHUB_ENV
 
       - name: Build
-        run: make gbl WINDOWS=1 CC=x86_64-w64-mingw32-gcc SDL2_CONFIG=$SDL/bin/sdl2-config
+        run: make gbl WINDOWS=1 CC=x86_64-w64-mingw32-gcc PKG_CONFIG_PATH=$SDL/lib/pkgconfig
 
       - name: Package
         run: |
           mkdir -p dist/GBL-Port
-          cp gbl.exe $SDL/bin/SDL2.dll dist/GBL-Port/
+          cp gbl.exe $SDL/bin/SDL3.dll dist/GBL-Port/
           cp -r assets dist/GBL-Port/
           cp README.md FOLDER_SETUP.md THIRD_PARTY.md dist/GBL-Port/
           cd dist && zip -r GBL-Port-${{ github.ref_name }}-windows-x64.zip GBL-Port

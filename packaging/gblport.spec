@@ -3,11 +3,12 @@ Version:        %{_version}
 Release:        1%{?dist}
 Summary:        Native 64-bit port of MechWarrior 2: Ghost Bear's Legacy (DOS, 1995)
 License:        Proprietary
-BuildRequires:  gcc, make, SDL2-devel, mesa-libGL-devel
-Requires:       SDL2
+BuildRequires:  gcc, make, pkgconf-pkg-config, SDL3-devel >= 3.2.0
+Requires:       SDL3 >= 3.2.0, vulkan-loader
+Recommends:     mesa-vulkan-drivers
 
 %description
-Native port of MechWarrior 2: Ghost Bear's Legacy with an OpenGL renderer.
+Native port of MechWarrior 2: Ghost Bear's Legacy, drawn with Vulkan through SDL3's GPU API.
 Requires your own copy of the original Ghost Bear's Legacy disc.
 
 %prep

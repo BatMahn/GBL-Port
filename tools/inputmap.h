@@ -23,7 +23,7 @@
 #ifndef MW2_INPUTMAP_H
 #define MW2_INPUTMAP_H
 
-#include <SDL.h>
+#include <SDL3/SDL.h>
 #include <stdio.h>
 #include <string.h>
 #include <strings.h>
@@ -50,8 +50,17 @@ typedef struct { int sign, device, code, gate, raw; } im_cond;
  * 0x10870); its event handler (fn 0Ch) leaves the position in 0x4f2 / 0x4f4, read >> 3 (0x107b0) - a 1024 x 1024 box
  * moved 1 unit a mickey and stopped at its edges; an axis reads ((2 pos - 1024) << 16) / 1024 (0x10350). Kept here as
  * the offset from the centre, -512..511; one SDL relative-motion unit is taken as one mickey (port) */
-typedef struct { SDL_Joystick *joy; Uint32 mouse_buttons; int mouse_x, mouse_y; SDL_GameController *pad; } im_devstate;
+typedef struct { SDL_Joystick *joy; Uint32 mouse_buttons; int mouse_x, mouse_y; SDL_Gamepad *pad; } im_devstate;
 static im_devstate g_im_dev;
+/* TEST ONLY: a virtual SDL joystick (SDL_JOYSTICK_TYPE_GAMEPAD: SDL maps its axes and buttons onto the gamepad's in
+ * order, so virtual axis / button n is the gamepad's n); its id, 0 if none */
+static SDL_JoystickID im_attach_virtual(SDL_JoystickType type, int naxes, int nbuttons, int nhats)
+{
+    SDL_VirtualJoystickDesc d;
+    SDL_INIT_INTERFACE(&d);
+    d.type = (Uint16)type; d.naxes = (Uint16)naxes; d.nbuttons = (Uint16)nbuttons; d.nhats = (Uint16)nhats;
+    return SDL_AttachVirtualJoystick(&d);
+}
 #define IM_MAX_COND 8   /* conditions in a block: the sim takes 8 (0x47ed0, "chord too big" past them) */
 typedef struct { char name[40]; int ncond; im_cond c[IM_MAX_COND]; } im_rule;
 typedef struct { char action[40]; SDL_Keycode key; int ctrl, alt, shift; } im_bind;
@@ -249,7 +258,7 @@ static void im_input_code(im_cond *k, const char *dev, const char *c)
         {"Tx", 100, 0}, {"Ty", 101, 0}, {"Tz&C", 102, 3}, {"Rx", 103, -4}, {"Ry", 104, -4}, {"Rx&D", 103, 4}, {"Ry&D", 104, 4},
         {"ButtonA", 0, 0}, {"ButtonB", 1, 0}, {"ButtonC", 2, 0}, {"ButtonD", 3, 0}, {"ButtonE", 4, 0}, {"ButtonF", 5, 0},
         {"TurnLeft", 300, 0}, {"TurnRight", 301, 0}, {"JumpJet", 302, 0}, {"LookUp", 306, 0}, {"LookDown", 307, 0}};
-    /* the gamepad (port addition): SDL_GameController's axes and buttons, then the triggers and the stick directions as
+    /* the gamepad (port addition): SDL_Gamepad's axes and buttons, then the triggers and the stick directions as
      * buttons */
     static const char *const PADA[] = {"LeftX", "LeftY", "RightX", "RightY", "LeftTrigger", "RightTrigger"};
     static const char *const PADB[] = {"A", "B", "X", "Y", "Back", "Guide", "Start", "LeftStick", "RightStick", "LeftShoulder",
@@ -419,7 +428,7 @@ static int im_uses(const inputmap *m, int d)
  * keypad's + is the PLUS key */
 static int im_action(const inputmap *m, const char *action, SDL_Keycode sym, Uint16 mod)
 {
-    int i, ctrl = (mod & KMOD_CTRL) != 0, alt = (mod & KMOD_ALT) != 0, shift = (mod & KMOD_SHIFT) != 0;
+    int i, ctrl = (mod & SDL_KMOD_CTRL) != 0, alt = (mod & SDL_KMOD_ALT) != 0, shift = (mod & SDL_KMOD_SHIFT) != 0;
     if (sym == SDLK_KP_PLUS) sym = '+';
     for (i = 0; i < m->nbinds; i++) {
         const im_bind *b = &m->binds[i];
@@ -485,11 +494,11 @@ static float im_stick_shape(int ax, float v)
 static float im_pad_axis(int ax)
 {
     float v, a, dz;
-    if (!g_im_dev.pad || ax < 0 || ax >= SDL_CONTROLLER_AXIS_MAX) return 0;
-    v = (float)SDL_GameControllerGetAxis(g_im_dev.pad, (SDL_GameControllerAxis)ax) / 32767.0f;
+    if (!g_im_dev.pad || ax < 0 || ax >= SDL_GAMEPAD_AXIS_COUNT) return 0;
+    v = (float)SDL_GetGamepadAxis(g_im_dev.pad, (SDL_GamepadAxis)ax) / 32767.0f;
     if (v < -1) v = -1;
     if (v > 1) v = 1;
-    dz = ax >= SDL_CONTROLLER_AXIS_TRIGGERLEFT ? 0.05f : 0.15f;
+    dz = ax >= SDL_GAMEPAD_AXIS_LEFT_TRIGGER ? 0.05f : 0.15f;
     a = v < 0 ? -v : v;
     a = a <= dz ? 0.0f : (a - dz) / (1.0f - dz);
     return v < 0 ? -a : a;
@@ -498,8 +507,8 @@ static float im_pad_axis(int ax)
 /* a stick's raw axis -1..1 */
 static float im_joy_axis(int ax)
 {
-    if (!g_im_dev.joy || ax < 0 || ax >= SDL_JoystickNumAxes(g_im_dev.joy)) return 0;
-    return (float)SDL_JoystickGetAxis(g_im_dev.joy, ax) / 32767.0f;
+    if (!g_im_dev.joy || ax < 0 || ax >= SDL_GetNumJoystickAxes(g_im_dev.joy)) return 0;
+    return (float)SDL_GetJoystickAxis(g_im_dev.joy, ax) / 32767.0f;
 }
 
 /* the condition's gate (the Spaceball's "&C" / "&D" axes): the stick button it needs held / released */
@@ -508,7 +517,7 @@ static int im_gate_ok(const im_cond *c)
     int b, on;
     if (!c->gate) return 1;
     b = (c->gate < 0 ? -c->gate : c->gate) - 1;
-    on = g_im_dev.joy && b < SDL_JoystickNumButtons(g_im_dev.joy) && SDL_JoystickGetButton(g_im_dev.joy, b);
+    on = g_im_dev.joy && b < SDL_GetNumJoystickButtons(g_im_dev.joy) && SDL_GetJoystickButton(g_im_dev.joy, b);
     return c->gate > 0 ? on : !on;
 }
 
@@ -537,13 +546,13 @@ static int im_cond_held(const im_cond *c, const Uint8 *ks)
             on = pos ? v > 0.5f : v < -0.5f;
         } else if (c->device == 1 && g_im_dev.joy) {
             if (c->code >= 200) { int hat = (c->code - 200) / 4;
-                                  Uint8 h = SDL_JoystickNumHats(g_im_dev.joy) > hat ? SDL_JoystickGetHat(g_im_dev.joy, hat) : 0;
+                                  Uint8 h = SDL_GetNumJoystickHats(g_im_dev.joy) > hat ? SDL_GetJoystickHat(g_im_dev.joy, hat) : 0;
                                   static const Uint8 HB[4] = {SDL_HAT_UP, SDL_HAT_RIGHT, SDL_HAT_DOWN, SDL_HAT_LEFT}; on = (h & HB[(c->code - 200) & 3]) != 0; }
-            else on = c->code >= 0 && c->code < SDL_JoystickNumButtons(g_im_dev.joy) && SDL_JoystickGetButton(g_im_dev.joy, c->code);
-        } else if (c->device == 2) on = c->code > 0 && (g_im_dev.mouse_buttons & SDL_BUTTON(c->code)) != 0;
+            else on = c->code >= 0 && c->code < SDL_GetNumJoystickButtons(g_im_dev.joy) && SDL_GetJoystickButton(g_im_dev.joy, c->code);
+        } else if (c->device == 2) on = c->code > 0 && (g_im_dev.mouse_buttons & SDL_BUTTON_MASK(c->code)) != 0;
         else if (c->device == 4 && g_im_dev.pad) {
-            if (c->code == 15 || c->code == 16) on = im_pad_axis(c->code == 15 ? SDL_CONTROLLER_AXIS_TRIGGERLEFT : SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > 0.5f;
-            else on = c->code >= 0 && c->code < SDL_CONTROLLER_BUTTON_MAX && SDL_GameControllerGetButton(g_im_dev.pad, (SDL_GameControllerButton)c->code);
+            if (c->code == 15 || c->code == 16) on = im_pad_axis(c->code == 15 ? SDL_GAMEPAD_AXIS_LEFT_TRIGGER : SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > 0.5f;
+            else on = c->code >= 0 && c->code < SDL_GAMEPAD_BUTTON_COUNT && SDL_GetGamepadButton(g_im_dev.pad, (SDL_GamepadButton)c->code);
         }
         else on = 0;
         return c->sign > 0 ? on : !on;

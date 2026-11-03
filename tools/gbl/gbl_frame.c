@@ -818,7 +818,44 @@ static const char *gbl_frame_mission_title(int i)
  * RESOLUTION's NATIVE choices (the display's resolution, AA 2X / 4X / 8X). The base port's DISPLAY row sat at y 397,
  * where GBL has TRANSITIONS: here the port's DISPLAY (desktop / windowed / the display's modes) is the right part of the
  * HEAT TRACKING row (FULL SCREEN / WINDOWED / WxH) and the HUD layout (HUD WIDE / HUD ORIGINAL) the right part of the DIFFICULTY row (x 495 on, where
- * those rows' values leave room). The port's words are drawn in the values' own font (entry 28). */
+ * those rows' values leave room). The port's GPU interface (gblport.cfg gpu=) is the right part of the TRANSITIONS row:
+ * GPU D3D12 / GPU VULKAN on Windows (a click switches between those that run here), GPU VULKAN (Linux) / GPU METAL
+ * (macOS) greyed - fixed there. The port's words are drawn in the values' own font (entry 28). */
+#if defined(_WIN32)
+/* the backends SDL's GPU API can run here (1 Direct3D 12, 2 Vulkan), asked once */
+static int gpu_backends(void)
+{
+    static int mask = -1;
+    static const char *const NAME[2] = {"direct3d12", "vulkan"};
+    int k;
+    if (mask >= 0) return mask;
+    mask = 0;
+    for (k = 0; k < 2; k++) {
+        SDL_PropertiesID p = SDL_CreateProperties();
+        SDL_SetStringProperty(p, SDL_PROP_GPU_DEVICE_CREATE_NAME_STRING, NAME[k]);
+        SDL_SetBooleanProperty(p, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_DXIL_BOOLEAN, k == 0);
+        SDL_SetBooleanProperty(p, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_SPIRV_BOOLEAN, k == 1);
+        if (SDL_GPUSupportsProperties(p)) mask |= 1 << k;
+        SDL_DestroyProperties(p);
+    }
+    return mask;
+}
+#endif
+/* the GPU interface the simulation will start with this setting (rb_init's order: the chosen one, else the other) */
+static const char *gpu_backend_text(int gpu)
+{
+#if defined(_WIN32)
+    const int m = gpu_backends();
+    if (gpu == PORTCFG_GPU_VULKAN) return (m & 2) || !(m & 1) ? "GPU VULKAN" : "GPU D3D12";
+    return (m & 1) || !(m & 2) ? "GPU D3D12" : "GPU VULKAN";
+#elif defined(__APPLE__)
+    (void)gpu;
+    return "GPU METAL";
+#else
+    (void)gpu;
+    return "GPU VULKAN";
+#endif
+}
 static void gbl_combat_variables(void)
 {
     uint8_t snd[0x40], dif[8], snd0[0x40], dif0[8];
@@ -852,13 +889,14 @@ static void gbl_combat_variables(void)
     }
     pc0 = pc;
     {
-        int n = g_headless ? 0 : SDL_GetNumDisplayModes(0), k, j;
-        for (k = 0; k < n && nmodes < 64; k++) {
-            SDL_DisplayMode dm;
-            if (SDL_GetDisplayMode(0, k, &dm) != 0) continue;
-            for (j = 0; j < nmodes; j++) if (modes[j].w == dm.w && modes[j].h == dm.h) break;
-            if (j == nmodes && dm.w >= 640 && dm.h >= 480) { modes[nmodes].w = dm.w; modes[nmodes].h = dm.h; nmodes++; }
+        int n = 0, k, j;
+        SDL_DisplayMode **dms = g_headless ? NULL : SDL_GetFullscreenDisplayModes(SDL_GetPrimaryDisplay(), &n);   /* largest first, as SDL2's list */
+        for (k = 0; dms && k < n && nmodes < 64; k++) {
+            const SDL_DisplayMode *dm = dms[k];
+            for (j = 0; j < nmodes; j++) if (modes[j].w == dm->w && modes[j].h == dm->h) break;
+            if (j == nmodes && dm->w >= 640 && dm->h >= 480) { modes[nmodes].w = dm->w; modes[nmodes].h = dm->h; nmodes++; }
         }
+        SDL_free(dms);
         if (pc.mode == 2) for (j = 0; j < nmodes; j++) if (modes[j].w == pc.w && modes[j].h == pc.h) mi = j;
     }
     gbl_bg(3);
@@ -920,6 +958,11 @@ static void gbl_combat_variables(void)
         gbl_frame_text(28, 500, ROW_Y[0], pc.hud_original ? "HUD ORIGINAL" : "HUD WIDE", -1);
         gbl_frame_text(28, 500, ROW_Y[1], disp, -1);
         gbl_frame_text(28, 500, ROW_Y[13], pc.dos_sky_smooth ? "DOS SMOOTH" : "DOS DITHERED", -1);
+#if defined(_WIN32)
+        gbl_frame_text(28, 500, ROW_Y[8], gpu_backend_text(pc.gpu), -1);
+#else
+        gbl_frame_text(28, 500, ROW_Y[8], gpu_backend_text(pc.gpu), grey);   /* (fixed on this system) */
+#endif
         {   /* the port's look of the full-screen videos (portcfg videos=): OBJECT TEXTURES' right part */
             static const char *const VID_TEXT[PORTCFG_VID_COUNT] = {"FMV ORIGINAL", "FMV SMOOTH", "FMV SCANLINE", "FMV CRT", "FMV CURVED"};
             static const char *const FIT_TEXT[PORTCFG_FIT_COUNT] = {"FMV 4:3", "FMV FILL", "FMV STRETCH"};   /* video_fit= */
@@ -951,8 +994,14 @@ static void gbl_combat_variables(void)
             int x = in->mx, y = in->my, fh = gtext_h(28);
             for (i = 0; i < 14; i++) {
                 if (y < ROW_Y[i] || y >= ROW_Y[i] + fh) continue;
-                if (x >= 495 && (i == 0 || i == 1 || i == 2 || i == 3 || i == 13)) {   /* the port's right-hand words */
+                if (x >= 495 && (i == 0 || i == 1 || i == 2 || i == 3 || i == 8 || i == 13)) {   /* the port's right-hand words */
                     if (i == 0) pc.hud_original ^= 1;
+                    else if (i == 8) {   /* GPU (Windows: Direct3D 12 <-> Vulkan, those that run here; elsewhere fixed) */
+#if defined(_WIN32)
+                        if (pc.gpu == PORTCFG_GPU_VULKAN) { if (gpu_backends() & 1) pc.gpu = PORTCFG_GPU_D3D12; }
+                        else if (gpu_backends() & 2) pc.gpu = PORTCFG_GPU_VULKAN;
+#endif
+                    }
                     else if (i == 3) pc.video_fit = (pc.video_fit + 1) % PORTCFG_FIT_COUNT;   /* FMV size: 4:3 / fill / stretch */
                     else if (i == 2) pc.videos = (pc.videos + 1) % PORTCFG_VID_COUNT;   /* FMV: the full-screen videos' look */
                     else if (i == 1) {   /* DISPLAY: desktop -> windowed -> the display's modes -> desktop */
@@ -1196,7 +1245,7 @@ static void gbl_cc_editor(void)
                 memset(g_cccfg.name, 0, sizeof g_cccfg.name);
                 snprintf(g_cccfg.name, sizeof g_cccfg.name, "%s", nbuf);
                 naming = 0;
-                if (!g_headless) SDL_StopTextInput();
+                if (!g_headless) SDL_StopTextInput(g_win);
                 if (getenv("GBL_EVENTS")) printf("cc: name '%s'\n", g_cccfg.name);   /* TEST ONLY */
             }
             continue;
@@ -1207,7 +1256,7 @@ static void gbl_cc_editor(void)
         if (gbl_cc_in(mx, my, 20, 286, 150)) {   /* the name item (0x1ecc0) */
             snprintf(nbuf, sizeof nbuf, "%s", g_cccfg.name);
             naming = 1;
-            if (!g_headless) SDL_StartTextInput();
+            if (!g_headless) SDL_StartTextInput(g_win);
             continue;
         }
         if (gbl_cc_in(mx, my, 375, 110, gtext_w(GF_DEFAULT, "NEXT PAGE"))) { level = (level + 1) % CC_LEVELS; continue; }   /* 0x1f300 */
@@ -1555,13 +1604,11 @@ static int gbl_title(void)
     amb = gsnd_get(0x51, 0);
     gsnd_play(0x7e, 0x32, 0);
     g_in.mx = 0x222; g_in.my = 0x1d;
-#if SDL_VERSION_ATLEAST(2, 0, 18)
     if (g_win && g_grd && SDL_GetMouseFocus() == g_win) {   /* windowed: the system pointer, moved to the same place */
-        int wx, wy;
-        SDL_RenderLogicalToWindow(g_grd, 0x222, 0x1d, &wx, &wy);
+        float wx, wy;
+        SDL_RenderCoordinatesToWindow(g_grd, 0x222, 0x1d, &wx, &wy);
         SDL_WarpMouseInWindow(g_win, wx, wy);
     }
-#endif
     while (next == -1) {
         gbl_input *in;
         int h, vol = (int)((g_now - t0) / 250u);

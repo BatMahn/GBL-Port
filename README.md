@@ -1,8 +1,8 @@
 # MechWarrior 2: Ghost Bear's Legacy (DOS, 1995) - 64-bit port
 
 A native 64-bit reimplementation of **MechWarrior 2: Ghost Bear's Legacy**, the 1995 expansion, rebuilt from the
-original disc's `GBL\MW2SHELL.EXE` and `GBL\MW2.EXE`. Portable C99 with SDL2 and OpenGL 3.3; builds on macOS, Linux
-and Windows. You need your own copy of the game (see "Setting up the game folder").
+original disc's `GBL\MW2SHELL.EXE` and `GBL\MW2.EXE`. Portable C99 with SDL3, drawn through SDL3's GPU API (Direct3D 12
+or Vulkan on Windows, Vulkan on Linux, Metal on macOS); builds on macOS, Linux and Windows. You need your own copy of the game (see "Setting up the game folder").
 
 As on DOS, Ghost Bear's Legacy is its own program: `gbl`.
 
@@ -43,22 +43,47 @@ How the original works is documented in [docs/GBL_SHELL.md](docs/GBL_SHELL.md) a
 the binaries or measured in DOSBox running the original. See [CHANGELOG.md](CHANGELOG.md) for what changed and
 [KNOWN_ISSUES.md](KNOWN_ISSUES.md) for what is still open.
 
-## Build
-Needs a C99 compiler, make, SDL2 (development files) and OpenGL 3.3.
+## System requirements
+The game draws through SDL3's GPU API. There is no OpenGL renderer any more.
 
-    macOS:                  xcode-select --install; brew install sdl2
-    Linux (Debian/Ubuntu):  sudo apt install build-essential libsdl2-dev libgl-dev
+| System | Graphics | Minimum |
+|---|---|---|
+| Windows 10 / 11 (64-bit) | Direct3D 12 (default) or Vulkan: Combat Variables' GPU (`gpu=auto\|d3d12\|vulkan`), the other one tried if the chosen one can't start | Direct3D 12 feature level 11_0, or Vulkan 1.0 |
+| Linux (64-bit) | Vulkan | Vulkan 1.0 with a driver installed (Mesa's `mesa-vulkan-drivers`, or the GPU vendor's) and the loader (`libvulkan1` / `vulkan-loader`) |
+| macOS | Metal | macOS 10.14 or newer; Apple Silicon or a Metal-capable Intel Mac |
+
+In practice that means a GeForce GTX 600, Radeon HD 7700, Intel Haswell (Direct3D 12) or Skylake (Vulkan) or newer.
+Older OpenGL 3.3-era cards (GeForce 8 to 500, Radeon HD 2000 to 6000) and Windows 7 can't run it. If no graphics
+interface starts, the game says why in a message and exits. A legacy OpenGL 2.1 renderer for older PCs may come later
+(see [docs/RENDERER.md](docs/RENDERER.md)).
+
+## Build
+Needs a C99 compiler, make, pkg-config and SDL3 3.2.12 or newer (development files). Nothing graphics-specific is linked:
+SDL loads Vulkan / Direct3D 12 / Metal at run time, and the shaders are compiled into the source (`src/rb_shaders.c`;
+`make shaders` remakes it after a change to `shaders/`, with glslangValidator, spirv-cross and dxc).
+
+    macOS:                  xcode-select --install; brew install sdl3 pkgconf
+    Fedora:                 sudo dnf install gcc make pkgconf-pkg-config SDL3-devel vulkan-loader mesa-vulkan-drivers
+    Debian / Ubuntu:        sudo apt install build-essential pkg-config libvulkan1 mesa-vulkan-drivers, and SDL3: libsdl3-dev where the
+                            release has it (Debian 13, Ubuntu 25.04), else build it from libsdl.org's release tarball:
+                              cmake -S SDL3-3.2.24 -B b -DCMAKE_INSTALL_PREFIX=$HOME/sdl3 && cmake --build b && cmake --install b
+                              export PKG_CONFIG_PATH=$HOME/sdl3/lib/pkgconfig
 
     make gbl                # the game: menus + missions in one program
-    sh scripts/macos_app.sh                  # macOS: "Ghost Bear's Legacy.app", with SDL2 bundled inside
-    sh packaging/linux/build_deb.sh 0.1.0    # Debian / Ubuntu: dist/gblport_0.1.0_amd64.deb
+    sh scripts/macos_app.sh                  # macOS: "Ghost Bear's Legacy.app", with SDL3 bundled inside
+    sh packaging/linux/build_deb.sh 0.1.0    # Debian / Ubuntu: dist/gblport_0.1.0_amd64.deb (needs libsdl3-0)
+    make gbl RPATH='$$ORIGIN/../lib/gblport' && sh packaging/linux/build_deb.sh 0.1.0 $HOME/sdl3/lib/libSDL3.so.0
+                            # ... or with your SDL3 inside the package (/usr/lib/gblport), as the release does
 
-Windows (64-bit, not yet tested): MSYS2's MINGW64 shell (`pacman -S make mingw-w64-x86_64-gcc mingw-w64-x86_64-SDL2`),
-then `make gbl`. Or cross-compile from Linux with the SDL2 MinGW development package:
+SDL3 is found with pkg-config (`PKG_CONFIG_PATH`, or `SDL3_CONFIG="pkg-config sdl3"` for another command).
 
-    make gbl WINDOWS=1 CC=x86_64-w64-mingw32-gcc SDL2_CONFIG=/path/to/SDL2-x.y.z/x86_64-w64-mingw32/bin/sdl2-config
+Windows (64-bit, not yet tested): MSYS2's MINGW64 shell (`pacman -S make mingw-w64-x86_64-gcc mingw-w64-x86_64-pkgconf
+mingw-w64-x86_64-sdl3`), then `make gbl`. Or cross-compile from Linux with SDL3's MinGW development package
+(SDL3-devel-x.y.z-mingw.tar.gz):
 
-Put `SDL2.dll` beside `gbl.exe`. Run `make clean` when you switch between a Windows build and a native build.
+    make gbl WINDOWS=1 CC=x86_64-w64-mingw32-gcc PKG_CONFIG_PATH=/path/to/SDL3-x.y.z/x86_64-w64-mingw32/lib/pkgconfig
+
+Put `SDL3.dll` (its `bin/`) beside `gbl.exe`. Run `make clean` when you switch between a Windows build and a native build.
 
 The macOS app is only ad-hoc signed. A downloaded copy needs `xattr -dr com.apple.quarantine "Ghost Bear's Legacy.app"`
 once (or System Settings > Privacy & Security > Open Anyway). Move it out of Downloads first: run from there, macOS

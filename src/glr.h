@@ -1,10 +1,10 @@
 /*
- * glr.h - OpenGL 3.3 core renderer for the enhanced (3D-edition) look.
+ * glr.h - the world renderer (every look: DOS, ENHANCED, TITANIUM).
  *
- * Window/context creation is the caller's job (SDL2 in glview, headless EGL
- * in glshot); this module only issues GL calls, so it runs the same way in
- * both. Any resolution and aspect ratio: the vertical field of view is fixed
- * and wider screens see more to the sides ("Hor+").
+ * The GPU device and window are the caller's (rb_init in glview); this module draws through the render backend
+ * (rb.h), into the current target. (The name and the coordinate conventions - "GL space", GL's clip and window
+ * coordinates - are kept from its OpenGL 3.3 days: the shaders keep them, see shaders/world.vert.) Any resolution and
+ * aspect ratio: the vertical field of view is fixed and wider screens see more to the sides ("Hor+").
  *
  * Coordinates: the game's data is left-handed (+x is the mech's right, +y up,
  * +z forward; e.g. TW1DECLR sits at +x, TW1LULEG at -x). GL is right-handed,
@@ -92,8 +92,7 @@ typedef struct {
     float ti_dyn[GLR_TI_DYN][7];     /* x, y, z (game), radius, r, g, b: the explosion and projectile lights */
 } glr_view;
 
-/* Requires a current GL 3.3 core context. Returns NULL on failure (shader
- * compile errors are printed to stderr). */
+/* Requires the render backend started (rb_init). Returns NULL on failure. */
 glr *glr_create(void);
 void glr_destroy(glr *r);
 
@@ -181,8 +180,8 @@ typedef struct {
 } glr_ti_shade;
 void glr_set_titanium_extra(glr *r, texture *const bank0[GLR_SLOTS], const glr_ti_shade *shade);
 
-/* Draw into the currently bound framebuffer, viewport w x h. */
-void glr_gl_check(const char *stage);   /* MW2_GL_CHECK=1: OpenGL errors to stderr */
+/* Draw into the current target (rb_target), viewport w x h. */
+void glr_gl_check(const char *stage);   /* MW2_GL_CHECK=1: the render backend's errors to stderr */
 void glr_draw(glr *r, const glr_view *v, int w, int h);
 void glr_draw_rect(glr *r, const glr_view *v, int x0, int y0, int w, int h);
 

@@ -32,6 +32,9 @@
  *   video_fit=4:3 | fill | stretch   (the full-screen videos on a wider screen: 4:3, the default - the 4:3 picture as large
  *                          as the screen allows; fill - the whole screen, the 4:3 picture scaled to the screen's width and cut at
  *                          top and bottom; stretch - the whole picture widened to the screen. Combat Variables' FMV size)
+ *   gpu=auto | d3d12 | vulkan   (the GPU interface the simulation and the menus draw through - SDL3's GPU API: Windows
+ *                          Direct3D 12 (auto, the default) or Vulkan, each falling back to the other if it can't start;
+ *                          Linux always Vulkan, macOS always Metal - the setting is ignored there. Combat Variables' GPU)
  *   system_shortcuts=block | allow   (macOS: block, the default, turns the system's keyboard shortcuts - Mission
  *                          Control's Ctrl+arrows, Cmd+Tab, Spotlight - off while a mission is played with the window in
  *                          front (not in the MAIN MENU or paused); allow leaves them on. Other systems: no effect)
@@ -58,7 +61,9 @@ typedef struct {
                                * Gouraud polygons and haze band blended) */
     int  videos;              /* videos=: PORTCFG_VID_* (0 original, the default) */
     int  video_fit;           /* video_fit=: PORTCFG_FIT_* (0 4:3, the default) */
+    int  gpu;                 /* gpu=: PORTCFG_GPU_* (the values of rb.h's RB_GPU_*) */
 } portcfg;
+enum { PORTCFG_GPU_AUTO, PORTCFG_GPU_D3D12, PORTCFG_GPU_VULKAN };
 /* how a look is drawn, as the simulation is told (MW2_EDITION / MW2_TEXTURES): ENHANCED = the GL renderer in true colour
  * (ENHANCED with the DOS archive, or TITANIUM with the Titanium textures), DOS = the DOS renderer */
 enum { PORTCFG_ED_ENHANCED, PORTCFG_ED_DOS, PORTCFG_ED_COUNT };

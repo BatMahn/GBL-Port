@@ -99,6 +99,7 @@ int portcfg_load(const char *unused, portcfg *c)
         } else if (strcmp(line, "system_shortcuts") == 0) c->system_shortcuts = strcmp(v, "allow") == 0;
         else if (strcmp(line, "hud_layout") == 0) c->hud_original = strcmp(v, "original") == 0;
         else if (strcmp(line, "dos_shading") == 0 || strcmp(line, "dos_sky") == 0) c->dos_sky_smooth = strcmp(v, "smooth") == 0;   /* (dos_sky=: its older name) */
+        else if (strcmp(line, "gpu") == 0) c->gpu = strcmp(v, "d3d12") == 0 ? PORTCFG_GPU_D3D12 : strcmp(v, "vulkan") == 0 ? PORTCFG_GPU_VULKAN : PORTCFG_GPU_AUTO;
         else if (strcmp(line, "videos") == 0) {
             int k;
             for (k = 0; k < PORTCFG_VID_COUNT; k++) if (strcmp(v, PORTCFG_VID_NAME[k]) == 0) c->videos = k;
@@ -144,6 +145,7 @@ int portcfg_save(const char *unused, const portcfg *c)
     fprintf(f, "system_shortcuts=%s\n", c->system_shortcuts ? "allow" : "block");
     fprintf(f, "hud_layout=%s\n", c->hud_original ? "original" : "wide");
     fprintf(f, "dos_shading=%s\n", c->dos_sky_smooth ? "smooth" : "dithered");
+    if (c->gpu != PORTCFG_GPU_AUTO) fprintf(f, "gpu=%s\n", c->gpu == PORTCFG_GPU_D3D12 ? "d3d12" : "vulkan");   /* (auto: not written) */
     fprintf(f, "videos=%s\n", PORTCFG_VID_NAME[c->videos >= 0 && c->videos < PORTCFG_VID_COUNT ? c->videos : 0]);
     fprintf(f, "video_fit=%s\n", PORTCFG_FIT_NAME[c->video_fit >= 0 && c->video_fit < PORTCFG_FIT_COUNT ? c->video_fit : 0]);
     fclose(f);

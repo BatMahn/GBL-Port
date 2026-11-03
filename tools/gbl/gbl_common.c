@@ -6,7 +6,7 @@
  * of the base game's shell, and these pieces are the ones it kept unchanged. Included by tools/gblshell.c (one
  * translation unit with the screens in tools/gbl/); addresses cited as "base" are the base game's MW2SHELL.EXE.
  */
-#include <SDL.h>
+#include <SDL3/SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -36,6 +36,23 @@
 
 #define W 640
 #define H 480
+/* the 640x480 menus through the renderer's logical presentation: whole-number scaling (MW2_TEXT_SMOOTH: letterboxed,
+ * any scale) - SDL2's SDL_RenderSetLogicalSize + SDL_RenderSetIntegerScale; off (0) for a full-screen video */
+static void gbl_logical(SDL_Renderer *rd, int on)
+{
+    SDL_SetRenderLogicalPresentation(rd, on ? W : 0, on ? H : 0, !on ? SDL_LOGICAL_PRESENTATION_DISABLED
+                                     : getenv("MW2_TEXT_SMOOTH") ? SDL_LOGICAL_PRESENTATION_LETTERBOX : SDL_LOGICAL_PRESENTATION_INTEGER_SCALE);
+}
+/* the output pixels per logical pixel (what SDL2's SDL_RenderGetScale gave with a logical size); 1, 1 without one */
+static void gbl_render_scale(SDL_Renderer *rd, float *sx, float *sy)
+{
+    int lw = 0, lh = 0;
+    SDL_RendererLogicalPresentation m = SDL_LOGICAL_PRESENTATION_DISABLED;
+    SDL_FRect r;
+    *sx = *sy = 1.0f;
+    if (SDL_GetRenderLogicalPresentation(rd, &lw, &lh, &m) && m != SDL_LOGICAL_PRESENTATION_DISABLED && lw > 0 && lh > 0
+        && SDL_GetRenderLogicalPresentationRect(rd, &r)) { *sx = r.w / (float)lw; *sy = r.h / (float)lh; }
+}
 
 static uint8_t g_fb[W * H * 3];
 static shelldb g_db;
@@ -198,7 +215,7 @@ static SDL_Texture *glyph_texture(SDL_Renderer *rd, const text_item *it, int c, 
     if (g->tex) {
         SDL_UpdateTexture(g->tex, NULL, dst, gw * k3 * 4);
         SDL_SetTextureBlendMode(g->tex, SDL_BLENDMODE_BLEND);
-        SDL_SetTextureScaleMode(g->tex, getenv("MW2_TEXT_SMOOTH") ? SDL_ScaleModeLinear : SDL_ScaleModeNearest);
+        SDL_SetTextureScaleMode(g->tex, getenv("MW2_TEXT_SMOOTH") ? SDL_SCALEMODE_LINEAR : SDL_SCALEMODE_NEAREST);
         g->fo = fo; g->c = c; g->remap1 = it->remap1; g->palsum = it->palsum; g->w = gw; g->h = fh;
         g_ngcache++;
     }
@@ -244,11 +261,12 @@ static int vec_text(SDL_Renderer *rd, const text_item *it)
     if (!ttext_available() || getenv("MW2_BITMAP_TEXT") || n == 0) return 0;
     for (i = 0; i < n; i++) if ((unsigned char)it->t[i] < 32 || (unsigned char)it->t[i] > 126) return 0;
     {   /* the physical pixels per 640x480 unit */
-        int ow, oh, lw, lh;
-        SDL_GetRendererOutputSize(rd, &ow, &oh);
-        SDL_RenderGetLogicalSize(rd, &lw, &lh);
-        if (lw > 0 && lh > 0) { float a = (float)ow / (float)lw, b = (float)oh / (float)lh; ps = a < b ? a : b; }
-        if (SDL_RenderGetIntegerScale(rd) && ps >= 1.0f) ps = floorf(ps);
+        int ow = 0, oh = 0, lw = 0, lh = 0;
+        SDL_RendererLogicalPresentation m = SDL_LOGICAL_PRESENTATION_DISABLED;
+        SDL_GetRenderOutputSize(rd, &ow, &oh);
+        SDL_GetRenderLogicalPresentation(rd, &lw, &lh, &m);
+        if (m != SDL_LOGICAL_PRESENTATION_DISABLED && lw > 0 && lh > 0) { float a = (float)ow / (float)lw, b = (float)oh / (float)lh; ps = a < b ? a : b; }
+        if (m == SDL_LOGICAL_PRESENTATION_INTEGER_SCALE && ps >= 1.0f) ps = floorf(ps);
     }
     /* the ink colour: the most used palette index in the string's glyphs */
     memset(counts, 0, sizeof counts);
@@ -291,7 +309,7 @@ static int vec_text(SDL_Renderer *rd, const text_item *it)
             if ((e->tex = SDL_CreateTexture(rd, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STATIC, w, h))) {
                 SDL_UpdateTexture(e->tex, NULL, rgba, w * 4);
                 SDL_SetTextureBlendMode(e->tex, SDL_BLENDMODE_BLEND);
-                SDL_SetTextureScaleMode(e->tex, SDL_ScaleModeLinear);
+                SDL_SetTextureScaleMode(e->tex, SDL_SCALEMODE_LINEAR);
             }
             free(rgba);
         }
@@ -304,7 +322,7 @@ static int vec_text(SDL_Renderer *rd, const text_item *it)
     }
     {
         SDL_FRect dr = {(float)it->x + e->dx, (float)it->y + e->dy, (float)e->w / ps, (float)e->h / ps};
-        SDL_RenderCopyF(rd, e->tex, NULL, &dr);
+        SDL_RenderTexture(rd, e->tex, NULL, &dr);
     }
     return 1;
 }
@@ -320,7 +338,7 @@ static void text_layer_draw(SDL_Renderer *rd)
         for (t = it->t; *t; t++) {
             int gw = 4;
             SDL_Texture *tex = glyph_texture(rd, it, (unsigned char)*t & 127, &gw);
-            if (tex) { SDL_FRect dr = {x, (float)it->y, (float)gw, (float)fh}; SDL_RenderCopyF(rd, tex, NULL, &dr); }
+            if (tex) { SDL_FRect dr = {x, (float)it->y, (float)gw, (float)fh}; SDL_RenderTexture(rd, tex, NULL, &dr); }
             x += (float)gw;
         }
     }
@@ -404,7 +422,7 @@ static SDL_Texture *video_fx_texture(SDL_Renderer *rd, int look, smk *s)
     int ow, oh, maxh = look == PORTCFG_VID_CRT_CURVED ? 1200 : 1440, pitch;
     void *px;
     if (!rd || look == PORTCFG_VID_ORIGINAL || smk_width(s) > W || smk_height(s) > H) return NULL;
-    SDL_RenderGetScale(rd, &sx, &sy);
+    gbl_render_scale(rd, &sx, &sy);
     ow = (int)lroundf((float)W * sx); oh = (int)lroundf((float)H * sy);
     if (oh > maxh) { ow = ow * maxh / oh; oh = maxh; }
     if (ow < W || oh < H) { ow = W; oh = H; }
@@ -413,10 +431,10 @@ static SDL_Texture *video_fx_texture(SDL_Renderer *rd, int look, smk *s)
         if (g_vfx_tx) SDL_DestroyTexture(g_vfx_tx);
         g_vfx_tx = SDL_CreateTexture(rd, SDL_PIXELFORMAT_RGB24, SDL_TEXTUREACCESS_STREAMING, ow, oh);
         if (!g_vfx_tx) return NULL;
-        SDL_SetTextureScaleMode(g_vfx_tx, SDL_ScaleModeLinear);   /* 1:1 unless capped */
+        SDL_SetTextureScaleMode(g_vfx_tx, SDL_SCALEMODE_LINEAR);   /* 1:1 unless capped */
         g_vfx_tw = ow; g_vfx_th = oh;
     }
-    if (SDL_LockTexture(g_vfx_tx, NULL, &px, &pitch) != 0) return NULL;
+    if (!SDL_LockTexture(g_vfx_tx, NULL, &px, &pitch)) return NULL;
     vidfx_render(g_vfx, look, smk_pixels(s), smk_width(s), smk_height(s), smk_palette(s), (uint8_t *)px, ow, oh, pitch);
     SDL_UnlockTexture(g_vfx_tx);
     return g_vfx_tx;
@@ -922,22 +940,23 @@ static int shell_dialog(SDL_Renderer *rd, SDL_Texture *tx, int headless, const c
         }
         if (headless) { chosen = def; break; }
         while (SDL_PollEvent(&e)) {
-            if (e.type == SDL_QUIT) chosen = def;
-            if (e.type == SDL_KEYDOWN) {
-                SDL_Keycode k = e.key.keysym.sym;
+            SDL_ConvertEventToRenderCoordinates(rd, &e);   /* the pointer in the 640x480 space (SDL2 did this itself) */
+            if (e.type == SDL_EVENT_QUIT) chosen = def;
+            if (e.type == SDL_EVENT_KEY_DOWN) {
+                SDL_Keycode k = e.key.key;
                 if (k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_ESCAPE) chosen = def;
                 else for (i = 0; i < nb; i++) if (toupper((unsigned char)btn[i][0]) == toupper((int)k & 0x7f)) chosen = i;
                 if (nb == 0) chosen = 0;
             }
-            if (e.type == SDL_MOUSEBUTTONDOWN || e.type == SDL_MOUSEBUTTONUP) {
-                int hit = -1;
-                for (i = 0; i < nb; i++) { int cx = 320 - 30 * (nb - 1) + 61 * i; if (e.button.x >= cx - 26 && e.button.x <= cx + 26 && e.button.y >= 263 && e.button.y <= 289) hit = i; }
-                if (e.type == SDL_MOUSEBUTTONDOWN) pressed = hit;
+            if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN || e.type == SDL_EVENT_MOUSE_BUTTON_UP) {
+                int hit = -1, bx = (int)e.button.x, by = (int)e.button.y;
+                for (i = 0; i < nb; i++) { int cx = 320 - 30 * (nb - 1) + 61 * i; if (bx >= cx - 26 && bx <= cx + 26 && by >= 263 && by <= 289) hit = i; }
+                if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN) pressed = hit;
                 else { if (hit >= 0 && hit == pressed) chosen = hit; pressed = -1; }
             }
         }
         SDL_UpdateTexture(tx, NULL, g_fb, W * 3);
-        SDL_RenderClear(rd); SDL_RenderCopy(rd, tx, NULL, NULL); text_layer_draw(rd); SDL_RenderPresent(rd);
+        SDL_RenderClear(rd); SDL_RenderTexture(rd, tx, NULL, NULL); text_layer_draw(rd); SDL_RenderPresent(rd);
         SDL_Delay(10);
     }
     if (saved && !headless) { memcpy(g_fb, saved, sizeof g_fb); g_ntext = n0; }

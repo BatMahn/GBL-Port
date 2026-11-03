@@ -2,6 +2,15 @@
 
 ## Unreleased (work in progress)
 
+- **New renderer: SDL3's GPU API instead of OpenGL.** The game, menus included, now draws with Direct3D 12 or Vulkan on
+  Windows (your choice in Combat Variables' GPU; the other one is tried if it can't start), Vulkan on Linux and Metal on
+  macOS. OpenGL is gone, and with it Apple's deprecated OpenGL layer and its problems on the Mac. All three looks
+  (DOS, ENHANCED, TITANIUM) draw as before: the DOS look matches the old renderer to a few pixels a frame.
+  - **DOS look on the Mac:** the exact DOS polygon fill now runs on macOS too (it was switched off there because
+    Apple's OpenGL got it wrong).
+  - **New minimum hardware:** Direct3D 12 (feature level 11_0), Vulkan 1.0 or Metal (macOS 10.14). See README's
+    System requirements. If none starts, the game tells you why.
+
 - **`gbl`** (`make gbl`): MechWarrior 2: Ghost Bear's Legacy as its own program, as GBL.EXE was. The shell is rebuilt
   from GBL's MW2SHELL.EXE:
   - the title and the Esc menu: Combat Variables (with TRANSITIONS), Cockpit Controls, Hall of Honor, The Keshik;
@@ -78,3 +87,5 @@
 - **Missile reticle while reloading:** the plain ring while the selected weapon fires its volley or reloads, as in DOS.
 - **Cockpit Controls:** you can type the configuration's name (Backspace, Enter / Esc to finish).
 - **Joystick / mouse menu files:** the GIDDI\<driver>.STD files are read as the original reads them.
+- **SDL3:** the port now runs on SDL3 (3.2.12 or newer) instead of SDL2, with the same OpenGL renderer; menus, missions,
+  sound and controls work as before. The macOS app, the Windows zip and the .deb bring their own SDL3.

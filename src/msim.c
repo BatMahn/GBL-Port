@@ -1118,7 +1118,7 @@ static void node_assign(msim *s, int table, int leader)
         m->node_tgt = tcode;
         m->prev_state = m->state; m->state = st; m->target = st == AI_TARGET; m->tgt = unit && st == AI_TARGET ? (tcode & 0xffff) - 1 : -2;
         m->to_navref = 0;
-        if (st == AI_TARGET) m->next_fire = (float)(rnd_ms(&s->rng) % 10u * 22u);   /* entry 0x10013790 case 2 */
+        if (st == AI_TARGET) m->next_fire = (float)(rnd_ms(&s->rng) % 10u * 18u);   /* entry case 2 (GBL 0x22ef0: rand(10) x 0x12) */
         if (st == AI_PATROL) guard_enter(s, m, tcode);                       /* entry case 7 -> 0x10013f00 */
         ai_wake(s, pick);
     }

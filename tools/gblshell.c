@@ -34,6 +34,9 @@ static FILE *gbl_dp_fopen(const char *name, const char *mode);
 #define dp_fopen gbl_dp_fopen
 #include "gbl/gbl_common.c"
 #undef dp_fopen
+/* the program's entry point: on Windows SDL3's WinMain (a GUI program, -mwindows) calls main below with UTF-8
+ * arguments - SDL2's SDL2main did; elsewhere main is left as it is */
+#include <SDL3/SDL_main.h>
 static FILE *gbl_dp_fopen(const char *name, const char *mode)
 {
     char path[1400], alt[64];
@@ -225,12 +228,12 @@ static void gbl_text_layer(SDL_Renderer *rd)
         if (nr == 1 && r[0].x == a && r[0].y == b && r[0].w == c - a && r[0].h == d - b) continue;   /* untouched: drawn */
         for (j = 0; j < nr; j++) {
             if (r[j].w <= 0 || r[j].h <= 0) continue;
-            SDL_RenderSetClipRect(rd, &r[j]);
+            SDL_SetRenderClipRect(rd, &r[j]);
             g_text[0] = all[i]; g_ntext = 1;
             text_layer_draw(rd);
         }
     }
-    SDL_RenderSetClipRect(rd, NULL);
+    SDL_SetRenderClipRect(rd, NULL);
     memcpy(g_text, all, sizeof all);
     g_ntext = n;
 }
@@ -241,50 +244,49 @@ static int g_gvid_fit = -1;       /* gbl_video: PORTCFG_FIT_* while a full-scree
 static void gbl_present_video(SDL_Texture *t)
 {
     int ow = 0, oh = 0, tw = 0, th = 0;
-    SDL_Rect src;
-    SDL_RenderSetLogicalSize(g_grd, 0, 0);
-    SDL_RenderSetIntegerScale(g_grd, SDL_FALSE);
-    SDL_RenderSetViewport(g_grd, NULL);
-    SDL_GetRendererOutputSize(g_grd, &ow, &oh);
-    SDL_QueryTexture(t, NULL, NULL, &tw, &th);
-    src.x = 0; src.y = 0; src.w = tw; src.h = th;
+    SDL_FRect src;
+    gbl_logical(g_grd, 0);
+    SDL_SetRenderViewport(g_grd, NULL);
+    SDL_GetRenderOutputSize(g_grd, &ow, &oh);
+    tw = t->w; th = t->h;
+    src.x = 0; src.y = 0; src.w = (float)tw; src.h = (float)th;
     if (g_gvid_fit == PORTCFG_FIT_FILL && ow > 0 && oh > 0) {
-        if ((long)ow * th > (long)oh * tw) { src.h = (int)((long)tw * oh / ow); src.y = (th - src.h) / 2; }   /* wider: cut top / bottom */
-        else { src.w = (int)((long)th * ow / oh); src.x = (tw - src.w) / 2; }                                 /* narrower: cut the sides */
+        if ((long)ow * th > (long)oh * tw) { int h = (int)((long)tw * oh / ow); src.h = (float)h; src.y = (float)((th - h) / 2); }   /* wider: cut top / bottom */
+        else { int w = (int)((long)th * ow / oh); src.w = (float)w; src.x = (float)((tw - w) / 2); }                                 /* narrower: cut the sides */
     }
-    SDL_SetTextureScaleMode(t, SDL_ScaleModeLinear);
+    SDL_SetTextureScaleMode(t, SDL_SCALEMODE_LINEAR);
     SDL_RenderClear(g_grd);
     if (g_gvid_fit == PORTCFG_FIT_43 && ow > 0 && oh > 0) {   /* the 4:3 picture as large as the output allows (the menus
                                                              * keep whole-number scaling for their text; a video needn't) */
-        SDL_Rect d;
-        if ((long)ow * 3 > (long)oh * 4) { d.h = oh; d.w = oh * 4 / 3; } else { d.w = ow; d.h = ow * 3 / 4; }
-        d.x = (ow - d.w) / 2; d.y = (oh - d.h) / 2;
-        SDL_RenderCopy(g_grd, t, &src, &d);
-    } else SDL_RenderCopy(g_grd, t, &src, NULL);
-    if (t == g_gtx) SDL_SetTextureScaleMode(t, getenv("MW2_TEXT_SMOOTH") ? SDL_ScaleModeLinear : SDL_ScaleModeNearest);
-    SDL_RenderSetLogicalSize(g_grd, W, H);
-    if (!getenv("MW2_TEXT_SMOOTH")) SDL_RenderSetIntegerScale(g_grd, SDL_TRUE);
+        int dw, dh;
+        SDL_FRect d;
+        if ((long)ow * 3 > (long)oh * 4) { dh = oh; dw = oh * 4 / 3; } else { dw = ow; dh = ow * 3 / 4; }
+        d.x = (float)((ow - dw) / 2); d.y = (float)((oh - dh) / 2); d.w = (float)dw; d.h = (float)dh;
+        SDL_RenderTexture(g_grd, t, &src, &d);
+    } else SDL_RenderTexture(g_grd, t, &src, NULL);
+    if (t == g_gtx) SDL_SetTextureScaleMode(t, getenv("MW2_TEXT_SMOOTH") ? SDL_SCALEMODE_LINEAR : SDL_SCALEMODE_NEAREST);
+    gbl_logical(g_grd, 1);
 }
 static void gbl_present(void)
 {
     if (!g_grd) return;
     if (!g_gvid_tx) SDL_UpdateTexture(g_gtx, NULL, g_fb, W * 3);
     if (g_gvid_fit >= 0) { gbl_present_video(g_gvid_tx ? g_gvid_tx : g_gtx); SDL_RenderPresent(g_grd); return; }
-    SDL_RenderClear(g_grd); SDL_RenderCopy(g_grd, g_gvid_tx ? g_gvid_tx : g_gtx, NULL, NULL); gbl_text_layer(g_grd);
+    SDL_RenderClear(g_grd); SDL_RenderTexture(g_grd, g_gvid_tx ? g_gvid_tx : g_gtx, NULL, NULL); gbl_text_layer(g_grd);
     g_ntcover = 0;
     if (g_grab[0]) {   /* TEST ONLY (GBL_EVENTS "S file.ppm", windowed): the rendered window with its text layer */
-        int ow, oh;
-        float sx, sy;
-        uint8_t *buf;
-        SDL_RenderGetScale(g_grd, &sx, &sy);   /* (a NULL rect reads the viewport: the 640x480 picture, scaled) */
-        ow = (int)(W * sx); oh = (int)(H * sy);
-        if ((buf = malloc((size_t)ow * (size_t)oh * 3))) {
-            if (SDL_RenderReadPixels(g_grd, NULL, SDL_PIXELFORMAT_RGB24, buf, ow * 3) == 0) {
-                FILE *o = fopen(g_grab, "wb");
-                if (o) { fprintf(o, "P6\n%d %d\n255\n", ow, oh); fwrite(buf, 1, (size_t)ow * (size_t)oh * 3, o); fclose(o); }
+        SDL_Surface *rs = SDL_RenderReadPixels(g_grd, NULL);   /* (a NULL rect reads the viewport: the 640x480 picture, scaled) */
+        SDL_Surface *cs = rs ? SDL_ConvertSurface(rs, SDL_PIXELFORMAT_RGB24) : NULL;
+        if (cs) {
+            FILE *o = fopen(g_grab, "wb");
+            int y;
+            if (o) {
+                fprintf(o, "P6\n%d %d\n255\n", cs->w, cs->h);
+                for (y = 0; y < cs->h; y++) fwrite((const uint8_t *)cs->pixels + (size_t)y * (size_t)cs->pitch, 1, (size_t)cs->w * 3, o);
+                fclose(o);
             }
-            free(buf);
         }
+        SDL_DestroySurface(cs); SDL_DestroySurface(rs);
         g_grab[0] = 0;
     }
     SDL_RenderPresent(g_grd);
@@ -310,20 +312,21 @@ static gbl_input *gbl_frame(void)
     {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
+            SDL_ConvertEventToRenderCoordinates(g_grd, &e);   /* the pointer in the 640x480 space (SDL2 did this itself) */
             switch (e.type) {
-            case SDL_QUIT: in->quit = 1; g_quit_all = 1; break;
-            case SDL_MOUSEMOTION: in->mx = e.motion.x; in->my = e.motion.y; break;
-            case SDL_MOUSEBUTTONDOWN:
-                in->mx = e.button.x; in->my = e.button.y;
+            case SDL_EVENT_QUIT: in->quit = 1; g_quit_all = 1; break;
+            case SDL_EVENT_MOUSE_MOTION: in->mx = (int)e.motion.x; in->my = (int)e.motion.y; break;
+            case SDL_EVENT_MOUSE_BUTTON_DOWN:
+                in->mx = (int)e.button.x; in->my = (int)e.button.y;
                 if (e.button.button == SDL_BUTTON_LEFT) { in->lclick = 1; in->ldown = 1; }
                 if (e.button.button == SDL_BUTTON_RIGHT) { in->rclick = 1; in->rdown = 1; }
                 break;
-            case SDL_MOUSEBUTTONUP:
+            case SDL_EVENT_MOUSE_BUTTON_UP:
                 if (e.button.button == SDL_BUTTON_LEFT) { in->ldown = 0; in->lup = 1; }
                 if (e.button.button == SDL_BUTTON_RIGHT) in->rdown = 0;
                 break;
-            case SDL_KEYDOWN: if (!in->key) in->key = e.key.keysym.sym; break;
-            case SDL_TEXTINPUT: if (strlen(in->text) + strlen(e.text.text) < sizeof in->text) strcat(in->text, e.text.text); break;
+            case SDL_EVENT_KEY_DOWN: if (!in->key) in->key = e.key.key; break;
+            case SDL_EVENT_TEXT_INPUT: if (strlen(in->text) + strlen(e.text.text) < sizeof in->text) strcat(in->text, e.text.text); break;
             }
         }
     }
@@ -331,9 +334,9 @@ static gbl_input *gbl_frame(void)
                                    * paced to 30 a second as the headless clock) */
         static Uint32 t_last;
         int ld2 = in->ldown;
-        Uint32 t = SDL_GetTicks();
+        Uint32 t = (Uint32)SDL_GetTicks();
         if (t_last && t - t_last < 33) SDL_Delay(33 - (t - t_last));
-        t_last = SDL_GetTicks();
+        t_last = (Uint32)SDL_GetTicks();
         gbl_script(in);
         if (!in->lclick && ld2 && !SDL_GetMouseState(NULL, NULL)) { in->ldown = 0; in->lup = 1; }
     }
@@ -341,7 +344,7 @@ static gbl_input *gbl_frame(void)
     if (in->my < 0) in->my = 0;
     if (in->mx >= W) in->mx = W - 1;
     if (in->my >= H) in->my = H - 1;
-    g_now = SDL_GetTicks();
+    g_now = (Uint32)SDL_GetTicks();
     return in;
 }
 
@@ -1246,7 +1249,7 @@ static int ask_game_folder(portcfg *c, const char *exe_dir)
             "%s is not a Ghost Bear's Legacy game folder.\n\n"
             "Choose the GBL-game folder itself (the one with cd, install ... inside - see FOLDER_SETUP.md), "
             "or the folder that holds it.", pick);
-        if (SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_WARNING, "Ghost Bear's Legacy", m, NULL) != 0) return -1;
+        if (!SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_WARNING, "Ghost Bear's Legacy", m, NULL)) return -1;
     }
     c->game[0] = 0; c->install[0] = 0; c->cd[0] = 0; c->models[0] = 0; c->textures[0] = 0;
     snprintf(c->game, sizeof c->game, "%s", game);
@@ -1256,16 +1259,15 @@ static int ask_game_folder(portcfg *c, const char *exe_dir)
 int glview_main(int argc, char **argv);
 int main(int argc, char **argv)
 {
-    char *bp;
+    const char *bp;
     int headless;
     portcfg_set_app("gblport", "gblport.cfg", "GBL-game", "GBL");   /* (before --sim too: the sim reads and writes gblport.cfg) */
     if (argc >= 2 && strcmp(argv[1], "--sim") == 0) return glview_main(argc - 1, argv + 1);   /* the simulation */
     snprintf(g_exe_path, sizeof g_exe_path, "%s", argv[0]);
-    if (!strchr(argv[0], '/')) { bp = SDL_GetBasePath(); snprintf(g_exe_path, sizeof g_exe_path, "%s%s", bp ? bp : "./", argv[0]); SDL_free(bp); }
+    if (!strchr(argv[0], '/')) { bp = SDL_GetBasePath(); snprintf(g_exe_path, sizeof g_exe_path, "%s%s", bp ? bp : "./", argv[0]); }
     headless = g_headless = getenv("SDL_VIDEODRIVER") && (!strcmp(getenv("SDL_VIDEODRIVER"), "offscreen") || !strcmp(getenv("SDL_VIDEODRIVER"), "dummy"));
     bp = SDL_GetBasePath();
     snprintf(g_exe_dir, sizeof g_exe_dir, "%s", bp ? bp : "./");
-    SDL_free(bp);
     portcfg_load(NULL, &g_cfg);
     if (argc >= 2) { g_cfg.game[0] = 0; g_cfg.install[0] = 0; g_cfg.cd[0] = 0; g_cfg.models[0] = 0; g_cfg.textures[0] = 0; }
     if (argc < 2 && g_cfg.game[0] && !portcfg_is_game_dir(g_cfg.game)) {   /* the remembered folder is gone: look again */
@@ -1304,22 +1306,37 @@ int main(int argc, char **argv)
     g_fbig.len = shdb(&g_db, 29, &g_fbig.d);
     g_f26.len = shdb(&g_db, 26, &g_f26.d);
     g_f28.len = shdb(&g_db, 27, &g_f28.d);
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) != 0 && SDL_Init(SDL_INIT_VIDEO) != 0) { fprintf(stderr, "SDL: %s\n", SDL_GetError()); return 1; }
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) && !SDL_Init(SDL_INIT_VIDEO)) { fprintf(stderr, "SDL: %s\n", SDL_GetError()); return 1; }
     g_sfx = sfx_create(NULL);
     if (!headless) {
         portcfg pc;
-        Uint32 wf = SDL_WINDOW_RESIZABLE;
+        SDL_WindowFlags wf = SDL_WINDOW_RESIZABLE;
         portcfg_load(NULL, &pc);
-        if (pc.mode == 0 || pc.mode == 2) wf |= SDL_WINDOW_FULLSCREEN_DESKTOP;
-        g_win = SDL_CreateWindow("MechWarrior 2: Ghost Bear's Legacy", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, W * 2, H * 2, wf);
-        SDL_StopTextInput();
-        g_grd = SDL_CreateRenderer(g_win, -1, SDL_RENDERER_PRESENTVSYNC);
-        SDL_RenderSetLogicalSize(g_grd, W, H);
+        if (pc.mode == 0 || pc.mode == 2) wf |= SDL_WINDOW_FULLSCREEN;   /* (no mode set: the desktop's - SDL2's FULLSCREEN_DESKTOP) */
+        g_win = SDL_CreateWindow("MechWarrior 2: Ghost Bear's Legacy", W * 2, H * 2, wf);   /* centred; no text input until asked */
+        if (!g_win) { fprintf(stderr, "SDL: %s\n", SDL_GetError()); return 1; }
+        /* the menus through the same GPU interface as the simulation (gblport.cfg gpu=, rb.h): SDL's Direct3D 12 or Vulkan
+         * renderer on Windows, Vulkan on Linux, Metal on macOS - the other one, then SDL's software renderer, if it can't
+         * start; never OpenGL */
+        SDL_SetHint(SDL_HINT_RENDER_DRIVER,
+#if defined(_WIN32)
+                    pc.gpu == PORTCFG_GPU_VULKAN ? "vulkan,direct3d12,software" : "direct3d12,vulkan,software"
+#elif defined(__APPLE__)
+                    "metal,software"
+#else
+                    "vulkan,software"
+#endif
+                    );
+        g_grd = SDL_CreateRenderer(g_win, NULL);
+        if (!g_grd) { fprintf(stderr, "SDL: %s\n", SDL_GetError()); return 1; }
+        fprintf(stderr, "gbl: menus drawn with SDL's %s renderer\n", SDL_GetRendererName(g_grd));
+        SDL_SetRenderVSync(g_grd, 1);
+        gbl_logical(g_grd, 1);
         g_gtx = SDL_CreateTexture(g_grd, SDL_PIXELFORMAT_RGB24, SDL_TEXTUREACCESS_STREAMING, W, H);
-        if (!getenv("MW2_TEXT_SMOOTH")) { SDL_SetTextureScaleMode(g_gtx, SDL_ScaleModeNearest); SDL_RenderSetIntegerScale(g_grd, SDL_TRUE); }
+        SDL_SetTextureScaleMode(g_gtx, SDL_SCALEMODE_NEAREST);   /* (SDL2's default; SDL3's is linear) */
         g_text_hires = 1;
     }
-    { bp = SDL_GetBasePath(); ttext_init(bp); SDL_free(bp); }
+    { bp = SDL_GetBasePath(); ttext_init(bp); }
     gbl_cursor_load();
     gstar_defaults();
     pil_load();

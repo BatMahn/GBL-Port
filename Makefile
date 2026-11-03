@@ -3,9 +3,20 @@ CC      ?= cc
 CFLAGS  ?= -std=c99 -D_DEFAULT_SOURCE -O2 -Wall -Wextra -Wconversion
 LDLIBS  = -lpthread -lm
 UNAME_S := $(shell uname -s)
-SDL2_CONFIG ?= sdl2-config
-# Windows: MSYS2's MINGW64 shell (uname MINGW64_NT-...), or cross-compiling from Linux with
-#   make gbl WINDOWS=1 CC=x86_64-w64-mingw32-gcc SDL2_CONFIG=/path/to/mingw/bin/sdl2-config
+# SDL3 through pkg-config (sdl3.pc): `make PKG_CONFIG_PATH=/opt/sdl3/lib/pkgconfig`, or a whole command in SDL3_CONFIG
+# that answers --cflags / --libs. Windows: MSYS2's MINGW64 shell (uname MINGW64_NT-...), or cross-compiling from Linux
+# with SDL3's MinGW development package:
+#   make gbl WINDOWS=1 CC=x86_64-w64-mingw32-gcc PKG_CONFIG_PATH=/path/to/SDL3-x.y.z/x86_64-w64-mingw32/lib/pkgconfig
+PKG_CONFIG ?= pkg-config
+# (PKG_CONFIG_PATH given to make on its command line reaches pkg-config too: make 4.3's $(shell) has no command-line
+# variables in its environment)
+SDL3_CONFIG ?= $(if $(PKG_CONFIG_PATH),PKG_CONFIG_PATH='$(PKG_CONFIG_PATH)' )$(PKG_CONFIG) sdl3
+SDL_CFLAGS = $(shell $(SDL3_CONFIG) --cflags 2>/dev/null)
+SDL_LIBS = $(shell $(SDL3_CONFIG) --libs 2>/dev/null)
+# RPATH: where the executable looks for libSDL3 first, e.g. the .deb's  make gbl RPATH='$$ORIGIN/../lib/gblport'
+ifdef RPATH
+  LDFLAGS += -Wl,-rpath,'$(RPATH)'
+endif
 ifneq (,$(findstring MINGW,$(UNAME_S)))
   WINDOWS = 1
   ifeq ($(origin CC),default)
@@ -16,10 +27,9 @@ ifeq ($(WINDOWS),1)
   UNAME_S = Windows
   CFLAGS += -include src/wincompat.h
   LDLIBS = -lm
-  GLLIB = -lopengl32
   DLLIB =
-  WINSRC = src/wincompat.c src/glload.c
-  WINLIBS = -lole32 -lshell32   # system DLLs: the folder picker (wincompat.c mw2_pick_folder)
+  WINSRC = src/wincompat.c
+  WINLIBS = -lole32 -lshell32 -mwindows   # system DLLs: the folder picker (wincompat.c mw2_pick_folder); a GUI program
   WINRES = build/gblres.o
   WINDRES ?= $(patsubst %gcc,%windres,$(CC))
 else
@@ -30,10 +40,8 @@ else
 endif
 ifeq ($(UNAME_S),Linux)
   LDLIBS += -ldl
-  GLLIB = -lGL
 endif
 ifeq ($(UNAME_S),Darwin)
-  GLLIB = -framework OpenGL
   LDLIBS += -framework CoreFoundation -framework CoreAudio -framework AudioToolbox
 endif
 
@@ -62,7 +70,10 @@ cdrip: tools/cdrip.c
 	$(CC) $(CFLAGS) $^ -o $@
 
 HDRS = $(wildcard src/*.h tools/*.h)
-GL3D_SRC = src/hud.c src/shp.c src/glr.c src/skygnd.c src/anim.c src/mek.c src/mtbl.c src/msim.c src/fx.c src/combat.c src/ai.c src/mech3d.c src/render.c src/tex.c src/wtb.c src/bwd.c src/prj.c src/datapath.c
+# the renderer: the world (glr.c), the HUD (hud.c) and the render backend on SDL_GPU (rb_gpu.c; the shaders compiled
+# for Vulkan, Direct3D 12 and Metal in rb_shaders.c - generated, checked in: "make shaders" remakes it). SDL loads the
+# GPU API (Vulkan / Direct3D 12 / Metal) at run time: nothing graphics-specific to link
+GL3D_SRC = src/rb_gpu.c src/rb_shaders.c src/hud.c src/shp.c src/glr.c src/skygnd.c src/anim.c src/mek.c src/mtbl.c src/msim.c src/fx.c src/combat.c src/ai.c src/mech3d.c src/render.c src/tex.c src/wtb.c src/bwd.c src/prj.c src/datapath.c
 
 missionsim: tools/missionsim.c src/msim.c src/fx.c src/ai.c src/combat.c src/mtbl.c src/anim.c src/mek.c src/mech3d.c src/wtb.c src/bwd.c src/prj.c src/datapath.c $(HDRS)
 	$(CC) $(CFLAGS) -Wno-conversion -Isrc $(filter %.c,$^) -o $@ -lm
@@ -73,12 +84,12 @@ missionsim: tools/missionsim.c src/msim.c src/fx.c src/ai.c src/combat.c src/mtb
 GBL_SHELL_SRC = tools/gblshell.c tools/gbl/gbl_common.c tools/gbl/gbl_frame.c tools/gbl/gbl_pilots.c tools/gbl/gbl_campaign.c tools/gbl/gbl_lab.c
 gbl: $(WINRES) $(GBL_SHELL_SRC) tools/glview.c src/shelldb.c src/smk.c src/vidfx.c src/lance.c src/ttext.c src/cockpitcfg.c src/sfx.c src/portcfg.c src/cdaudio.c build/miniaudio.o $(GL3D_SRC) $(WINSRC) $(HDRS)
 	@mkdir -p build
-	$(CC) $(CFLAGS) -Wno-conversion -Isrc -Ithird_party $(filter-out -Dmain=SDL_main,$(shell $(SDL2_CONFIG) --cflags 2>/dev/null)) -DSDL_MAIN_HANDLED -c tools/glview.c -Dmain=glview_main -o build/glview_sim.o
-	$(CC) $(CFLAGS) -Wno-conversion -Isrc -Ithird_party -Itools -c tools/gblshell.c $(shell $(SDL2_CONFIG) --cflags 2>/dev/null) -o build/gblshell_one.o
-	$(CC) $(CFLAGS) -Wno-conversion -Isrc -Ithird_party build/gblshell_one.o build/glview_sim.o $(sort $(filter src/%.c,$^)) build/miniaudio.o $(WINRES) -o $@ $(shell $(SDL2_CONFIG) --cflags --libs 2>/dev/null) $(GLLIB) -lm -lpthread $(DLLIB) $(WINLIBS)
+	$(CC) $(CFLAGS) -Wno-conversion -Isrc -Ithird_party $(SDL_CFLAGS) -c tools/glview.c -Dmain=glview_main -o build/glview_sim.o
+	$(CC) $(CFLAGS) -Wno-conversion -Isrc -Ithird_party -Itools -c tools/gblshell.c $(SDL_CFLAGS) -o build/gblshell_one.o
+	$(CC) $(CFLAGS) -Wno-conversion -Isrc -Ithird_party $(SDL_CFLAGS) build/gblshell_one.o build/glview_sim.o $(sort $(filter src/%.c,$^)) build/miniaudio.o $(WINRES) -o $@ $(LDFLAGS) $(SDL_LIBS) -lm -lpthread $(DLLIB) $(WINLIBS)
 
 glview: tools/glview.c src/sfx.c src/portcfg.c src/cdaudio.c build/miniaudio.o $(GL3D_SRC) $(HDRS)
-	$(CC) $(CFLAGS) -Wno-conversion -Isrc -Ithird_party $(filter %.c,$^) $(filter %.o,$^) -o $@ $(shell $(SDL2_CONFIG) --cflags --libs 2>/dev/null) $(GLLIB) -lm -lpthread $(DLLIB)
+	$(CC) $(CFLAGS) -Wno-conversion -Isrc -Ithird_party $(SDL_CFLAGS) $(filter %.c,$^) $(filter %.o,$^) -o $@ $(LDFLAGS) $(SDL_LIBS) -lm -lpthread $(DLLIB)
 
 gl: $(GLBIN)
 
@@ -107,7 +118,7 @@ test_cockpitcfg: tests/test_cockpitcfg.c src/cockpitcfg.c src/cockpitcfg.h
 	$(CC) $(CFLAGS) -Isrc tests/test_cockpitcfg.c src/cockpitcfg.c -o $@
 
 test_inputmap: tests/test_inputmap.c tools/inputmap.h tools/inputmap_defaults.h src/datapath.c src/datapath.h
-	$(CC) -std=c99 -D_DEFAULT_SOURCE -Itools -Isrc $$($(SDL2_CONFIG) --cflags) tests/test_inputmap.c src/datapath.c $$($(SDL2_CONFIG) --libs) -o $@
+	$(CC) -std=c99 -D_DEFAULT_SOURCE -Itools -Isrc $(SDL_CFLAGS) tests/test_inputmap.c src/datapath.c $(LDFLAGS) $(SDL_LIBS) -o $@
 
 # make check GBL=/path/to/GBL-game/install [ISO=/path/to/gbl_cd.iso] [TITANIUM=/path/to/GBL-game/titanium]
 TITANIUM ?= $(GBL)/../titanium
@@ -129,8 +140,14 @@ clean:
 
 .PHONY: all check clean
 
+# the shaders (shaders/*.vert, *.frag) for every backend into src/rb_shaders.c / .h (checked in; needs glslangValidator,
+# spirv-cross and dxc - on PATH or in SHADER_TOOLS=<folder>/bin; see scripts/gen_shaders.py)
+shaders:
+	python3 scripts/gen_shaders.py $(if $(SHADER_TOOLS),--tools $(SHADER_TOOLS))
+.PHONY: shaders
+
 # A self-contained folder to run from anywhere: the launcher, the simulation, the font (found next to the
-# executables), the documentation. Needs SDL2 and OpenGL from the system.
+# executables), the documentation. Needs SDL3 from the system (and a Vulkan driver: the GPU's).
 DIST = dist/gblport
 dist: gbl
 	rm -rf $(DIST)

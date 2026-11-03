@@ -177,7 +177,7 @@ static int gc_alt_key(SDL_Keycode want)   /* Alt+W / Alt+L (getch 0 + scan 0x11 
 {
     if (g_in.key != want) return 0;
     if (g_headless) return getenv("GBL_ALT") != NULL;   /* TEST ONLY: headless events carry no modifiers */
-    return (SDL_GetModState() & KMOD_ALT) != 0;
+    return (SDL_GetModState() & SDL_KMOD_ALT) != 0;
 }
 
 /* ======================================================================================================================
@@ -596,9 +596,9 @@ redo:
     while (next == -1) {
         gbl_input *in;
         int h, click;
-        if (g_ctx != 2 && !strcmp(p->name, GBL_CHEATS[CH_IMMORTAL]) && (gc_alt_key(SDLK_w) || gc_alt_key(SDLK_l))) {
+        if (g_ctx != 2 && !strcmp(p->name, GBL_CHEATS[CH_IMMORTAL]) && (gc_alt_key(SDLK_W) || gc_alt_key(SDLK_L))) {
             /* IMMORTAL: Alt+W redoes the debriefing as a win, Alt+L as a failure, from the pilot copy */
-            status = g_in.key == SDLK_w ? 2 : 3;
+            status = g_in.key == SDLK_W ? 2 : 3;
             *p = saved;
             gs_close_all();
             gsnd_stop_all();

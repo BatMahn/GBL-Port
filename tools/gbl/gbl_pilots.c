@@ -635,7 +635,7 @@ static int gp_name_entry(gp_roster_st *st, int row, char *out, size_t outn)
     char buf[24] = "";
     int clicked = 0, done = 0;
     st->entry_row = row; st->entry_text = buf;
-    if (!g_headless) SDL_StartTextInput();
+    if (!g_headless) SDL_StartTextInput(g_win);
     while (!done && !g_quit_all) {
         gbl_input *in;
         const char *t;
@@ -655,7 +655,7 @@ static int gp_name_entry(gp_roster_st *st, int row, char *out, size_t outn)
             if (gtext_w(GP_F28, tmp) < 300) { buf[n] = (char)c; buf[n + 1] = 0; }
         }
     }
-    if (!g_headless) SDL_StopTextInput();
+    if (!g_headless) SDL_StopTextInput(g_win);
     st->entry_row = -1; st->entry_text = NULL;
     snprintf(out, outn, "%s", buf);
     return clicked;
