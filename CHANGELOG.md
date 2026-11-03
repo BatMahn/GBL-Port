@@ -61,6 +61,8 @@
 - **DOS-look HUD to the pixel** (checked in DOSBox against GBL's MW2.EXE at 1024x768 and 640x480): the nav marker and
   target bracket use the original's integer projection, radar blips and the radar's cone and edge use its own top-down
   view, and the message bar is clipped as DOS clips it.
+- **Dropping in at the start:** a 'Mech that starts above the ground drops straight down during the start-up, as in the
+  original. It used to slide a little across the slope it landed on, which moved the cockpit view and the HUD markers.
 - **Heat, throttle and jets bars** ease toward their values as in the original, and the dH/dT bar reads the original's
   net heat.
 - **Targets, radar and missiles aim at a building's or vehicle's centre**, not its model origin.

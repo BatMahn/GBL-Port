@@ -4320,10 +4320,22 @@ static float g_pl_dy_frame, g_pl_dy_done, g_pl_vy3, g_pl_dt;
 static int g_pl_imp3, g_pl_land3;
 /* one move of the player's locomotion: the drive (throttle -> speed), the move by the mean velocity, mech contact and
  * the terrain / object impact (engine 0x10019310, 0x1000b5e0); 1 when it touched a mech or was refused */
+/* the player's move tests (mech contact, spheres, the collision list - the terrain too) run only while its controller
+ * is up (+0xa4 == 2) or destroyed (4): GBL MW2.EXE 0x1fef0 (base DOS 0x1fca0) returns 0 at once for any other state,
+ * the contact count +0xa8 cleared, and 0x26d05 then stands the unit on the ground there (0x1c370) when the move ends
+ * below it. The start-up is state 1 (0x27b05: 0x444 + rand(0x16c) ticks): BASSSCN1's start point BASSST01 is at y 9000
+ * over ground at 8683, so in DOS the mech drops straight down; the port's terrain impact (the 3D move refused by the
+ * slope, reflected x -0.25) had slid it 16 cm across - the cockpit eye 16 cm off the start point, the nav marker under
+ * the player drawn at x 522 for DOSBox's 512 (1024 x 768). Only the start-up is gated here: shut down (state 3) the
+ * engine skips the tests as well - not ported (outside the cockpit eye work; a coasting mech still collides) */
+static int pl_move_tests(void)
+{
+    return !(g_sim_ok && !g_sim.player_unit.destroyed && g_sim.now < g_sim.player_online_at && !getenv("MW2_NO_STARTUP"));
+}
 static int pl_move(float dt, float top)
 {
     float speed0 = g_pl_speed, h = g_pl.heading * 3.14159265f / 180.0f;
-    int touched = 0;
+    int touched = 0, tests = pl_move_tests();
     /* the throttle servo c[0x13] follows the unsigned setting (input +8 is 0..1024; 0x1001a180 target 1/64 + input x
      * c[0x2c]); REVERSE_DIRECTION only asks the gait code for the reverse sequence (input +0x2f -> +0x88 = 2,
      * 0x1000b3a0), and the drive turns x -0.5 once that sequence PLAYS (+0x84 == 2, 0x1001a90a):
@@ -4360,11 +4372,11 @@ static int pl_move(float dt, float top)
             float ch = g_sim.player_centre_h, x0 = (float)g_pl.origin[0], z0 = (float)g_pl.origin[2];
             float p0[3] = {x0, g_sim.player_unit.y + ch, z0}, p1[3] = {nx, g_sim.player_unit.y + ch + vy * ticks, nz};
             float n[3], c[3], rr = 0, ov[3], sv[3] = {(sinf(h) * g_pl_speed + cosf(h) * g_pl_across) / 182.0f, vy, (cosf(h) * g_pl_speed - sinf(h) * g_pl_across) / 182.0f};
-            int hit = g_sim_ok ? msim_unit_contact(&g_sim, -1, p0, p1, n, c, &rr, ov) : -2, pushout = 0;
+            int hit = g_sim_ok && tests ? msim_unit_contact(&g_sim, -1, p0, p1, n, c, &rr, ov) : -2, pushout = 0;
             g_sim.player_vel[0] = sv[0]; g_sim.player_vel[1] = sv[1]; g_sim.player_vel[2] = sv[2];
             /* set down inside the sphere of the mech it landed on (contact < -2): the move ends inside it, whatever
              * its direction - the engine's push-out (0x1000ba20) */
-            if (hit == -2 && g_sim_ok && g_pl_contact < -2 && msim_unit_inside(&g_sim, -1, -g_pl_contact - 3, p1, n, c, &rr, ov)) { hit = -g_pl_contact - 3; pushout = 1; }
+            if (hit == -2 && g_sim_ok && tests && g_pl_contact < -2 && msim_unit_inside(&g_sim, -1, -g_pl_contact - 3, p1, n, c, &rr, ov)) { hit = -g_pl_contact - 3; pushout = 1; }
             if (hit >= 0) {
                 /* the second try (GBL 0x27479, base DOS 0x27109): refused by rounding, the velocity doubled (msim_contact_retest) */
                 const float vx2 = msim_contact_retest(p0, p1, c, rr) ? 2.0f : 1.0f;
@@ -4435,7 +4447,7 @@ static int pl_move(float dt, float top)
         }
         /* tested airborne too, in 3D (0x10019310 runs 0x1000b5e0 on every move with the frame's vertical part) */
         float dy_sub = g_pl_imp3 ? g_pl_vy3 * dt * 182.0f : g_pl_dt > 0.0f ? g_pl_dy_frame * dt / g_pl_dt : 0.0f;   /* this move's share */
-        if (msim_can_move(&g_sim, (float)g_pl.origin[0], (float)g_pl.origin[2], nx, nz, g_sim.player_unit.y + g_pl_dy_done, dy_sub, g_sim.player_centre_h, g_sim.player_radius)) {
+        if (!tests || msim_can_move(&g_sim, (float)g_pl.origin[0], (float)g_pl.origin[2], nx, nz, g_sim.player_unit.y + g_pl_dy_done, dy_sub, g_sim.player_centre_h, g_sim.player_radius)) {
             g_pl_dy_done += dy_sub;
             g_pl.origin[0] = (int32_t)lrintf(nx);
             g_pl.origin[2] = (int32_t)lrintf(nz);
@@ -6493,7 +6505,7 @@ int main(int argc, char **argv)
                         }
                         if (jvx || jvz) {
                             float nx = (float)g_pl.origin[0] + jvx * dt, nz = (float)g_pl.origin[2] + jvz * dt;
-                            if (msim_can_step_hr(&g_sim, (float)g_pl.origin[0], (float)g_pl.origin[2], nx, nz, g_sim.player_unit.y, g_sim.player_centre_h, g_sim.player_radius)) { g_pl.origin[0] = (int32_t)lrintf(nx); g_pl.origin[2] = (int32_t)lrintf(nz); }
+                            if (!pl_move_tests() || msim_can_step_hr(&g_sim, (float)g_pl.origin[0], (float)g_pl.origin[2], nx, nz, g_sim.player_unit.y, g_sim.player_centre_h, g_sim.player_radius)) { g_pl.origin[0] = (int32_t)lrintf(nx); g_pl.origin[2] = (int32_t)lrintf(nz); }
                             else jvx = jvz = 0;
                         }
                         g_jet_vx = jvx; g_jet_vz = jvz;
