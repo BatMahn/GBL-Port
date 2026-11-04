@@ -28,8 +28,10 @@ V_LOCATIONS
 
 void main() {
   int vertex_id = u_first + gl_VertexIndex;
-  int e = int(a_edge + 0.5), pit = e / 65536;
+  int e = int(a_edge + 0.5), pit = e / 65536, kmode = 0;
   e -= 65536 * pit;
+  // 200 + m: a world object's DOS key mode m (mech3d_part.dos_sort), not a cockpit polygon
+  if (pit >= 200) { kmode = pit - 200; pit = 0; }
   v_dnib = e / 2048; e -= v_dnib * 2048;
   // a mech location's damage nibble (glr_set_damage_shade)
   v_bb = e >= 1024 ? 1 : 0;
@@ -120,7 +122,7 @@ void main() {
   // camera z (quarter units: dos_camz; the list key DAT_0014fcc0 = 0) - and the level less ((key << 4) / LITE +24) >> 4,
   // not the pixel's depth in cm. The polygon's corners from this layer's buffer: its fan triangles back to the one that
   // starts it (edge bit 4) and on to the one that closes it (bit 2); -1 (the pixel depth) for a vertex not found there
-  v_dkey = -1.0; v_dtrust = 1; v_derr = vec2(0.0);
+  v_dkey = -1.0; v_dtrust = 1; v_derr = vec2(0.0); v_dord = 2.0;
   // the DOS integer projection checked against GL's for this corner: more than 3 px apart (seen on macOS) -> the fill
   // draws the polygon from GL's points without the exact-span discards (dos_gouraud)
 #if DOS_LOOK
@@ -140,13 +142,36 @@ void main() {
     int vid = vertex_id, t = vid / 3, k, c;
     if (abs(dvtx(vid * 13) - a_pos.x) + abs(dvtx(vid * 13 + 2) - a_pos.z) < 0.01) {
       for (k = 0; k < 16 && t > 0; k++) { if (((int(dvtx(3 * t * 13 + 12) + 0.5) % 32 / 3) & 4) != 0) break; t--; }
-      float km = -1e9;
+      float km = -1e9, kn = 1e9, ks = 0.0; int kc = 0;
       for (k = 0; k < 16; k++) {
         int b = 3 * (t + k);
-        for (c = 0; c < 3; c++) km = max(km, dos_camz(vec3(dvtx((b + c) * 13), dvtx((b + c) * 13 + 1), dvtx((b + c) * 13 + 2))));
-        if (((int(dvtx(b * 13 + 12) + 0.5) % 32 / 3) & 2) != 0) break;
+        bool last = ((int(dvtx(b * 13 + 12) + 0.5) % 32 / 3) & 2) != 0;
+        for (c = 0; c < 3; c++) {
+          float z = dos_camz(vec3(dvtx((b + c) * 13), dvtx((b + c) * 13 + 1), dvtx((b + c) * 13 + 2)));
+          km = max(km, z);
+          // the polygon's corners once each (the fan: corner 0, each triangle's next, the closing one's last)
+          if ((c == 0 && k == 0) || c == 1 || (c == 2 && last)) { kn = min(kn, z); ks += z; kc++; }
+        }
+        if (last) break;
       }
       v_dkey = km;
+      // the DOS draw order (MW2.EXE 0x3d9c0 -> 0x3d830 -> 0x3ec8e, sorted by 0x3d930 - largest key first - and drawn in
+      // turn by 0x3dad0): every polygon facing the eye is listed with one key - its farthest corner's camera z (quarter
+      // units, as the fog key), the average for key mode 2, the nearest for 4 (the listed corners: those behind the near
+      // plane replaced by plane corners, so at least the plane's z), + 0x40000000 for 1 (listed first: behind all).
+      // Units' pieces are listed the same way (their models loaded with mode 0, 0x37bb0). No depth buffer: a turret on a
+      // cliff is painted over the cliff's faces whose farthest corners lie beyond it, wherever its pieces pass into the
+      // rock (DOSBox JESSSCN1). Here: each polygon's fragments at one depth (world.frag) - that of its key, on the view
+      // axis - so the depth test keeps the polygon with the smaller key, as painting in that order does (equal keys:
+      // the first drawn; the original's quicksort keeps no order either). The nearest corner's floor (1 cm) ASSUMED
+      float key = (kmode & 2) != 0 ? floor(ks / float(max(kc, 1))) : (kmode & 4) != 0 ? max(kn, 4.0) : km;
+      if (pit == 0 && key > 0.0) {
+        vec3 fwd = -vec3(u_view[0][2], u_view[1][2], u_view[2][2]);
+        vec4 q = u_mvp * vec4(u_dos_eye + fwd * (key * 0.25), 1.0);
+        float nd = q.w > 0.0 ? min(q.z / q.w, 1.0 - 4e-6) : 1.0 - 4e-6;
+        if ((kmode & 1) != 0) nd = 1.0 - 2e-6;
+        v_dord = nd;
+      }
     }
   }
 #endif

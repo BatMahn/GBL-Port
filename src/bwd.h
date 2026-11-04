@@ -78,6 +78,11 @@ typedef struct {
     uint16_t model;      /* POLY resource id */
     int      coll;          /* payload +4, i16: collision type (engine OBJ handler 0x10043270 -> 0x1000ffd0):
                                 0 standable box, 1 XZ box, 4 none, 5 polygon terrain, 6/7 special, -1 none */
+    uint16_t sortkey;       /* payload +42: the DOS draw list's key mode (GBL MW2.EXE OBJ handler 0x4f090 reads chunk
+                               +0x32 and passes it to 0x363d0, which keeps & 0x1ff; the model loader 0x51410 puts it in
+                               the object's +0 flags through 0x39450 (mask 0x10f) and 0x3ec8e reads them: 1 the key
+                               | 0x40000000 (listed first, drawn behind), 2 the corners' average, 4 the nearest, else
+                               the farthest). Seen: 0, 1, 2, 3, 4 */
     uint16_t objtype;       /* payload +44 (engine OBJ handler 0x10043270: chunk +0x34 -> object +2); bits 0xf0 = class,
                                0xC0 = removed at OBJECT DENSITY LOW (0x1000de50), 0x70 = kept with TERRAIN TEXTURES off */
 } bwd_obj;

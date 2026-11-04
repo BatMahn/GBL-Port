@@ -65,6 +65,8 @@ typedef struct {
     int   first;                 /* drawing only: the first projectile of its weapon's volley (combat volley_start) - the
                                   * Titanium engine gives that one a light (mercsw 0x1006c470 / 0x1006cd6c) */
     int   ams_d;                 /* GBL: an AMS's intercept distance rolled for it (slot +0x54, 0x54bb0), cm; -1 not rolled */
+    float cpa;                   /* TEST ONLY (MW2_CPA_TRACE): an enemy shot's closest approach to the player's centre, cm (-1 none) */
+    float cpa_rel[3];            /* TEST ONLY: where (right, up, forward of the player's facing; up from the feet) */
     int   pool;                  /* GBL: which of its kind's pool objects it took - the first free one in the mission's pool
                                   * records' order (0x53823's scan of the 255 slots), 0..: its start offset (pool_r, 0x54730)
                                   * and, for drawing, its card (the Flamer's cards differ by entry) */

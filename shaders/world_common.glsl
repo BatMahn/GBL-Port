@@ -32,7 +32,7 @@ layout(std140, set = UBO_SET, binding = 0) uniform WorldFrame {
     vec3  u_hz_u;      int   u_dsign;
     vec3  u_hz_f;      float u_hz_band;
     vec2  u_hz_x;      ivec2 u_tilt;
-    int   u_hz_smooth; int   u_dos_exact; int u_dos_tc;
+    int   u_hz_smooth; int   u_dos_exact; int u_dos_tc; int u_dos_order;   // u_dos_order: the DOS draw order's depths
     vec4  u_tilv[2];   // xyz (was vec3[2])
     vec4  u_tilc[2];
     vec4  u_tidp[8];
@@ -102,4 +102,5 @@ ivec2 dos_scr(vec3 w) {
 #define v_dtrust v_i1.z   // the DOS integer projection agrees with GL's for this corner (within 3 px)
 #define v_dkey   v_f0.x   // the DOS fog key (-1: the pixel depth)
 #define v_derr   v_f0.yz  // MW2_DOS_DEBUG: the DOS-vs-GL offsets of the provoking corner
+#define v_dord   v_f0.w   // the DOS look: the polygon's depth in the DOS draw order (GL's NDC z of its key; 2 none)
 // v_gs: the DOS Gouraud shade (a_uv), screen-linear as MW2.EXE 0x59e77 steps it

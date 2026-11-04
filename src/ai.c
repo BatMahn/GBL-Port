@@ -641,7 +641,7 @@ void ai_step(const ai_library *lib, ai_mind *m, const ai_view *v, float dt)
             if (m->next_fire <= 0) {
                 unsigned r = ai_rand(m, (unsigned)(v->skill > 0 ? v->skill : 1) + 1u);
                 m->next_fire = (float)(r * 22u);
-                if (fabsf(aim - m->twist) < 10.0f && (v->enemy_is_player || ai_rand(m, 3) == 0) && r == 0) m->wants_fire = 1;
+                if (fabsf(aim - m->twist) < 10.0f && (v->enemy_is_player || v->no_fire_roll || ai_rand(m, 3) == 0) && r == 0) m->wants_fire = 1;
             }
         } else {
             m->twist_demand = (m->state >= AI_FOLLOW && m->state <= AI_GODIRECT) ? m->torso : 0;

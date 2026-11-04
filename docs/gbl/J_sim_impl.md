@@ -81,8 +81,10 @@ Sources read: /home/claude/gbl/re/mw2gbl_decomp.c + mw2gbl.elf (GBL sim), shellg
   (guided), ARROW IV (kind 10, visual 35, guided, damage 7, heat 10, range 2002 m, refire 3640).
 - `sim_weapons_gbl_x[35]` {flags +0x08, texture base +0x0c, muzzle effects +0x18/+0x1c, f14 +0x24, guided +0x28};
   `sim_weapon_short_gbl[35]`; accessors `sim_wtab()`, `sim_wcount()`, `sim_weapon_name()`, `sim_wx()` (NULL in base).
-- ASSUMED: unchanged entries keep the port's 3Dfx timings (181-Hz-scaled refire/life, e.g. SRM life 543 vs DOS 709); the
-  new 31-34 carry GBL's DOS values as they stand (Inferno SRM life 709).
+- Timings (agent AI): every entry now carries GBL's own refire / interval / life (the 3D-card edition's 181-Hz-scaled
+  ones had been kept: SRM / Streak life 543 -> 709, LRM 905 -> 1001, LRM15 interval 22 -> 18, refires + 0.3-1 %); NARC
+  heat the raw 4 of GBL's 16.16 field. An SRM now reaches its 497 m range (it died at 380 m: an AI firing SRMs at 380-497 m,
+  as 0x2c510's range window allows, never reached the player).
 
 ### 2.2 MEK loader / combat (src/mek.c, src/combat.c, src/combat.h)
 - src/mek.c: `mek_weapons_gbl[35]` = GBL MW2SHELL.EXE table at VA 0x80ad4 (35 x 40 bytes {heat, damage, unk, short, medium,
@@ -210,6 +212,21 @@ Sources read: /home/claude/gbl/re/mw2gbl_decomp.c + mw2gbl.elf (GBL sim), shellg
   the harness fallback (the boss keeps away from the harness's 120 m firing point).
 - ASSUMED / not done: GBL 0x2c970 also gives every unit a record by class and the jumper table when controller +0xe8 == 1
   (meaning in DOS not pinned); the port keeps the 3Dfx table for non-profile units (base behaviour).
+
+### 3.4 Enemy fire at the player (agent AI, 2026-11-03)
+- Damage location: a CT hit goes to 2 / 3 / 4 by rand(3) (0x26733..0x26762), not the base game's rand(2) -> 2 / 3.
+- AI aim: the pitch demand (0x2eb60 -> 0x22ca0: -(unit +0xd8 / 0xf00) x 0xf00, clamped +-0x400 units = +-60 deg by
+  0x23d60) and the lock's pitch test (0x54160) use +0xd8, the elevation 0x2a590 -> 0x2aee0 works out between the two
+  object positions (+0x50..+0x58 = feet + MGEO centre height; a class 2 unit's y) - msim: enemy_elev and the AI lock's
+  dy / distance through unit_centre_y. The skill byte 0x2ec42..0x2ec83 adds to both demands is always 0 there (ESI is 0
+  whenever the demands are written), so the aim has no skill error. Lock timer 0x16c (0x54160; the port had 0x16a).
+- Checked and unchanged: the fire chain 0x2eb60 (+0x156 timer rand(+0x154) x 0x16, +0x154 = max(GPS skill, 1) + 1 set at
+  0x21840..0x21978; bearing within 10 deg of the lagged twist; rand(3) for a non-player target) -> 0x2ec90 (weapon by
+  0x2c510's window on the horizontal distance +0xc0, heat < 65, rand(refire / 0x5b + 1)); every AI shot's aim 0x53823 ->
+  0x544b0 (servos +0xa8 / +0x98, the eye ray 0x545e0: the eye object + *DAT_000a7844 = the player controller's +0xd4,
+  always 0) -> 0x54570 (no lead); missiles' lateral rand(200) - 100 (0x54730); guidance 0x51cd0 (no lead, the unit's
+  object position); difficulty only scales armour (0x4d670: player x4, alliance 0 x 3/3/4, others x 1/3/4) and the
+  player's heat sinking (0x4dca5).
 
 ## Files changed (all in /home/claude/agents/J/mw2port)
 - src/mek.c, src/mek.h - sim_game_gbl, GBL shell weapon table, mek_weapon_for by game, mek_weapon_table[_count]

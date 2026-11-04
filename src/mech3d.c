@@ -251,6 +251,7 @@ typedef struct {
     uint16_t model;
     int coll;
     int objtype;
+    int sortkey;
     int32_t scale[3], rot[3];
 } wnode;
 
@@ -297,6 +298,7 @@ int world3d_append(prj_archive *a, const char *record, int with_damaged, mech3d 
         nodes[o.index].model = o.model;
         nodes[o.index].coll = o.coll;
         nodes[o.index].objtype = o.objtype;
+        nodes[o.index].sortkey = o.sortkey;
         memcpy(nodes[o.index].scale, o.scale, sizeof o.scale);
         memcpy(nodes[o.index].rot, o.rotation, sizeof o.rotation);
     }
@@ -338,6 +340,7 @@ int world3d_append(prj_archive *a, const char *record, int with_damaged, mech3d 
         p->node = -1;
         p->coll = nodes[i].coll;
         p->objtype = nodes[i].objtype;
+        p->dos_sort = nodes[i].sortkey & 7;
         snprintf(p->rec, sizeof p->rec, "%.10s", record);
         p->obj_index = i;
         p->parent_obj = nodes[i].parent;

@@ -78,12 +78,19 @@
 - **Powering up and shutting down:** lancemates and enemies stay where they landed until they have powered up, with
   their torsos centred, and the start-up takes 6 to 8 seconds as in the original. A shut-down 'Mech coasts to a stop
   without bumping into anything, the shutdown order powers a lancemate down, and the next order starts it up again.
+- **Turrets on the hills in the DOS look:** the original paints its polygons farthest first, without a depth buffer, and the
+  port now orders them the same way. A turret standing against or partly inside a cliff (Mannedorf's, in the first
+  mission) shows whole, as in the original, instead of half hidden in the rock.
 - **Thin parts in the DOS look:** flat-coloured and most textured polygons now cover the same pixels as the original's
   fill, as the shaded ones already did, so slivers such as the turrets' gun barrels stay solid instead of breaking into
   dots (not on macOS, where the exact DOS fill is off).
 - **Heat, throttle and jets bars** ease toward their values as in the original, and the dH/dT bar reads the original's
   net heat.
 - **Targets, radar and missiles aim at a building's or vehicle's centre**, not its model origin.
+- **Enemy fire, as in GBL's MW2.EXE:** SRMs and Streaks now fly their full 497 m (they burned out at 380 m, so an
+  enemy firing them from further off never reached you) and LRMs their full 1001 m; every weapon's reload and volley
+  timing is GBL's own. A hit on the centre torso spreads over the left, centre and right torsos, as the original's damage
+  display shows. Enemies aim and lock on from 'Mech centre to 'Mech centre, and a missile lock takes GBL's 2.0 s.
 - **Missile reticle while reloading:** the plain ring while the selected weapon fires its volley or reloads, as in DOS.
 - **Cockpit Controls:** you can type the configuration's name (Backspace, Enter / Esc to finish).
 - **Joystick / mouse menu files:** the GIDDI\<driver>.STD files are read as the original reads them.

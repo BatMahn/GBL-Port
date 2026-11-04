@@ -131,6 +131,7 @@ int bwd_obj_decode(const bwd_chunk *c, bwd_obj *out)
     }
     out->model = rd16(c->data + 48);
     out->objtype = rd16(c->data + 44);
+    out->sortkey = rd16(c->data + 42);
     return 0;
 }
 

@@ -1736,6 +1736,7 @@ void msim_step(msim *s, int32_t dt_ms)
         world_actor *l = group_leader(s, ac->table);
         float dx, dz;
         int enemy_who = -1, in_star = ac->friendly && ac->table == 0 && !s->player_unit.destroyed;
+        float enemy_cy = 0;   /* the target's object height (+0x54: a unit's centre, a point's own y) for the elevation */
         if (s->armed[i] && s->units[i].destroyed && !fixed_unit(ac) && s->units[i].y > s->units[i].ground + 1.0f) {
             /* destroyed (state 4): the physics 0x10019310 (DOS 0x26990) returns at once for a unit in state 4 on the ground
              * (object +0x78) - it stops dead; killed in the air it flies on at its velocity (no drive, LAB_1001aae9), falls
@@ -1803,8 +1804,17 @@ void msim_step(msim *s, int32_t dt_ms)
             v.has_enemy = pick_enemy(s, i, &ex, &ez, &ey, &ef, &eh, &who);
             enemy_who = v.has_enemy ? who : -1;
             v.enemy_is_player = v.has_enemy && who == -1;
+            /* GBL MW2.EXE 0x2eb60 (0x2ebc2..0x2ebe6): the rand(3) a non-player target needs is skipped when the target
+             * code +0x14a has the player's unit index in its low byte (0xa5c98, the first unit of the player's star -
+             * 0x4f530; every GBL scene lists the player's star first, so index 0: ASSUMED) - the codes are 0x100 | nav,
+             * 0x200 | unit, 0x400 | thing, so a nav point or thing number 0 counts as the player: JESS's HPG uplink
+             * (thing 0) is fired on three times as often as another thing (DOSBox ref/AI_jr_*: the dish hit from ~115 s,
+             * gone by ~145 s) */
+            v.no_fire_roll = v.has_enemy && who == -3 && m->node_tgt && (m->node_tgt & 0xffff) == 0 &&
+                             ((m->node_tgt >> 16) == 1 || (m->node_tgt >> 16) == 4);
             m->targets_player = v.enemy_is_player;
             v.enemy_x = ex; v.enemy_z = ez; v.enemy_heading = ef; v.enemy_height = ey - s->units[i].ground;   /* against my own height above my ground */
+            enemy_cy = v.has_enemy && who >= -1 ? unit_centre_y(s, who) : ey;
         }
         v.flank_slots = s->flank_slots;
         /* the attacker reaction (0x10012520, at the start of every rule pass unless lock bit 1): a live unit of another
@@ -1818,6 +1828,26 @@ void msim_step(msim *s, int32_t dt_ms)
             for (q3 = 0; q3 < s->actor_count && att == -2; q3++) {
                 int al = s->actors[q3].friendly ? 0 : s->actors[q3].alliance;
                 if (q3 != i && s->armed[q3] && !s->units[q3].destroyed && s->ai_who[q3] == i && al != self_al) att = q3;
+            }
+            /* GBL MW2.EXE 0x21e40 (the rule pass's first step, 0x21b60): no reaction while heading for the assigned nav
+             * (state 8 with +0x14a == +0x16a), and 0x224c0(me, attacker, -3) looks for a groupmate (0x24270, not gone /
+             * destroyed / powered down: +0x14 & 0x16) already in state 2 / 3 on the attacker - with the group's node kind
+             * not 4 (destroy, all on one). Such a mate carrying a node order (+0x14e & 0x40, set by 0x24570 / 0x23dc0 and
+             * cleared by 0x22ef0 only in the player's star) keeps it and this one does NOT react: one unit per attacker
+             * turns, the rest go on with the order (JESS: two Ravens answer the Phantom / Executioner, two shoot the HPG
+             * uplink; the port had all four turn). The player's star (+0x40 cleared there) is left as it was: ASSUMED */
+            if (att != -2 && m->state == AI_GODIRECT && m->to_navref) att = -2;
+            if (att != -2 && !in_star && s->ai_focus[i] != att) {
+                int q4, kind4 = cur >= 0 && s->logic.tables[ac->table].nodes[cur].kind == 4;
+                for (q4 = 0; q4 < s->actor_count && !kind4; q4++) {
+                    float a1, a2, a3, a4, a5;
+                    int wq = -2;
+                    if (q4 == i || s->actors[q4].table != ac->table || !s->armed[q4] || s->units[q4].destroyed || (s->powered_down && s->powered_down[q4])) continue;
+                    if (s->minds[q4].state != AI_TARGET && s->minds[q4].state != AI_ATTACK) continue;
+                    if (!pick_enemy(s, q4, &a1, &a2, &a3, &a4, &a5, &wq) || wq != att) continue;
+                    att = -2;
+                    break;
+                }
             }
             if (att != -2 && s->ai_focus[i] != att) { s->ai_focus[i] = att; m->prev_state = m->state; m->state = AI_TARGET; m->target = 1; ai_wake(s, i); }
         }
@@ -1863,8 +1893,11 @@ void msim_step(msim *s, int32_t dt_ms)
         dz = v.enemy_z - (float)ac->mech.origin[2];
         v.enemy_dist = sqrtf(dx * dx + dz * dz);
         v.enemy_bearing = atan2f(dx, dz) * 180.0f / 3.14159265f;
-        /* elevation between the unit origins (the pitch demand, 0x100231a0 -> 0x100135d0) */
-        v.enemy_elev = atan2f(v.enemy_height + s->units[i].ground - s->units[i].y, v.enemy_dist > 1.0f ? v.enemy_dist : 1.0f) * 180.0f / 3.14159265f;
+        /* the elevation for the pitch demand: GBL 0x2eb60 -> 0x22ca0 takes unit +0xd8, which 0x2a590 -> 0x2aee0 works out
+         * from the two OBJECT positions (+0x50..+0x58: a walker's feet + its MGEO centre height, a class 2 unit's y; a
+         * nav point / thing its own point) - centre to centre, not feet to feet (the 3D editions' 0x100135d0 used the
+         * origins) */
+        v.enemy_elev = atan2f(enemy_cy - unit_centre_y(s, i), v.enemy_dist > 1.0f ? v.enemy_dist : 1.0f) * 180.0f / 3.14159265f;
         {   /* the player's star (engine: the player leads it; "my leader" 0x2201 = the player) and its orders */
             int star = ac->friendly && ac->table == 0 && !s->player_unit.destroyed;
             int c = s->cmd ? s->cmd[i] : 0, t = s->cmd_target ? s->cmd_target[i] : -1;
@@ -1905,6 +1938,7 @@ void msim_step(msim *s, int32_t dt_ms)
                     v.has_enemy = 1;
                     v.enemy_x = (float)e->mech.origin[0]; v.enemy_z = (float)e->mech.origin[2];
                     v.enemy_heading = e->mech.heading; v.enemy_height = s->units[t].y - s->units[i].ground;
+                    enemy_cy = unit_centre_y(s, t);
                     if (m->state != AI_TARGET && m->state != AI_ATTACK) { m->state = AI_TARGET; m->target = 1; }
                 } else v.has_enemy = 0;
                 dx = v.enemy_x - (float)ac->mech.origin[0];
@@ -2038,6 +2072,21 @@ void msim_step(msim *s, int32_t dt_ms)
          * (none), leg turn +0x38, torso twist demand +0x08 and pitch demand +0x18 = 0, input +8 and the jets / fire flags
          * cleared - and the fire step 0x53200 runs only in state 2. The servos (0x4a9d0 in 0x26d05, every state) ease the
          * torso back to the centre */
+        {   /* the fall brake (GBL MW2.EXE 0x2ddc0, called by the state handler 0x22800 for AI states 1, 2, 4-10 and by the
+             * attack manoeuvres 0, 1, 2, 3, 7, 8 and 12 in 0x2c590, when no rule fired): a unit with jets (controller
+             * +0xc4 >= 0, +0xf0 != 0) whose centre (object +0x54) is under y 20000 sets the jet input +0x1d while it falls
+             * faster than -899859.3 / 65536 = 13.73 cm/tick (double 0xa0af8) and clears it once slower than 0xc1d89 =
+             * 12.12 cm/tick; in between it keeps it. So a Raven walking off JESS's 207 m ridge lands under the fall damage
+             * speed 0x102762 (16.15 cm/tick, 0x26d05) instead of free-falling (DOSBox ref/AI_jr_*) */
+            int st = m->state, mn = m->man, handled = (st >= 1 && st <= 10 && st != AI_ATTACK) ||
+                (st == AI_ATTACK && (mn == 0 || mn == 1 || mn == 2 || mn == 3 || mn == 7 || mn == 8 || mn == 12));
+            if (!handled || m->rule_fired || s->units[i].jets <= 0 || s->units[i].jet_fuel < 0 || s->units[i].no_jump) m->fall_jet = m->fall_jet && handled;
+            else if (s->units[i].y + (s->centre_h ? s->centre_h[i] : 550.0f) < 20000.0f) {
+                if (s->units[i].vy < -899859.3f / 65536.0f) m->fall_jet = 1;
+                else if (s->units[i].vy > -(float)0xc1d89 / 65536.0f) m->fall_jet = 0;
+            }
+            if (m->fall_jet) m->jet = 1;
+        }
         if (!unit_up(s, i, m)) {
             m->throttle = 0; m->turn = 0; m->wants_fire = 0; m->jet = 0; m->jet_forward = 0; m->jet_back = 0; m->jet_side = 0;
             m->twist_demand = 0; m->pitch_demand = 0;
@@ -2799,6 +2848,7 @@ static void spawn_shot_h(msim *s, int weapon, int owner, const float from[3], co
     sh->first = 0;
     sh->ams_d = -1;
     sh->id = ++s->shot_serial;
+    sh->cpa = -1;
     if (owner == -1) s->player_last_shot = sh->id;   /* 0x10044xxx: DAT_1025a69c (kept only for a missile) */
 }
 
@@ -3253,11 +3303,31 @@ int msim_test_shot(msim *s, const float o[3], const float dv[3], int *unit, int 
     shot_units(s, -2, o, dv, t, unit, group);
     return *unit != -2;
 }
+/* TEST ONLY (MW2_CPA_TRACE): an enemy projectile's closest approach to the player's centre along the segment o -> o + dv */
+static void cpa_track(msim *s, msim_shot *sh, const float o[3], const float dv[3])
+{
+    float c[3] = {s->player[0], s->player_unit.y + s->player_centre_h, s->player[2]}, w[3], L2, u, d2, q[3], fh;
+    if (sh->owner < 0 || s->player_unit.destroyed) return;
+    w[0] = c[0] - o[0]; w[1] = c[1] - o[1]; w[2] = c[2] - o[2];
+    L2 = dv[0] * dv[0] + dv[1] * dv[1] + dv[2] * dv[2];
+    u = L2 > 0 ? (w[0] * dv[0] + w[1] * dv[1] + w[2] * dv[2]) / L2 : 0;
+    if (u < 0) u = 0;
+    if (u > 1) u = 1;
+    q[0] = o[0] + dv[0] * u - c[0]; q[1] = o[1] + dv[1] * u - c[1]; q[2] = o[2] + dv[2] * u - c[2];
+    d2 = sqrtf(q[0] * q[0] + q[1] * q[1] + q[2] * q[2]);
+    if (sh->cpa >= 0 && d2 >= sh->cpa) return;
+    sh->cpa = d2;
+    fh = s->player_facing * 3.14159265f / 180.0f;
+    sh->cpa_rel[0] = q[0] * cosf(fh) - q[2] * sinf(fh);
+    sh->cpa_rel[1] = q[1] + s->player_centre_h;
+    sh->cpa_rel[2] = q[0] * sinf(fh) + q[2] * cosf(fh);
+}
 static void combat_step(msim *s, float dt)
 {
     int i, k, w;
     float ticks = dt * COMBAT_TICKS_PER_S;
     char line[200];
+    int g_cpa_trace = getenv("MW2_CPA_TRACE") != NULL;   /* TEST ONLY */
     const float pl_h = 950.0f;          /* Timber Wolf muzzle / aim height, cm (approx.) */
 
     /* the player's collision model follows the player */
@@ -3322,21 +3392,22 @@ static void combat_step(msim *s, float dt)
         from[0] = (float)s->actors[i].mech.origin[0]; from[1] = s->units[i].y + s->height[i] * 0.7f; from[2] = (float)s->actors[i].mech.origin[2];
         if (m) {   /* AI missile lock (0x10044560, every live mech, for the AI's selected weapon +0xac = combat_unit.ai_sel):
                     * guided, origin distance (3D) in the weapon's window (+0x3c < d <= +0x40), within 16 degrees of the aim
-                    * (bearing off heading + lagged twist; pitch + elevation): 0x8000 on target; 0x40 + a 0x16a-tick timer
+                    * (bearing off heading + lagged twist; pitch + elevation): 0x8000 on target; 0x40 + a 0x16c-tick timer (GBL
+                    * 0x54160: 0x16c, the 3D editions' 0x16a)
                     * when first on, counted down by dt, locked (0x80) at <= 0. Off target: 0x8000 / 0x80 cleared and the
-                    * timer counts back UP by dt, 0x40 cleared at 0x16a. No guided weapon selected: all cleared. */
+                    * timer counts back UP by dt, 0x40 cleared at 0x16c. No guided weapon selected: all cleared. */
             int sw = s->units[i].ai_sel, wid = sw >= 0 && sw < s->units[i].weapon_count ? s->units[i].weapons[sw].weapon : -1;
             /* a node task's target (who -3): a thing (kind 0x400) locks at its object's position (0x1001d2d0 ->
              * 0x100257a0); a nav point (kind 0x100) never does (0x10044560 tests +0xdc & 0x1100) */
             int nt = who == -3 ? m->node_tgt >> 16 : 0;
-            float tq[3], lx = dx, lz = dz, ly = ey;
+            float tq[3], lx = dx, lz = dz, ly = who >= -1 ? unit_centre_y(s, who) : ey;   /* GBL 0x54160: object positions */
             if (nt == 4 && thing_point(s, m->node_tgt & 0xffff, tq)) {
                 lx = tq[0] - (float)s->actors[i].mech.origin[0]; lz = tq[2] - (float)s->actors[i].mech.origin[2]; ly = tq[1];
             } else if (who == -3) wid = -1;
             m->lock &= ~0x80;
             if (gbl_narc_lock(s, wid, who)) { m->lock |= 0x80c0; m->lock_ticks = 0; }   /* GBL 0x54160: a NARCed target */
             else if (wid >= 0 && msim_weapon_guided(wid)) {
-                float dy = ly - s->units[i].y, d3 = sqrtf(lx * lx + lz * lz + dy * dy), on = 0;
+                float dy = ly - unit_centre_y(s, i), d3 = sqrtf(lx * lx + lz * lz + dy * dy), on = 0;
                 if (d3 > (float)LOCK_MIN_OF(wid) && d3 <= combat_weapon_range(wid)) {
                     float yaw = wrap180(atan2f(lx, lz) * 180.0f / 3.14159265f - s->actors[i].mech.heading - m->twist);
                     float el = atan2f(dy, sqrtf(lx * lx + lz * lz)) * 180.0f / 3.14159265f;
@@ -3344,12 +3415,12 @@ static void combat_step(msim *s, float dt)
                 }
                 if (on) {
                     m->lock |= 0x8000;
-                    if (!(m->lock & 0x40)) { m->lock |= 0x40; m->lock_ticks = 362.0f; }
+                    if (!(m->lock & 0x40)) { m->lock |= 0x40; m->lock_ticks = 364.0f; }
                     else if (m->lock_ticks < 1.0f) { m->lock_ticks = 0; m->lock |= 0x80; }
                     else m->lock_ticks -= ticks;
                 } else {
                     m->lock &= ~(0x8000 | 0x80);
-                    if (m->lock & 0x40) { m->lock_ticks += ticks; if (m->lock_ticks >= 362.0f) m->lock &= ~0x40; }
+                    if (m->lock & 0x40) { m->lock_ticks += ticks; if (m->lock_ticks >= 364.0f) m->lock &= ~0x40; }
                 }
             } else m->lock = 0;
         }
@@ -3359,6 +3430,17 @@ static void combat_step(msim *s, float dt)
              * weapon, and moves on at the release (combat_ai_trigger) */
             combat_unit *cu = &s->units[i];
             if (!m->rule_fired) {
+                /* a target powered down by its rest / hold node (object +0x14 & 0x10, GBL 0x22ef0 states 10 / 11): DOSBox
+                 * JESSSCN1 - with JESSENS1 destroyed the allies get "destroy jessens2" and go for the ridge Ravens (they
+                 * walk back and jump at the cliff) but fire nothing for the 75 s the Ravens are held: no shot in 200
+                 * frames over 33 s, all four pristine when they power up at 91 s (ref/AE_jm_*, AE_jp30_*, AE_jp42_*,
+                 * AE_jq_*). The gate's code is not found: 0x2eb60 / 0x2ec90 / 0x2a590 (EBX 0 from 0x2a9f0) do not test
+                 * it; GBL has an unreferenced 0x22420 that refuses a target with +0x14 & 0x10 (ASSUMED: the rule, as a
+                 * fire gate only). The start-up after a hold (0x22ef0 -> 0x27b05 states 0 / 1) too: the Ravens are still
+                 * pristine when "Enemy power-up detected" shows, with the allies next to them through the 6-8 s (ASSUMED
+                 * from that; a heat-shut-down unit is not gated) */
+                if (m->wants_fire && who >= 0 && who < s->actor_count &&
+                    ((s->powered_down && s->powered_down[who]) || (s->online_at && s->now < s->online_at[who]))) m->wants_fire = 0;
                 if (m->wants_fire) {
                     int fw;
                     s->units[i].lock_target = !(m->lock & 0x80) ? -2 : who >= -1 ? who
@@ -3454,7 +3536,7 @@ static void combat_step(msim *s, float dt)
     }
     /* missile lock (engine 0x10044560, per tick for the selected weapon): a guided weapon, a selected target within
      * the weapon's range window (+0x3c .. +0x40) and within 16 degrees of the torso's aim both ways: on target (0x8000);
-     * held for 0x16a ticks (2 s) -> locked (0x80); any break restarts it */
+     * held for 0x16c ticks (2 s; GBL 0x54160, the 3D editions 0x16a) -> locked (0x80); any break restarts it */
     {
         int e = s->player_lock_target, sw = s->player_sel_w, wid = -1, in = 0;
         s->player_lock &= ~0x80;
@@ -3479,14 +3561,14 @@ static void combat_step(msim *s, float dt)
         if (gbl_narc_lock(s, wid, e)) { s->player_lock |= 0x80c0; s->player_lock_ticks = 0; }   /* GBL 0x54160: a NARCed target */
         else if (in) {
             s->player_lock |= 0x8000;
-            if (!(s->player_lock & 0x40)) { s->player_lock |= 0x40; s->player_lock_ticks = 362.0f; }
+            if (!(s->player_lock & 0x40)) { s->player_lock |= 0x40; s->player_lock_ticks = 364.0f; }
             else if (s->player_lock_ticks < 1.0f) { s->player_lock_ticks = 0; s->player_lock |= 0x80; }
             else s->player_lock_ticks -= ticks;
         } else if (wid >= 0 && msim_weapon_guided(wid) && (e >= 0 || MSIM_IS_THING(e))) {
             /* off target / out of the window (0x10044560): 0x8000 and 0x80 cleared, the timer counts back up by dt and
-             * 0x40 goes at 0x16a - so a brief break resumes where it was */
+             * 0x40 goes at 0x16c - so a brief break resumes where it was */
             s->player_lock &= ~(0x8000 | 0x80);
-            if (s->player_lock & 0x40) { s->player_lock_ticks += ticks; if (s->player_lock_ticks >= 362.0f) s->player_lock &= ~0x40; }
+            if (s->player_lock & 0x40) { s->player_lock_ticks += ticks; if (s->player_lock_ticks >= 364.0f) s->player_lock &= ~0x40; }
         } else s->player_lock = 0;   /* no guided weapon or no target: everything cleared */
     }
     /* the player fires at the crosshair target, or with none along the aim line (engine 0x100448e0: shots follow the
@@ -3631,6 +3713,7 @@ static void combat_step(msim *s, float dt)
             /* 0x516b0: p += (v + a t / 2) t; v += a t (16.16 per tick) */
             dv[0] = sh->vx * step + 0.5f * sh->ax * step * step; dv[1] = sh->vy * step + 0.5f * sh->ay * step * step; dv[2] = sh->vz * step + 0.5f * sh->az * step * step;
             if (step > 0) shot_units(s, sh->owner, o, dv, &tbest, &hit_unit, &hit_group);   /* a 0-tick frame: no segment */
+            if (step > 0 && g_cpa_trace) cpa_track(s, sh, o, dv);   /* TEST ONLY */
             if (step > 0 && s->world && s->terrain) {
                 /* world objects (engine 0x10044f60 -> 0x100103e0): the NEAREST object of the collision list the step
                  * crosses - the bounding sphere first (0x10029db0), then the type's segment test (0x10010650, table
@@ -3802,6 +3885,9 @@ static void combat_step(msim *s, float dt)
             }
             gone = 1;
         } else if (sh->life <= 0 || sh->y < 0) { gone = 1; s->misses++; if (getenv("MW2_BLD_TRACE") && sh->owner == -1) fprintf(stderr, "miss w %d at %.0f,%.0f,%.0f life %.1f\n", sh->weapon, sh->x, sh->y, sh->z, sh->life); }
+        if (gone && g_cpa_trace && sh->owner >= 0 && sh->cpa >= 0)   /* TEST ONLY: "cpa t shooter weapon homing hit cm right up fwd" */
+            fprintf(stderr, "cpa %.2f %d w %d hom %d hit %d d %.0f r %.0f u %.0f f %.0f\n", s->now / 1000.0, sh->owner, sh->weapon, sh->homing,
+                    hit_unit, sh->cpa, sh->cpa_rel[0], sh->cpa_rel[1], sh->cpa_rel[2]);
         if (gone) { s->shots[k] = s->shots[--s->shot_count]; k--; }
     }
 }

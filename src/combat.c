@@ -496,9 +496,10 @@ static void apply_damage_at(combat_unit *t, float dmg, int rear, int loc, unsign
      * nothing at all before the player's first start-up is done (DAT_1024c570; DOSBox WHITSCN1 / PLUMSCN1: the dropped
      * player lands hard, MECMTNHD, the damage display stays blue) */
     if (!combat_damage_live || t->invulnerable || !(dmg > 1e-7f) || loc < 1 || loc > 8) return;
-    /* a CT hit is spread: DOS rand(2) -> 2 / 3 (MW2.EXE 0x263c8) - DOSBox AQUASCN1 H T A L: one side torso and the CT
-     * take every hit, the other side torso none */
-    if (loc == 3) loc = 2 + rand_n(rng, 2);
+    /* a CT hit is spread over the three torsos: GBL MW2.EXE 0x26733..0x26762 rand(3): 0 -> 2, 1 -> 3, 2 -> 4 (the base
+     * game's rand(2) -> 2 / 3 left the left torso untouched). DOSBox BASSSCN1, a Mad Dog walking at the Horned Owl:
+     * the damage display shows the left, centre and right torsos hit alike (ref/AI_bw_14) */
+    if (loc == 3) { int q = rand_n(rng, 3); loc = q == 0 ? 2 : q == 1 ? 3 : 4; }
     i = loc - 1;
     t->damage_taken += (int)dmg;
     if (t->loc_gone[i]) return;                              /* already gone: no transfer (nothing more can happen) */

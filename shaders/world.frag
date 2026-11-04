@@ -199,6 +199,10 @@ vec3 dos_gouraud(float lev) {
 #endif
 void main() {
   glFragCoord = vec4(gl_FragCoord.x, u_fbh - gl_FragCoord.y, gl_FragCoord.zw);   // GL's bottom-left origin
+#if DOS_LOOK
+// the DOS draw order (world.vert): a listed polygon's pixels all at its key's depth
+  gl_FragDepth = v_dord < 1.5 && u_dos_order != 0 ? v_dord * 0.5 + 0.5 : gl_FragCoord.z;
+#endif
 // the wireframe (image enhancement): only the polygons' own edges, 1 px - corner k's barycentric is the distance
 // to the edge opposite it (bit 0: corner 0's, bit 1: corner 1's, bit 2: corner 2's)
   if (u_wire.a > 0.0) {

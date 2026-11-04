@@ -50,7 +50,7 @@ typedef struct {
     int32_t u_hz_smooth;
     int32_t u_dos_exact;
     int32_t u_dos_tc;
-    uint8_t _pad0[4];
+    int32_t u_dos_order;
     float u_tilv[2][4];
     float u_tilc[2][4];
     float u_tidp[8][4];

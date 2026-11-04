@@ -84,6 +84,8 @@ typedef struct {
     int   is_leader;
     int   skill;             /* GPS fire interval base */
     int   enemy_is_player;   /* the enemy is the player (0x100231a0: other targets need rand(3) == 0) */
+    int   no_fire_roll;      /* GBL 0x2eb60 skips the rand(3) when the target code's low byte (+0x14a & 0xff) is the player's
+                              * unit index - the player, and also a nav point / thing with that index (msim) */
     float self_x, self_z, enemy_x, enemy_z, enemy_heading;
     int  *flank_slots;       /* attackers per 45-degree slot around the enemy (engine target +0x1a2) */
     int   can_jump;          /* has jump jets and fuel (engine 0x10020a30) */
@@ -132,6 +134,7 @@ typedef struct {
     int   jet_back;          /* backward jet input (+0x21; manoeuvre 5, 0x100208e0) */
     int   man_phase;         /* manoeuvre 5/9 phase (engine +0x180) */
     int   turn_jet;          /* jump-to-turn jets latched (0x10020950); cleared when a manoeuvre ends */
+    int   fall_jet;          /* GBL 0x2ddc0: the jets held to brake a fall (msim) */
     float jump_from;         /* manoeuvre 4: height when it started */
     float last_dist;         /* manoeuvres 2/3/5: previous distance (closing speed, 0x100208f0; +0x19a, 0 at a start) */
     /* aim servos (0x100190d0 -> 0x1003b7a0, stepped by 0x1003b7e0 in 0x10019310): value += dt x (target - value) / T,

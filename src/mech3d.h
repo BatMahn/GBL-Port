@@ -62,6 +62,8 @@ typedef struct {
     int       ti;            /* `model` is a Titanium one (mech3d_ti_load): drawn with the Titanium texture table */
     const wtb_model *ti_model;   /* world objects: the Titanium archive's model at the same record / OBJ index
                                   * (world3d_ti_attach), drawn in place of `model`; NULL none */
+    int       dos_sort;      /* world objects: the DOS draw list's key mode (bwd_obj.sortkey & 7: 1 behind, 2 average, 4
+                                nearest corner; 0 the farthest - every unit piece: the unit loader 0x37bb0 loads with 0) */
     int       dos_pit;       /* the cockpit set (repr 4) in the DOS look: its polygons in the DOS draw order (glr) */
     int       ti_insignia;   /* world objects: added to that model's slot 0x3f (its structure's AFFL team, mercsw 0x100748ab) */
 } mech3d_part;

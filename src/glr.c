@@ -526,7 +526,7 @@ static int set_layer(glr *r, int li, const mech3d *m, const uint8_t palette[256]
                                                                                                                                               * of corners 0 / 1 and 2 / 3 - equal in that table: no change) */
                             for (c = 0; c < 3; c++) f[8 + c] = part->tint ? (float)((part->tint >> (16 - 8 * c)) & 0xff) / 255.0f : col[c];
                             f[11] = (float)(kc + (ti ? 4 : 0));   /* (+ 4: the Titanium corners, VS) */
-                            f[12] = (float)(1024 + CORNER[a] + 3 * MASK[a] + 32 * wire_code);
+                            f[12] = (float)(1024 + CORNER[a] + 3 * MASK[a] + 32 * wire_code + (part->dos_sort ? 65536 * (200 + part->dos_sort) : 0));
                             for (c = 0; c < 3; c++) {
                                 float lo = f[c] < f[3 + c] ? f[c] : f[3 + c], hi = f[c] < f[3 + c] ? f[3 + c] : f[c];
                                 if (lo - 0.5f * h < mn[c]) mn[c] = lo - 0.5f * h;
@@ -788,7 +788,7 @@ static int set_layer(glr *r, int li, const mech3d *m, const uint8_t palette[256]
                         /* the wireframe's edges: this corner (0-2) + 3 x the polygon's own edges in this fan triangle
                          * (bit 0: corner 1 - 2, always; bit 1: corner 2 - 0 when it closes the polygon; bit 2: corner 0 - 1
                          * when it starts it), so the triangulation's diagonals are not drawn (DOS draws polygon outlines) */
-                        f[12] = (float)(a + 3 * (1 | (j + 2 == q->n ? 2 : 0) | (j == 1 ? 4 : 0)) + 32 * wire_code + (ti ? 256 : 0) + (ti_flat || (hi_card && (q->color >> 12) == 0xb) ? 512 : 0) + 2048 * dnib + (pit_o >= 0 ? 65536 * (pit_o + 1) : 0));   /* (+ 512: unlit; + 65536 x (1 + n): the DOS cockpit set's polygon n) */
+                        f[12] = (float)(a + 3 * (1 | (j + 2 == q->n ? 2 : 0) | (j == 1 ? 4 : 0)) + 32 * wire_code + (ti ? 256 : 0) + (ti_flat || (hi_card && (q->color >> 12) == 0xb) ? 512 : 0) + 2048 * dnib + (pit_o >= 0 ? 65536 * (pit_o + 1) : part->dos_sort ? 65536 * (200 + part->dos_sort) : 0));   /* (+ 512: unlit; + 65536 x (1 + n): the DOS cockpit set's polygon n; + 65536 x (200 + m): the DOS key mode m, mech3d_part.dos_sort) */
                         for (c = 0; c < 3; c++) {
                             if (f[c] < mn[c]) mn[c] = f[c];
                             if (f[c] > mx[c]) mx[c] = f[c];
@@ -1821,6 +1821,13 @@ void glr_draw_rect(glr *r, const glr_view *v, int x0, int y0, int w, int h)
             static int exact = -1;
             if (exact < 0) exact = getenv("MW2_DOS_EXACT") ? atoi(getenv("MW2_DOS_EXACT")) != 0 : 1;
             r->F.u_dos_exact = exact;
+        }
+        {   /* the DOS draw order (MW2.EXE 0x3d9c0 / 0x3dad0: one list of every polygon, world and units alike, sorted by
+             * its key, painted farthest first - world.vert): each polygon at its key's depth. MW2_DOS_ORDER=0 (testing):
+             * the pixels' own depths */
+            static int order = -1;
+            if (order < 0) order = getenv("MW2_DOS_ORDER") ? atoi(getenv("MW2_DOS_ORDER")) != 0 : 1;
+            r->F.u_dos_order = order;
         }
         r->F.u_dos_tc = v->dos_tc && !v->wire;      /* gbl ENHANCED: true colour + the Titanium fog */
         {   /* the projection's integers (MW2.EXE 0x3ef30): zoom 16.16 (from the x focal; clamped 0x8000..0x100000) x the
