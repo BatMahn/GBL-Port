@@ -330,6 +330,9 @@ static void cook_off(combat_unit *u)
             for (k = 0; k < u->slot_count[l]; k++)
                 if (u->slots[l][k] == u->bins[0].id) { crit_item(u, l + 1, k, 0); return; }
         }
+    /* GBL 0x24ec0 (0x2525d): no such entry - a computer-run unit, or the player with automatic ejection on, goes to
+     * state 5 (ejected; a hostile atmosphere makes it 4 in 0x25680) before 0x25680 */
+    if ((g_auto_eject || !u->human) && !(u->human && u->invulnerable)) u->ejected = g_planet.hostile ? 2 : 1;
     u->destroyed = 1;
 }
 
@@ -403,8 +406,11 @@ static void crit_item(combat_unit *t, int loc, int idx, int silent)
                         t->slots[i][idx] = 0;
                         destroy_location(t, loc);
                     }
-                    if (g_auto_eject) {
-                        /* automatic ejection (0x100167b0, after the explosion's damage): state 5, then 0x10016280.
+                    if (g_auto_eject || !t->human) {
+                        /* GBL 0x25cc0 (0x25fee): after the explosion's damage, a computer-run unit always - the player
+                         * only with automatic ejection on (DAT_000a6660) - goes to state 5 and 0x25680: every AI 'Mech
+                         * whose ammunition explodes is out (the 3D editions only with automatic ejection).
+                         * automatic ejection (0x100167b0, after the explosion's damage): state 5, then 0x10016280.
                          * Already destroyed by this explosion: 0x10016280 returns at once and the unit stays in state
                          * 5 - out of action, no death sequence. Else breathable: the player keeps state 5 (ejected),
                          * an AI mech is set to state 4 (an ordinary death, its pilot counted as ejected); hostile

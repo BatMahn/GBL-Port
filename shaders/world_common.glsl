@@ -46,17 +46,17 @@ layout(std140, set = UBO_SET, binding = 1) uniform WorldDraw {
     vec3  u_tint;      int   u_first;    // u_first: the draw's first vertex in the layer (gl_VertexID = u_first + gl_VertexIndex)
     vec2  u_texsize;   int   u_textured; int u_unlit;
     int   u_shadow;    float u_alpha;    int u_blend;  int u_tinton;
-    int   u_horizon;   int   u_tilit;
+    int   u_horizon;   int   u_tilit;   int u_onlayer;   // u_onlayer: drawing from a layer (its vertex buffer bound: dvtx)
 };
 
 #define u_pit_rank(i) u_pit_rank4[(i) >> 2][(i) & 3]
 
-#if DOS_LOOK
 // the layer's vertex buffer read as floats (13 a vertex) - the OpenGL program's R32F texture u_dos_vtx (GLR_VTX_W a
-// row), now the buffer itself
+// row), now the buffer itself (both programs: the TITANIUM look's draw order walks the polygons too)
 layout(std430, set = SSBO_SET, binding = SSBO_BINDING) readonly buffer DosVtx { float u_dos_vtx[]; };
 float dvtx(int i) { return u_dos_vtx[i]; }
 
+#if DOS_LOOK
 // a vertex as MW2.EXE projects it, in its integers: the world vertices (+0xc..+0x14) and the camera (DAT_0014fe94 /
 // 90 / 98) are whole units (cm), so the vertex relative to the camera is round(W) - round(E) (the vertices'
 // fixed-point transforms round to nearest, 0x3b522 / 0x3b20c); 0x3dd5c / 0x3e1de turn it by the camera matrix (2.29)
@@ -70,6 +70,22 @@ int dos_idiv(int n, int d) { int q = abs(n) / abs(d); return (n < 0) != (d < 0) 
 float dos_rnd(float v) { return floor(v + 0.5); }
 int dos_pq(int c, int s, int z) { int q; if (abs(c) < (1 << (30 - s))) q = dos_idiv(c << s, z); else q = int(trunc(float(c) * exp2(float(s)) / float(z))); return (q + 2) >> 2; }
 float dos_camz(vec3 w) { vec3 d = vec3(dos_rnd(w.x) - dos_rnd(u_dos_eye.x), dos_rnd(w.y) - dos_rnd(u_dos_eye.y), dos_rnd(-w.z) - dos_rnd(-u_dos_eye.z)); return dos_rnd(dot(u_dos_rz, d)); }
+// the camera integers alone (x, y with the zoom mantissas, z in quarter units) and their projection (0x3dfb7)
+ivec3 dos_cam(vec3 w) {
+  vec3 d = vec3(dos_rnd(w.x) - dos_rnd(u_dos_eye.x), dos_rnd(w.y) - dos_rnd(u_dos_eye.y), dos_rnd(-w.z) - dos_rnd(-u_dos_eye.z));
+  return ivec3(int(dos_rnd(dot(u_dos_rx, d))), int(dos_rnd(dot(u_dos_ry, d))), int(dos_rnd(dot(u_dos_rz, d))));
+}
+ivec2 dos_camscr(ivec3 c) { ivec2 h = ivec2(u_vp) / 2; int z = max(c.z, 1); return ivec2(h.x + dos_pq(c.x, u_dos_ps.x, z), h.y - dos_pq(c.y, u_dos_ps.y, z)); }
+// a cockpit polygon's corner on the near plane (GBL 0x3e8fe = base 0x3de4e) between a (behind) and b, or b and a: x, y
+// interpolated to z = NEAR (the cockpit set's: 32 quarter units, DAT_0014feb0) with imul / idiv; t the share for the shade
+const int DOS_PIT_NEAR = 32;
+ivec3 dos_pitclip(ivec3 A, ivec3 B, out float t) {
+  if (B.z <= A.z) { int dz = A.z - B.z, e2 = DOS_PIT_NEAR - B.z; t = 1.0 - float(e2) / float(max(dz, 1));
+    return ivec3(dos_idiv((A.x - B.x) * e2, dz) + B.x, dos_idiv((A.y - B.y) * e2, dz) + B.y, DOS_PIT_NEAR); }
+  int dz = B.z - A.z, e2 = DOS_PIT_NEAR - A.z; t = float(e2) / float(max(dz, 1));
+  return ivec3(dos_idiv((B.x - A.x) * e2, dz) + A.x, dos_idiv((B.y - A.y) * e2, dz) + A.y, DOS_PIT_NEAR);
+}
+bool dos_ispit(int vtx) { int e = int(dvtx(vtx * 13 + 12) + 0.5) / 65536; return e >= 1 && e < 200; }
 ivec2 dos_scr(vec3 w) {
   vec3 d = vec3(dos_rnd(w.x) - dos_rnd(u_dos_eye.x), dos_rnd(w.y) - dos_rnd(u_dos_eye.y), dos_rnd(-w.z) - dos_rnd(-u_dos_eye.z));
   int xc = int(dos_rnd(dot(u_dos_rx, d))), yc = int(dos_rnd(dot(u_dos_ry, d))), zc = max(int(dos_rnd(dot(u_dos_rz, d))), 1);
@@ -100,6 +116,8 @@ ivec2 dos_scr(vec3 w) {
 #define v_dnib   v_i1.x
 #define v_ticm   v_i1.y
 #define v_dtrust v_i1.z   // the DOS integer projection agrees with GL's for this corner (within 3 px)
+#define v_tinofog v_i1.w  // TITANIUM: a polygon the vertex fog leaves alone (colour kind 4: mercsw 0x10053280)
+#define v_dosf   v_i1.w   // the DOS look: the polygon's light intensity f (GBL MW2.EXE 0x3eb36) + 1000; 0 not worked out
 #define v_dkey   v_f0.x   // the DOS fog key (-1: the pixel depth)
 #define v_derr   v_f0.yz  // MW2_DOS_DEBUG: the DOS-vs-GL offsets of the provoking corner
 #define v_dord   v_f0.w   // the DOS look: the polygon's depth in the DOS draw order (GL's NDC z of its key; 2 none)

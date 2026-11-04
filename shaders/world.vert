@@ -28,10 +28,16 @@ V_LOCATIONS
 
 void main() {
   int vertex_id = u_first + gl_VertexIndex;
+  v_dord = 2.0;
   int e = int(a_edge + 0.5), pit = e / 65536, kmode = 0;
   e -= 65536 * pit;
-  // 200 + m: a world object's DOS key mode m (mech3d_part.dos_sort), not a cockpit polygon
-  if (pit >= 200) { kmode = pit - 200; pit = 0; }
+  // 200 + m: a world object's DOS key mode m (mech3d_part.dos_sort), not a cockpit polygon; 300 + w + 4 x f: the TITANIUM
+  // look's polygon normal against the fan's first triangle's winding (glr set_layer: w 1 the same way, 0 opposite, 2
+  // unknown) and f 1 for a polygon the Titanium fog leaves alone
+  int tiwind = 0;
+  v_tinofog = 0;
+  if (pit >= 300) { int q = pit - 300; v_tinofog = q >= 4 ? 1 : 0; q -= 4 * v_tinofog; tiwind = q == 1 ? 1 : q == 0 ? -1 : 0; pit = 0; }
+  else if (pit >= 200) { kmode = pit - 200; pit = 0; }
   v_dnib = e / 2048; e -= v_dnib * 2048;
   // a mech location's damage nibble (glr_set_damage_shade)
   v_bb = e >= 1024 ? 1 : 0;
@@ -100,7 +106,46 @@ void main() {
       vec2 m = n1 + n2; float d = 1.0 + dot(n1, n2);
       vec2 off = d > 1e-3 ? 3.0 * m / d : 3.0 * m;
       if (length(off) > 24.0) off = off / length(off) * 24.0;
-      gl_Position.xy += off / h * gl_Position.w;
+      // at the DOS integer point (not GL's): the original's projection decides the coverage - for a corner a few cm
+      // from the eye (the cockpit struts) the whole-cm rounding moves it more than 3 px from GL's (DOSBox BASSSCN1 Timber
+      // Wolf: the struts' shared edges showed the sky between them where GL's coverage was kept)
+      gl_Position.xy = (Q[j] + off) / h * gl_Position.w;
+    }
+  }
+  // a cockpit polygon (the DOS cockpit set) with a corner nearer than its near plane (32 quarter units): clipped there in
+  // the camera's integers as the original does (0x3ec8e -> 0x3e8fe) - GL's own near plane (60 cm) would cut it far
+  // short and leave its coverage unaligned (DOSBox BASSSCN1 Timber Wolf: the sill's seams showed the sky). Each fan
+  // triangle is laid over the clipped polygon's screen box (w 1: not clipped by GL) and the fragment shader keeps the
+  // DOS span's pixels
+  if (u_dos != 0 && u_dos_exact != 0 && int(a_color.r + 0.5) <= 3 && a_texsel > 0.5 && pit > 0 && pit < 200) {
+    int s = int(a_texsel + 0.5) - 1, rel = vertex_id - s, cn = rel - 3 * (rel / 3);
+    ivec3 Cc[18]; int n = 0; bool near = false;
+    for (int k = 0; k < 16; k++) {
+      int b = s + 3 * k;
+      for (int c = (k == 0 ? 0 : 1); c < 3; c++) {
+        if (c == 2 && ((int(dvtx(b * 13 + 12) + 0.5) % 32 / 3) & 2) == 0) break;
+        Cc[n] = dos_cam(vec3(dvtx((b + c) * 13), dvtx((b + c) * 13 + 1), dvtx((b + c) * 13 + 2)));
+        if (Cc[n].z < DOS_PIT_NEAR) near = true;
+        n++;
+      }
+      if (((int(dvtx(b * 13 + 12) + 0.5) % 32 / 3) & 2) != 0) break;
+    }
+    if (near) {
+      ivec2 lo = ivec2(1 << 30), hi = ivec2(-(1 << 30)); bool any = false; float tt;
+      for (int k = 0; k <= n && n >= 3; k++) {
+        int cur = k % n, prv = (k + n - 1) % n;
+        bool bc = Cc[cur].z < DOS_PIT_NEAR, bp = Cc[prv].z < DOS_PIT_NEAR;
+        if (k > 0 && bc != bp) { ivec2 q = dos_camscr(dos_pitclip(Cc[prv], Cc[cur], tt)); lo = min(lo, q); hi = max(hi, q); any = true; }
+        if (k < n && !bc) { ivec2 q = dos_camscr(Cc[cur]); lo = min(lo, q); hi = max(hi, q); any = true; }
+      }
+      vec2 h = 0.5 * u_vp;
+      lo = max(lo, ivec2(-2)); hi = min(hi, ivec2(u_vp) + 2);
+      if (!any || hi.x < lo.x || hi.y < lo.y) gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+      else {   // (pixels, y down) -> a triangle holding the box: (lo), (lo.x + 2 w, lo.y), (lo.x, lo.y + 2 h)
+        vec2 a0 = vec2(lo) - 1.0, sz = vec2(hi - lo) + 3.0;
+        vec2 pp = cn == 0 ? a0 : cn == 1 ? a0 + vec2(2.0 * sz.x, 0.0) : a0 + vec2(0.0, 2.0 * sz.y);
+        gl_Position = vec4((pp.x - h.x) / h.x, (h.y - pp.y) / h.y, 0.0, 1.0);
+      }
     }
   }
 #endif
@@ -122,7 +167,10 @@ void main() {
   // camera z (quarter units: dos_camz; the list key DAT_0014fcc0 = 0) - and the level less ((key << 4) / LITE +24) >> 4,
   // not the pixel's depth in cm. The polygon's corners from this layer's buffer: its fan triangles back to the one that
   // starts it (edge bit 4) and on to the one that closes it (bit 2); -1 (the pixel depth) for a vertex not found there
-  v_dkey = -1.0; v_dtrust = 1; v_derr = vec2(0.0); v_dord = 2.0;
+  v_dkey = -1.0; v_dtrust = 1; v_derr = vec2(0.0);
+#if DOS_LOOK
+  v_dosf = 0;
+#endif
   // the DOS integer projection checked against GL's for this corner: more than 3 px apart (seen on macOS) -> the fill
   // draws the polygon from GL's points without the exact-span discards (dos_gouraud)
 #if DOS_LOOK
@@ -155,6 +203,40 @@ void main() {
         if (last) break;
       }
       v_dkey = km;
+      // the light intensity f (GBL MW2.EXE 0x3eb36), once a polygon: d = the light - its first vertex (whole cm; the
+      // light alone when directional, +0x28), the normal N in 2.29 (0x38b30); dot = (d . N) >> 16; d's |x|, |y|, |z| and
+      // dot shifted so that the largest component's top bit is bit 7; f = dot / chop(1024 sqrt((x^2 + y^2 + z^2) >> 8))
+      // (the table 0x3b630), truncated - about 128 cos, a little more than 127 cos (DOSBox BASSSCN1 / Timber Wolf
+      // cockpit struts: one LUMA step)
+      {
+        vec3 P0 = vec3(dvtx(3 * t * 13), dvtx(3 * t * 13 + 1), dvtx(3 * t * 13 + 2)), nn = vec3(dvtx(3 * t * 13 + 3), dvtx(3 * t * 13 + 4), dvtx(3 * t * 13 + 5));
+        float nl = length(nn);
+        // one-sided, once a polygon (GBL 0x3ec8e): listed only when (its first vertex - the eye) . N < 0, both in whole
+        // cm (the world vertex +0xc..+0x14, the camera DAT_00161824..28) - the plane's own test, not each pixel's (a
+        // non-planar polygon's fan triangles each had their own: the Timber Wolf cockpit sill's seams showed the sky)
+        if (nl > 0.0 && e < 1024) {
+          vec3 dv = vec3(dos_rnd(P0.x) - dos_rnd(u_dos_eye.x), dos_rnd(P0.y) - dos_rnd(u_dos_eye.y), dos_rnd(-P0.z) - dos_rnd(-u_dos_eye.z));
+          vec3 Ng = -vec3(nn.x, nn.y, -nn.z) / nl;
+          if (dot(dv, Ng) >= 0.0) gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+        }
+        if (nl > 0.0) {
+          vec3 lg = vec3(u_dos_lpos.x, u_dos_lpos.y, -u_dos_lpos.z), vg = vec3(dos_rnd(P0.x), dos_rnd(P0.y), dos_rnd(-P0.z));
+          vec3 d = u_dos_dir != 0 ? vec3(dos_rnd(lg.x), dos_rnd(lg.y), dos_rnd(lg.z)) : vec3(dos_rnd(lg.x), dos_rnd(lg.y), dos_rnd(lg.z)) - vg;
+          vec3 N = -vec3(nn.x, nn.y, -nn.z) / nl * 8192.0;   // 2.29 / 2^16
+          vec3 ad = abs(d);
+          float m = max(ad.x, max(ad.y, ad.z)), fi = 127.0;
+          if (m > 0.0) {
+            int mi = int(ad.x) | int(ad.y) | int(ad.z), tb = 31;
+            while (tb > 0 && (mi >> tb) == 0) tb--;
+            float sc = exp2(float(7 - tb));
+            vec3 c = floor(ad * sc);
+            float dot0 = floor(d.x * N.x + d.y * N.y + d.z * N.z), dots = floor(dot0 * sc);
+            float S = c.x * c.x + c.y * c.y + c.z * c.z, dv = floor(1024.0 * sqrt(floor(S / 256.0)));
+            fi = dv > 0.0 ? trunc(dots / dv) : 127.0;
+          }
+          v_dosf = int(fi) + 1000;
+        }
+      }
       // the DOS draw order (MW2.EXE 0x3d9c0 -> 0x3d830 -> 0x3ec8e, sorted by 0x3d930 - largest key first - and drawn in
       // turn by 0x3dad0): every polygon facing the eye is listed with one key - its farthest corner's camera z (quarter
       // units, as the fog key), the average for key mode 2, the nearest for 4 (the listed corners: those behind the near
@@ -171,6 +253,40 @@ void main() {
         float nd = q.w > 0.0 ? min(q.z / q.w, 1.0 - 4e-6) : 1.0 - 4e-6;
         if ((kmode & 1) != 0) nd = 1.0 - 2e-6;
         v_dord = nd;
+      }
+    }
+  }
+#endif
+#if !DOS_LOOK
+  // the TITANIUM look's draw order (mercsw 0x100562ff -> 0x10055b90 -> 0x100570f6, sorted by 0x10056022 - comparator
+  // 0x10055d19: the larger key first - and drawn in turn by 0x1005615f), as the DOS look's: no working depth test. Each
+  // polygon: not listed when its normal faces away - n . (v0 - eye) >= 0 (0x100570f6, DAT_100b011c never set); its key
+  // the deepest listed corner's view depth (the node flags always 0x8000: no mean / nearest / +2^28). Here: a polygon
+  // facing away is not drawn, the others at their key's depth (world.frag)
+  if (tiwind != 0 && u_onlayer != 0 && u_dos_order != 0 && e < 1024) {
+    int vid = vertex_id, t = vid / 3, k, c;
+    if (abs(dvtx(vid * 13) - a_pos.x) + abs(dvtx(vid * 13 + 2) - a_pos.z) < 0.01) {
+      for (k = 0; k < 16 && t > 0; k++) { if (((int(dvtx(3 * t * 13 + 12) + 0.5) % 32 / 3) & 4) != 0) break; t--; }
+      vec3 P0 = vec3(dvtx(3 * t * 13), dvtx(3 * t * 13 + 1), dvtx(3 * t * 13 + 2));
+      vec3 P1 = vec3(dvtx((3 * t + 1) * 13), dvtx((3 * t + 1) * 13 + 1), dvtx((3 * t + 1) * 13 + 2));
+      vec3 P2 = vec3(dvtx((3 * t + 2) * 13), dvtx((3 * t + 2) * 13 + 1), dvtx((3 * t + 2) * 13 + 2));
+      mat3 vr = mat3(u_view);
+      vec3 eyeg = -(transpose(vr) * u_view[3].xyz);
+      vec3 w = cross(P1 - P0, P2 - P0);
+      // (GL coordinates: the z mirror turns the winding's cross product but not the normal - the normal is -tiwind x w)
+      if (length(w) > 1e-3 && float(tiwind) * dot(w, P0 - eyeg) <= 0.0) gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+      else {
+        float km = -1e30;
+        for (k = 0; k < 16; k++) {
+          int b = 3 * (t + k);
+          for (c = 0; c < 3; c++) km = max(km, -(u_view * vec4(dvtx((b + c) * 13), dvtx((b + c) * 13 + 1), dvtx((b + c) * 13 + 2), 1.0)).z);
+          if (((int(dvtx(b * 13 + 12) + 0.5) % 32 / 3) & 2) != 0) break;
+        }
+        if (km > 0.0) {
+          vec3 fwd = -vec3(u_view[0][2], u_view[1][2], u_view[2][2]);
+          vec4 q = u_mvp * vec4(eyeg + fwd * km, 1.0);
+          v_dord = q.w > 0.0 ? min(q.z / q.w, 1.0 - 4e-6) : 1.0 - 4e-6;
+        }
       }
     }
   }

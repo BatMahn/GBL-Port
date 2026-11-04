@@ -88,6 +88,9 @@ typedef struct {
     float        heading;        /* yaw of the whole mech, degrees */
     int          twist_node;     /* torso node (carries the *_HEAD part), -1 if none */
     float        twist;          /* torso twist relative to the legs, degrees */
+    float        tilt;           /* the torso node's own pitch, degrees, up positive (GBL MW2.EXE 0x26d05: the unit's +0x68 =
+                                    the torso tilt servo >> 1 for a controller with +0x110 & 0x2000, then 0x1e350(torso node,
+                                    +0x68, +0x6c twist, 0)) */
     const void  *pose_anim;      /* the last mech3d_pose arguments (an anim_set *), for a level of detail posed alike */
     float        pose_t;
     const float *pose_off;       /* per ANIM track, added to the table's value (anim_player off: the carried offset), or NULL */

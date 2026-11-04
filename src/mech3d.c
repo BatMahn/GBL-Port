@@ -862,6 +862,14 @@ static void solve_nodes(const mech3d *m, const anim_set *anim, float t,
             for (k = 0; k < 3; k++) lpos[k] = (float)m->skel_offset[i][k];
             if (dos_hips && pi >= 0 && (m->skel_parent[pi] < 0 || m->skel_parent[pi] == m->skel_index[pi]))
                 lpos[0] = lpos[1] = lpos[2] = 0;   /* the DOS hips: no OBJ offset (mech3d_dos_hips) */
+            if (m->twist_node >= 0 && m->skel_index[i] == m->twist_node && m->tilt != 0) {
+                /* the torso node turned by (tilt / 2, twist, 0) (GBL 0x26d05 -> 0x1e350 -> 0x3bfb2): applied as the tilt
+                 * about the legs' x axis, then the twist - the order as DOSBox JESSSCN1 shows it (twisted, then tilted down:
+                 * the frame 83.6 % pixel-equal, against 60.9 % the other way round); 0x3bfb2's matrix as the node uses it
+                 * (rows or columns) not traced further - ASSUMED by that capture */
+                mat3_axis(tmp, 0, -m->tilt);
+                mat3_mul(lrot, lrot, tmp);
+            }
             if (m->twist_node >= 0 && m->skel_index[i] == m->twist_node && m->twist != 0) {
                 mat3_axis(tmp, 1, m->twist);
                 mat3_mul(lrot, lrot, tmp);
@@ -913,7 +921,7 @@ static void mounts_local(mech3d *m)
     float wrot[MECH3D_MAX_NODES][9], wpos[MECH3D_MAX_NODES][3];
     int done[MECH3D_MAX_NODES], k, q;
     tmp.origin[0] = tmp.origin[1] = tmp.origin[2] = 0;
-    tmp.heading = 0; tmp.twist = 0;
+    tmp.heading = 0; tmp.twist = 0; tmp.tilt = 0;
     solve_nodes(&tmp, NULL, 0, wrot, wpos, done);
     m->mount_local_ok = 0;
     for (k = 0; k < m->skel_count; k++)

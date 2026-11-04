@@ -145,7 +145,7 @@ static const int PROG_FS[RB_PROG_COUNT + 1] = {RB_SH_WORLD_FS, RB_SH_WORLD_DOS_F
 static const int PROG_NV[RB_PROG_COUNT + 1] = {3, 3, 1, 3, 0};
 static const uint32_t PROG_STRIDE[RB_PROG_COUNT + 1][MAXV] = {{52, 16, 16}, {52, 16, 16}, {16, 0, 0}, {52, 16, 16}, {0, 0, 0}};
 #define PROG_IS_WORLD(p) ((p) == RB_PROG_WORLD || (p) == RB_PROG_WORLD_DOS || (p) == RB_PROG_WORLD_DOSDBG)
-#define PROG_HAS_SB(p) ((p) == RB_PROG_WORLD_DOS || (p) == RB_PROG_WORLD_DOSDBG)
+#define PROG_HAS_SB(p) ((p) == RB_PROG_WORLD || (p) == RB_PROG_WORLD_DOS || (p) == RB_PROG_WORLD_DOSDBG)   /* (the TITANIUM program reads its layer too: its draw order) */
 
 /* ---- small helpers */
 static void *grow(void *p, int *cap, int need, size_t elem)

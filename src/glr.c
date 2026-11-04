@@ -129,12 +129,14 @@ struct glr {
 #define U4(d, a, b, c, e) ((d)[0] = (a), (d)[1] = (b), (d)[2] = (c), (d)[3] = (e))
 #define UV(d, s, n) memcpy((d), (s), (n) * sizeof(float))
 
-/* glDrawArrays with the program's uniforms as they are now (u_first: the vertex shader's gl_VertexID base - read only by
- * the DOS / ENHANCED program's layer lookups; 0 for the TITANIUM one, so that its runs of small draws - the particles,
- * thousands a frame - keep equal uniforms and the backend merges them) */
+/* glDrawArrays with the program's uniforms as they are now (u_first: the vertex shader's gl_VertexID base - read by the
+ * layer lookups; 0 for the TITANIUM program's stream draws, so that its runs of small draws - the particles, thousands a
+ * frame - keep equal uniforms and the backend merges them) */
+static int glr_on_layer;   /* the u_onlayer of the next draws (glr_bind_layer / glr_bind_stream) */
 static void glr_draw_arrays(glr *r, int first, int count)
 {
-    r->D.u_first = r->prog != RB_PROG_WORLD ? first : 0;
+    r->D.u_first = r->prog != RB_PROG_WORLD || glr_on_layer ? first : 0;
+    r->D.u_onlayer = glr_on_layer;
     rb_program(r->prog);
     rb_uniforms(0, &r->F, sizeof r->F);
     rb_uniforms(1, &r->D, sizeof r->D);
@@ -153,7 +155,8 @@ static void glr_bind_layer(const glr *r, int li)
     rb_vertex(0, L->vbo, 0);
     rb_vertex(1, L->sph_vbo, 0);
     rb_vertex(2, L->tic_vbo, 0);
-    rb_storage(r->prog != RB_PROG_WORLD ? L->vbo : 0);
+    rb_storage(L->vbo);
+    glr_on_layer = 1;
 }
 /* the transient vertices (env_vertex layout) drawn from the frame's stream: the sphere and Titanium colour zero, as the
  * OpenGL renderer's constant attributes 6 / 7 */
@@ -163,6 +166,7 @@ static void glr_bind_stream(size_t off)
     rb_vertex(1, 0, 0);
     rb_vertex(2, 0, 0);
     rb_storage(0);
+    glr_on_layer = 0;
 }
 static size_t glr_stream(const float *v, size_t floats)
 {
@@ -526,7 +530,7 @@ static int set_layer(glr *r, int li, const mech3d *m, const uint8_t palette[256]
                                                                                                                                               * of corners 0 / 1 and 2 / 3 - equal in that table: no change) */
                             for (c = 0; c < 3; c++) f[8 + c] = part->tint ? (float)((part->tint >> (16 - 8 * c)) & 0xff) / 255.0f : col[c];
                             f[11] = (float)(kc + (ti ? 4 : 0));   /* (+ 4: the Titanium corners, VS) */
-                            f[12] = (float)(1024 + CORNER[a] + 3 * MASK[a] + 32 * wire_code + (part->dos_sort ? 65536 * (200 + part->dos_sort) : 0));
+                            f[12] = (float)(1024 + CORNER[a] + 3 * MASK[a] + 32 * wire_code + (part->dos_sort && r->dos ? 65536 * (200 + part->dos_sort) : 0));
                             for (c = 0; c < 3; c++) {
                                 float lo = f[c] < f[3 + c] ? f[c] : f[3 + c], hi = f[c] < f[3 + c] ? f[3 + c] : f[c];
                                 if (lo - 0.5f * h < mn[c]) mn[c] = lo - 0.5f * h;
@@ -587,6 +591,19 @@ static int set_layer(glr *r, int li, const mech3d *m, const uint8_t palette[256]
                 face[0] = e1[1] * e2[2] - e1[2] * e2[1];
                 face[1] = e1[2] * e2[0] - e1[0] * e2[2];
                 face[2] = e1[0] * e2[1] - e1[1] * e2[0];
+                /* the TITANIUM look's back-face test (mercsw 0x100570f6: the polygon's own normal, as loaded): which way it
+                 * points against the winding of corners 0, 1, 2 (+1 the same, -1 opposite; world.vert culls by it). A
+                 * Titanium model's polygon normal is q->normal (the shade's, ti_shade_level); a model the TITANIUM look draws
+                 * from the mission's archive (no Titanium one) the DOS one, -cross */
+                int tiw = 0;
+                /* the Titanium vertex fog skips colour kind 4 (mercsw 0x10053280, case 0x4000: the specular - the fog
+                 * factor - set to 0xff000000 while DAT_100b00f0 is 0, which only the SKYGND reader 0x10053ae0 writes, with 0) */
+                const int ti_nofog = ti && ((q->color >> 12) & 0xf) == 4;
+                if (r->ti_slots && !r->dos && q->n >= 3) {
+                    const float *qn = q->normal;
+                    float dd = ti ? qn[0] * face[0] + qn[1] * face[1] + qn[2] * face[2] : -1.0f;
+                    tiw = dd > 0.0f ? 1 : dd < 0.0f ? -1 : 0;
+                }
                 int wface = 0;   /* face[] already in world (game) coordinates */
                 if (r->dos && !model->extended && part->has_rot) {
                     /* DOS (one-sided, 0x3e1de): the posed polygon's own normal - a scaled object (the laser bolts, 3 x 3 x
@@ -788,7 +805,7 @@ static int set_layer(glr *r, int li, const mech3d *m, const uint8_t palette[256]
                         /* the wireframe's edges: this corner (0-2) + 3 x the polygon's own edges in this fan triangle
                          * (bit 0: corner 1 - 2, always; bit 1: corner 2 - 0 when it closes the polygon; bit 2: corner 0 - 1
                          * when it starts it), so the triangulation's diagonals are not drawn (DOS draws polygon outlines) */
-                        f[12] = (float)(a + 3 * (1 | (j + 2 == q->n ? 2 : 0) | (j == 1 ? 4 : 0)) + 32 * wire_code + (ti ? 256 : 0) + (ti_flat || (hi_card && (q->color >> 12) == 0xb) ? 512 : 0) + 2048 * dnib + (pit_o >= 0 ? 65536 * (pit_o + 1) : part->dos_sort ? 65536 * (200 + part->dos_sort) : 0));   /* (+ 512: unlit; + 65536 x (1 + n): the DOS cockpit set's polygon n; + 65536 x (200 + m): the DOS key mode m, mech3d_part.dos_sort) */
+                        f[12] = (float)(a + 3 * (1 | (j + 2 == q->n ? 2 : 0) | (j == 1 ? 4 : 0)) + 32 * wire_code + (ti ? 256 : 0) + (ti_flat || (hi_card && (q->color >> 12) == 0xb) ? 512 : 0) + 2048 * dnib + (pit_o >= 0 ? 65536 * (pit_o + 1) : r->ti_slots && !r->dos ? 65536 * (300 + (tiw > 0 ? 1 : tiw < 0 ? 0 : 2) + (ti_nofog ? 4 : 0)) : part->dos_sort && r->dos ? 65536 * (200 + part->dos_sort) : 0));   /* (+ 512: unlit; + 65536 x (1 + n): the DOS cockpit set's polygon n; + 65536 x (200 + m): the DOS key mode m, mech3d_part.dos_sort; + 65536 x 300 / 301: the TITANIUM normal's way, tiw) */
                         for (c = 0; c < 3; c++) {
                             if (f[c] < mn[c]) mn[c] = f[c];
                             if (f[c] > mx[c]) mx[c] = f[c];
@@ -1425,15 +1442,17 @@ sign:
 int32_t glr_dos_sin(int32_t a) { return dos_sin(a); }
 int32_t glr_dos_cos(int32_t a) { return dos_cos(a); }
 int32_t glr_dos_atan2(int32_t a, int32_t b) { return dos_atan2(a, b); }
-static void dos_cam_rows(float yaw_deg, float pitch_deg, int64_t rows[3][3])
+static void dos_cam_rows(float yaw_deg, float pitch_deg, float roll_deg, int64_t rows[3][3])
 {
-    int32_t a = (int32_t)lrint(-(double)pitch_deg * 65536.0), b = (int32_t)lrint((double)yaw_deg * 65536.0), m[9];
+    int32_t a = (int32_t)lrint(-(double)pitch_deg * 65536.0), b = (int32_t)lrint((double)yaw_deg * 65536.0), cr = (int32_t)lrint((double)roll_deg * 65536.0), m[9];
     int i;
     for (i = 0; i < 9; i++) m[i] = (i % 4 == 0) ? 0x20000000 : 0;   /* 0x3b4c1 */
-    if (a == 0) { m[8] = m[0] = dos_cos(b); m[2] = dos_sin(b); m[6] = -m[2]; }
-    else if (b == 0) { m[8] = m[4] = dos_cos(a); m[7] = dos_sin(a); m[5] = -m[7]; }
-    else {   /* mode 0, roll 0: cC = 1, sC = 0 */
-        int64_t cA = dos_cos(a), cB = dos_cos(b), cC = 0x20000000, sA = dos_sin(a), sB = dos_sin(b), sC = 0;
+    /* (GBL 0x3bfb2: a lone angle as a plain rotation, else the mode-0 products) */
+    if (a == 0 && b == 0) { if (cr != 0) { m[4] = m[0] = dos_cos(cr); m[3] = dos_sin(cr); m[1] = -m[3]; } }
+    else if (a == 0 && cr == 0) { m[8] = m[0] = dos_cos(b); m[2] = dos_sin(b); m[6] = -m[2]; }
+    else if (b == 0 && cr == 0) { m[8] = m[4] = dos_cos(a); m[7] = dos_sin(a); m[5] = -m[7]; }
+    else {   /* mode 0 */
+        int64_t cA = dos_cos(a), cB = dos_cos(b), cC = dos_cos(cr), sA = dos_sin(a), sB = dos_sin(b), sC = dos_sin(cr);
         m[0] = (int32_t)(dos_r29(cC * cB) + dos_r29(dos_r29(sC * sA) * sB));
         m[3] = (int32_t)dos_r29(cA * sC);
         m[6] = (int32_t)(dos_r29(dos_r29(cB * sC) * sA) - dos_r29(cC * sB));
@@ -1590,6 +1609,19 @@ void glr_draw_rect(glr *r, const glr_view *v, int x0, int y0, int w, int h)
         proj[0] = 1.0f / hw; proj[5] = 1.0f / hh; proj[10] = -2.0f / (zf - zn); proj[14] = -(zf + zn) / (zf - zn); proj[15] = 1.0f;
     }
     look_at(view, eye, r->center);
+    if (v->free_cam && v->look_roll != 0 && v->ortho_w <= 0) {   /* a rolled first-person view: its rows as the DOS camera's */
+        int64_t rr[3][3];
+        int c;
+        dos_cam_rows(v->look_yaw, v->look_pitch, v->look_roll, rr);
+        for (c = 0; c < 3; c++) {   /* game rows (x right, y up, z forward) -> GL (z negated; the GL view looks down -z) */
+            float g0 = (float)((double)rr[0][c] / 536870912.0), g1 = (float)((double)rr[1][c] / 536870912.0), g2 = (float)((double)rr[2][c] / 536870912.0);
+            if (c == 2) { g0 = -g0; g1 = -g1; g2 = -g2; }
+            view[c * 4] = g0; view[c * 4 + 1] = g1; view[c * 4 + 2] = -g2;
+        }
+        view[12] = -(view[0] * eye[0] + view[4] * eye[1] + view[8] * eye[2]);
+        view[13] = -(view[1] * eye[0] + view[5] * eye[1] + view[9] * eye[2]);
+        view[14] = -(view[2] * eye[0] + view[6] * eye[1] + view[10] * eye[2]);
+    }
     mat_mul(mvp, proj, view);
 
     ll = sqrtf(v->light[0] * v->light[0] + v->light[1] * v->light[1] + v->light[2] * v->light[2]);
@@ -1610,6 +1642,12 @@ void glr_draw_rect(glr *r, const glr_view *v, int x0, int y0, int w, int h)
     r->F.u_ambient = v->ambient;
     UV(r->F.u_fog_color, v->fog_color, 3);
     r->F.u_dos = 0;
+    {   /* the TITANIUM look's draw order (world.vert; mercsw paints its sorted list without a working depth test).
+         * MW2_TI_ORDER=0 (testing): the pixels' own depths, both faces. (The DOS look sets its own below) */
+        static int tio = -1;
+        if (tio < 0) tio = getenv("MW2_TI_ORDER") ? atoi(getenv("MW2_TI_ORDER")) != 0 : 1;
+        r->F.u_dos_order = r->ti_slots && !r->dos ? tio : 0;
+    }
     if (r->tint_on && !r->dos) UV(r->D.u_tint, r->tint, 3); else U3(r->D.u_tint, 1, 1, 1);
     r->D.u_tinton = r->tint_on && !r->dos && !r->ti_slots;   /* (not the Titanium look: its renderer not traced) */
     r->F.u_dsign = r->dsign;
@@ -1786,7 +1824,9 @@ void glr_draw_rect(glr *r, const glr_view *v, int x0, int y0, int w, int h)
             UV(r->F.u_view, view, 16);
             glr_bind(v->flat_ground && r->ground_flat ? r->ground_flat : r->env_tex[0], eminf, emagf);   /* TERRAIN TEXTURES: objects of type 0x800 only */
             if (v->ti_light) r->D.u_tilit = 2;   /* Titanium: the ground's one colour (0x1005527e) */
+            if (r->F.u_dos_order) rb_depth_write(0);   /* the list's polygons are painted over it (ASSUMED: the ground first) */
             glr_draw_arrays(r, 30, 6);
+            rb_depth_write(1);
             r->D.u_tilit = 0;
         }
     }
@@ -1848,7 +1888,7 @@ void glr_draw_rect(glr *r, const glr_view *v, int x0, int y0, int w, int h)
                 sh2[k3] = 2; ms[k3] = lo;
                 if (t > 15) { sh2[k3] = t - 13; ms[k3] = (uint32_t)(val[k3] >> (t - 15)); }
             }
-            if (v->free_cam) dos_cam_rows(v->look_yaw, v->look_pitch, rows);
+            if (v->free_cam) dos_cam_rows(v->look_yaw, v->look_pitch, v->look_roll, rows);
             else for (c3 = 0; c3 < 3; c3++) {   /* (other cameras: the view's rows, game coordinates) */
                 rows[0][c3] = (int64_t)llrint((c3 == 2 ? -view[8] : view[c3 * 4]) * 536870912.0);
                 rows[1][c3] = (int64_t)llrint((c3 == 2 ? -view[9] : view[c3 * 4 + 1]) * 536870912.0);

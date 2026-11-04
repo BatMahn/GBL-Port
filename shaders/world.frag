@@ -143,7 +143,7 @@ vec3 dos_gouraud(float lev) {
   uint val = 0u; bool exact = false;
   if (v_texsel > 0) {
     vec4 P[18]; float C[18]; int I[18]; ivec2 V[20]; int CF[20]; int n = 0, m = 0, s = v_texsel - 1, L1 = int(lev) + 1;
-    bool trust = v_dtrust != 0 && u_dos_exact != 0;
+    bool trust = u_dos_exact != 0;   // (the vertex shader places the polygon at the DOS points: always the DOS spans)
     for (int t = 0; t < 16; t++) {
       int b = s + 3 * t;
       if (t == 0) { P[0] = dos_gclip(b); C[0] = dos_gshade(b, g); I[0] = b; n = 1; }
@@ -151,7 +151,22 @@ vec3 dos_gouraud(float lev) {
       if (((int(dvtx(b * 13 + 12) + 0.5) % 32 / 3) & 2) != 0) { P[n] = dos_gclip(b + 2); C[n] = dos_gshade(b + 2, g); I[n] = b + 2; n++; break; }
     }
     cmin = 1e9; cmax = -1e9;
-    for (int i = 0; i < n; i++) {
+    // a cockpit polygon reaching nearer than its near plane: clipped in the camera's integers (world.vert)
+    bool pitclip = false;
+    if (trust && dos_ispit(s)) {
+      ivec3 Cc[18]; bool near = false;
+      for (int i = 0; i < n; i++) { int b2 = I[i] * 13; Cc[i] = dos_cam(vec3(dvtx(b2), dvtx(b2 + 1), dvtx(b2 + 2))); if (Cc[i].z < DOS_PIT_NEAR) near = true; cmin = min(cmin, C[i]); cmax = max(cmax, C[i]); }
+      if (near) {
+        pitclip = true; float tt;
+        for (int k = 0; k <= n; k++) {
+          int cur = k % n, prv = (k + n - 1) % n;
+          bool bc = Cc[cur].z < DOS_PIT_NEAR, bp = Cc[prv].z < DOS_PIT_NEAR;
+          if (k > 0 && bc != bp && m < 20) { ivec3 q = dos_pitclip(Cc[prv], Cc[cur], tt); V[m] = dos_camscr(q); CF[m] = int(floor(mix(C[prv], C[cur], tt) * 65536.0 + 0.5)); m++; }
+          if (k < n && !bc && m < 20) { V[m] = dos_camscr(Cc[cur]); CF[m] = int(floor(C[cur] * 65536.0 + 0.5)); m++; }
+        }
+      }
+    }
+    for (int i = 0; i < n && !pitclip; i++) {
 // the near plane (z + w >= 0), the shade carried
       vec4 a = P[i], b = P[(i + 1) % n]; float da = a.z + a.w, db = b.z + b.w;
       cmin = min(cmin, C[i]); cmax = max(cmax, C[i]);
@@ -162,7 +177,6 @@ vec3 dos_gouraud(float lev) {
 #if DOS_DEBUG
           return vec3(clamp(0.5 + float(ds.x - dg.x) / 64.0, 0.0, 1.0), clamp(0.5 + float(ds.y - dg.y) / 64.0, 0.0, 1.0), max(abs(ds.x - dg.x), abs(ds.y - dg.y)) <= 3 ? 1.0 : 0.0);
 #endif
-          if (max(abs(ds.x - dg.x), abs(ds.y - dg.y)) > 3) trust = false;
           V[m] = trust ? ds : dg; }
         else V[m] = trust ? dos_scr(vec3(dvtx(b2), dvtx(b2 + 1), dvtx(b2 + 2))) : dos_gvtx(a);
         CF[m] = int(floor(C[i] * 65536.0 + 0.5)); m++; }
@@ -174,7 +188,7 @@ vec3 dos_gouraud(float lev) {
 // 0x59f58: the last of the least y
       int y0 = int(u_vp.y) - 1 - (int(py) - int(u_vpo.y)), y = clamp(y0, V[top].y, ybot);
 // the DOS row (y down)
-      if (trust && m == n && y0 != y) discard;
+      if (trust && (m == n || pitclip) && y0 != y) discard;
 // not near-clipped: the DOS span's rows only (see the vertex shader)
       ivec2 e1 = dos_gchain(V, CF, m, top, -1, y, ybot), e2 = dos_gchain(V, CF, m, top, 1, y, ybot);
       if (e2.x <= e1.x) { ivec2 t2 = e1; e1 = e2; e2 = t2; }
@@ -182,7 +196,7 @@ vec3 dos_gouraud(float lev) {
       int x0 = e1.x >> 16, w = (e2.x >> 16) - x0;
       int st = w != 0 ? dos_idiv(e2.y - e1.y, max(w >> 1, 1)) : 0;
       k = int(px) - int(u_vpo.x) - x0;
-      if (trust && m == n && (k < 0 || k > w)) discard;
+      if (trust && (m == n || pitclip) && (k < 0 || k > w)) discard;
 // and its pixels, both ends inclusive (0x5a213)
       k = clamp(k, 0, w); r = y - V[top].y;
       val = uint(e1.y) + uint(k >> 1) * uint(st); exact = true;
@@ -199,10 +213,8 @@ vec3 dos_gouraud(float lev) {
 #endif
 void main() {
   glFragCoord = vec4(gl_FragCoord.x, u_fbh - gl_FragCoord.y, gl_FragCoord.zw);   // GL's bottom-left origin
-#if DOS_LOOK
-// the DOS draw order (world.vert): a listed polygon's pixels all at its key's depth
+// the DOS / TITANIUM draw order (world.vert): a listed polygon's pixels all at its key's depth
   gl_FragDepth = v_dord < 1.5 && u_dos_order != 0 ? v_dord * 0.5 + 0.5 : gl_FragCoord.z;
-#endif
 // the wireframe (image enhancement): only the polygons' own edges, 1 px - corner k's barycentric is the distance
 // to the edge opposite it (bit 0: corner 0's, bit 1: corner 1's, bit 2: corner 2's)
   if (u_wire.a > 0.0) {
@@ -279,8 +291,8 @@ void main() {
 // is the winding's: here -cross(v1 - v0, v2 - v0) of the file's vertices (the 3D editions' stored normals, which
 // the engine negates at load, 0x10042140, agree)
     vec3 nf = nl > 0.0 ? -v_normal / nl : vec3(0.0);
-    if (nl > 0.0 && dot(v_viewpos, mat3(u_view) * nf) >= 0.0) discard;
-    float f = nl > 0.0 ? trunc(127.0 * dot(nf, Ld)) : 127.0;
+    if (nl > 0.0 && v_dosf == 0 && dot(v_viewpos, mat3(u_view) * nf) >= 0.0) discard;   // (v_dosf: the vertex shader's test, once a polygon)
+    float f = v_dosf != 0 ? float(v_dosf - 1000) : nl > 0.0 ? trunc(127.0 * dot(nf, Ld)) : 127.0;
     float lev = floor(floor(C / 2.0) * (floor(f * (128.0 - u_dos_amb) / 128.0) + u_dos_amb) / 1088.0);
     if (u_dos_fogdist > 0.0) lev -= v_dkey >= 0.0 ? float((int(v_dkey) * 16 / int(u_dos_fogdist)) >> 4) : floor(max(-v_viewpos.z, 0.0) / u_dos_fogdist);
     lev = clamp(lev, 0.0, 15.0);
@@ -335,6 +347,6 @@ void main() {
 // Titanium (mercsw.dll): the vertex fog the D3D plugin takes as the specular alpha a (fog = 1 - a); the world, the
 // objects and the ground (0x10053474, 0x10001b53): a = (1 - min(1, z / Z)) x the camera's factor (density Y's
 // ground fog / low cloud, 0x1006a851); Z = 0: no distance fog
-  if (u_tifog.x > 0.5) ff = 1.0 - (u_tifog.y > 0.0 ? 1.0 - min(1.0, fz / u_tifog.y) : 1.0) * u_tifog.w;
+  if (u_tifog.x > 0.5 && v_tinofog == 0) ff = 1.0 - (u_tifog.y > 0.0 ? 1.0 - min(1.0, fz / u_tifog.y) : 1.0) * u_tifog.w;
   o_color = vec4(lit + (u_fog_color - lit) * ff, u_blend != 0 ? ta * u_alpha : u_alpha);
 }

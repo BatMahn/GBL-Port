@@ -73,8 +73,9 @@ typedef struct {
     int32_t u_tinton;
     int32_t u_horizon;
     int32_t u_tilit;
-} rb_world_draw;   /* 88 bytes */
-typedef char rb_world_draw_size_check[sizeof(rb_world_draw) == 88 ? 1 : -1];
+    int32_t u_onlayer;
+} rb_world_draw;   /* 92 bytes */
+typedef char rb_world_draw_size_check[sizeof(rb_world_draw) == 92 ? 1 : -1];
 
 typedef struct {
     float u_tint[4];

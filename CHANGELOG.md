@@ -78,6 +78,15 @@
 - **Powering up and shutting down:** lancemates and enemies stay where they landed until they have powered up, with
   their torsos centred, and the start-up takes 6 to 8 seconds as in the original. A shut-down 'Mech coasts to a stop
   without bumping into anything, the shutdown order powers a lancemate down, and the next order starts it up again.
+- **DOS look: cockpit struts as in the original.** The struts of cockpits that reach close to the eye (the Timber Wolf's)
+  no longer show thin lines of sky along their seams, and lighting uses the original's own intensity, which can be one
+  shade darker.
+- **Torso tilt as in the original:** tilting the torso now turns the view by half as much, with the cockpit frame staying
+  put and the reticle moving to where the guns point, and it reaches 60 degrees each way. With the torso twisted too, the
+  view rolls a little, as the original's does.
+- **TITANIUM look: draw order and back faces as Titanium.** Polygons facing away are not drawn and the rest are painted
+  farthest first, so a turret against a cliff shows whole there too. Gouraud-coloured polygons are no longer fogged,
+  as in Titanium.
 - **Turrets on the hills in the DOS look:** the original paints its polygons farthest first, without a depth buffer, and the
   port now orders them the same way. A turret standing against or partly inside a cliff (Mannedorf's, in the first
   mission) shows whole, as in the original, instead of half hidden in the rock.
@@ -91,6 +100,7 @@
   enemy firing them from further off never reached you) and LRMs their full 1001 m; every weapon's reload and volley
   timing is GBL's own. A hit on the centre torso spreads over the left, centre and right torsos, as the original's damage
   display shows. Enemies aim and lock on from 'Mech centre to 'Mech centre, and a missile lock takes GBL's 2.0 s.
+  An enemy 'Mech whose ammunition explodes is out of the fight at once, as in GBL.
 - **Missile reticle while reloading:** the plain ring while the selected weapon fires its volley or reloads, as in DOS.
 - **Cockpit Controls:** you can type the configuration's name (Backspace, Enter / Esc to finish).
 - **Joystick / mouse menu files:** the GIDDI\<driver>.STD files are read as the original reads them.

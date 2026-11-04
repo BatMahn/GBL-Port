@@ -46,6 +46,8 @@ typedef struct {
     float ortho_w;           /* > 0: an orthographic view this wide (cm) - the satellite map */
     int   free_cam;          /* 1: first-person camera at eye[] (game coords) looking along look_yaw/look_pitch */
     float eye[3], look_yaw, look_pitch;
+    float look_roll;         /* free_cam: the view's roll, the DOS camera's own angle (16.16 sense, in degrees): half the eye
+                              * object's roll (MW2.EXE 0x3a060: local_18 >> 1 of 0x1e190's angles); 0 none */
     int   wire;              /* image enhancement: black background, polygons as lines (world red, actors blue) */
     int   notex_world;       /* Combat Variables TERRAIN TEXTURES off: the world layer and the ground flat (engine render flag bit) */
     int   notex_actors;      /* OBJECT TEXTURES off: mechs and objects flat-shaded in their palette colours */

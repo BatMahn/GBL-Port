@@ -228,6 +228,44 @@ Sources read: /home/claude/gbl/re/mw2gbl_decomp.c + mw2gbl.elf (GBL sim), shellg
   object position); difficulty only scales armour (0x4d670: player x4, alliance 0 x 3/3/4, others x 1/3/4) and the
   player's heat sinking (0x4dca5).
 
+### 3.5 Damage, criticals, death (agent AI, round 2)
+- Traced against combat.c, all equal except one: 0x265e0 (rear flag 0x8000 from 0x51984: legs heading - course within
+  90 deg; armour or rear -= damage; at <= 0 the rest into the structure, red flash 0xa7568 for head / CT hits > 2;
+  structure <= 0 -> 0x25a90; else the crit loop `while (rand(5) > i++)`: rand(100) < 20 with items -> 12 destroys the
+  location, else 0x25cc0(rand(count))); 0x25a90 (structure 0, every item a silent crit; 2 / 4 take arm 5 / 6 and stay
+  hittable with no transfer; 3 takes 5 2 4 6 1; first leg immobile, second leg head + CT; head / CT / second leg ->
+  0x25680); equipment crits (5500-5650 / 5800 / 5850 speed -0x199a, floor 0x6666; gyro 5800 jets off; cockpit 5750 death;
+  life support 5900 death in a hostile atmosphere; heat sink 6000 -0x32; jump jet 7000).
+- Difference fixed: an ammunition bin exploding (0x25cc0, 0x25fee) puts a computer-run unit out at once (state 5 ->
+  0x25680), the player only with automatic ejection (DAT_000a6660, default 0); same for the overheat cook-off with no
+  ammo entry (0x24ec0, 0x2525d). The port had followed the 3D editions (automatic ejection only).
+- Player time-to-death, BASSSCN1 Mad Dog vs Horned Owl + Grizzly: DOSBox (armour readout EXE) standing 59-67 / 69 / 72 /
+  72 s, walking ~60 / 75 / 75 / 60 s; port glview (MW2_AI_SEED 1-3) standing 75.2 / 72.3 / 70.3, walking 79.0 / 86.7 /
+  69.3; port msim harness (16 seeds) standing 61.6-79.6 (mean 69.1), walking straight 55.8-68.8 (mean 61.6). Deaths
+  in both with 400-460 points left (the CT goes). No systematic gap: the earlier 5-20 s came from single runs.
+
+### 3.6 Damage to things; NARC (agent AI, round 3)
+- Things (structures / the JESS HPG uplink) take damage only from projectiles: 0x516b0 at 0x51a43 - an object with +2
+  bit 0x200 -> 0x52cd0(object, slot +0x48 = the weapon's +0x40 integer damage, the point): thing record (0x106410 +
+  index x 0x40) +8 hit points -= damage (an object of class +2 & 0xf0 == 0xb0 to 0 at once - none in the 23 GBL scenes);
+  at <= 0 effects 3 (0xd for 0xb0) and 0x20b at the point, 0x52c00. Effects reach things through 0x52a70 with
+  ((+0x20 x frame ticks) >> 16) rounded: 256 x 3-6 ticks = 0 - only Nuke / Arrow IV (8192) or the Inferno burn (128)
+  can, so missile blasts never hurt a thing. The port matches (building_damage on projectile hits, none from areas).
+- JESS: the Ravens (JNR00STD) carry SRM 6 x2 and Streak SRM-4, damage 3 a missile (GBL 0xafecc +0x40) - hence every
+  uplink hit is 3. The uplink has 450 hit points (GT +16). DOSBox (armour EXE, the readout's seconds = mission time:
+  "Enemy power-up detected" at 91-92): "Defend HPG Uplink failed" at 145 / 148 s, and still standing at 161 s in a
+  third run (ref/AI_js_*, AI_ju1_*, AI_ju2_*). Port msim harness, 4 seeds: first hit 115-122 s, destroyed 144-156 s;
+  at 40 steps a second 147-148 s. No damage-path difference; the remaining spread is the Ravens' movement.
+- NARC (weapon 28, flags 0x85, kind 12, guided, drop 1, speed 80, damage 0, range 2000 m, refire 2548): no MEK in
+  MW2.PRJ carries it (only the Mech Lab offers it). A hit on a unit (0x5192e: slot +4 & 0x80) sets the target's +0x20
+  struct +0x112 bit 0, never cleared (3 references in the EXE: the set, the lock test, and an unrelated nav field):
+  for the rest of the target's life. 0x54160: a guided weapon selected and the target a unit with that bit -> lock
+  0x80c0 at once, whatever the range window or the 16 deg cone (any unit: player or AI). Nothing else (no guidance
+  change, no HUD mark beyond the lock reticle). DOSBox (USERSTAR Mad Dog with the second LRM 20 made a NARC,
+  tools/patchnarc.py; ref/AI_n2_* NARC fired, then LRM 20 with the torso twisted 40+ deg off: reticle stays red /
+  locked; ref/AI_n3_* the same without the NARC: green, lock lost). Port harness the same (lock 0x80c0 held vs
+  0x40 -> 0 within 2 s). No change.
+
 ## Files changed (all in /home/claude/agents/J/mw2port)
 - src/mek.c, src/mek.h - sim_game_gbl, GBL shell weapon table, mek_weapon_for by game, mek_weapon_table[_count]
 - src/wtable.h - GBL sim table + extra fields + accessors

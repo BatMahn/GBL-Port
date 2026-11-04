@@ -637,7 +637,7 @@ static mech3d *actor_lod(int k, const mech3d *full, const char *skel, float dist
     if (r == 0) return NULL;
     m = &g_alod[k].m[r];
     memcpy(m->origin, full->origin, sizeof m->origin);
-    m->heading = full->heading; m->twist = full->twist; m->pose_off = full->pose_off;
+    m->heading = full->heading; m->twist = full->twist; m->tilt = full->tilt; m->pose_off = full->pose_off;
     mech3d_pose(m, (const anim_set *)full->pose_anim, full->pose_t);
     if (full->part_count > 0) { int q; for (q = 0; q < m->part_count; q++) m->parts[q].tex_offset = full->parts[0].tex_offset; }   /* the star's camo / insignia */
     return m;
@@ -667,7 +667,7 @@ static mech3d *ti_actor(int k, const mech3d *full, const char *skel, int repr)
     if (!g_tiact[k].ok[repr]) return NULL;
     m = &g_tiact[k].m[repr];
     memcpy(m->origin, full->origin, sizeof m->origin);
-    m->heading = full->heading; m->twist = full->twist;
+    m->heading = full->heading; m->twist = full->twist; m->tilt = full->tilt;
     mech3d_pose(m, (const anim_set *)full->pose_anim, full->pose_t);
     if (full->part_count > 0) for (q = 0; q < m->part_count; q++) m->parts[q].tex_offset = full->parts[0].tex_offset;   /* its star */
     return m;
@@ -6032,7 +6032,10 @@ int main(int argc, char **argv)
                         g_twist_dem = g_twist_dem > 0 ? g_twist_limit : -g_twist_limit;
                         sp.val = g_twist_dem / 90.0f; sp.vel = 0;
                     }
-                    if (fabsf(g_pitch_dem) > 30.0f) { g_pitch_dem = g_pitch_dem > 0 ? 30.0f : -30.0f; st.val = -g_pitch_dem / 60.0f; st.vel = 0; }
+                    /* the tilt: the sink's whole range, +-60 (the port had +-30, ASSUMED). DOSBox JESSSCN1 (AH): Down held
+                     * until the view stops, the view 30 degrees up (= half the tilt, 0x26d05) and the reticle a further 30
+                     * (296 px at 1024 x 768) - the aim at 60 */
+                    if (fabsf(g_pitch_dem) > 60.0f) { g_pitch_dem = g_pitch_dem > 0 ? 60.0f : -60.0f; st.val = -g_pitch_dem / 60.0f; st.vel = 0; }
                     /* not up: the demands c[2] / c[6] cleared every tick (0x1001a180 LAB_1001aae9) - the torso swings back */
                     if (offline) g_twist_dem = g_pitch_dem = 0;
                     pan_out = g_twist_dem; tilt_out = g_pitch_dem; thr_out = fabsf(g_throttle);
@@ -6128,8 +6131,8 @@ int main(int argc, char **argv)
                     if (g_pl.twist > g_twist_limit) g_pl.twist = g_twist_limit;
                     if (g_pl.twist < -g_twist_limit) g_pl.twist = -g_twist_limit;
                 }
-                if (g_pitch > 30) g_pitch = 30;
-                if (g_pitch < -30) g_pitch = -30;
+                if (g_pitch > 60) g_pitch = 60;
+                if (g_pitch < -60) g_pitch = -60;
                 if (g_throttle > 1) g_throttle = 1;
                 if (g_throttle < -1) g_throttle = -1;
                 kmh = fabsf(g_spd_srv) * 0.036f;   /* c[0xb] x 6.516 (0x1001a180) */
@@ -6363,10 +6366,14 @@ int main(int argc, char **argv)
                     }
                 }
                 g_pl.pose_off = getenv("MW2_NO_POSE_OFF") ? NULL : g_pl_ap.off;   /* the carried offset (anim_player_step; TEST: MW2_NO_POSE_OFF) */
+                /* the torso node pitches by half the tilt servo (GBL MW2.EXE 0x26d05: unit +0x68 = c[7] >> 1 when the
+                 * controller has +0x110 & 0x2000; the head, the cockpit and the eye ride on it), the camera too (0x3a060:
+                 * pitch = unit +0x5c + +0x68) - so the cockpit frame stays where it is on the screen while the view tilts */
+                g_pl.tilt = g_pitch * 0.5f;
                 mech3d_pose(&g_pl, &g_pl_anim, g_pl_t);   /* g_pl_t: the absolute key time (anim_player) */
                 if (g_plpit_ok) {
                     memcpy(g_plpit.origin, g_pl.origin, sizeof g_pl.origin);
-                    g_plpit.heading = g_pl.heading; g_plpit.twist = g_pl.twist; g_plpit.pose_off = g_pl_ap.off;
+                    g_plpit.heading = g_pl.heading; g_plpit.twist = g_pl.twist; g_plpit.tilt = g_pl.tilt; g_plpit.pose_off = g_pl_ap.off;
                     mech3d_pose(&g_plpit, getenv("MW2_PIT_NOANIM") ? NULL : &g_pl_anim, g_pl_t);
                 }
                 if (g_sim_ok) {   /* the mounts as drawn (walk animation, torso twist) for the shots and jet flames */
@@ -6720,6 +6727,7 @@ int main(int argc, char **argv)
                 float aim = (g_pl.heading + g_pl.twist) * 3.14159265f / 180.0f;
                 v.free_cam = 1;
                 v.look_yaw = g_pl.heading + g_pl.twist;
+                v.look_roll = 0.0f;
                 if (g_cockpit) {
                     float hp[3];
                     /* the eye: in the cockpit the player's object is at level of detail 4, so the camera rides that
@@ -6729,6 +6737,13 @@ int main(int argc, char **argv)
                         if (getenv("MW2_EYE_DY")) hp[1] += (float)atof(getenv("MW2_EYE_DY"));   /* tests */
                         if (getenv("MW2_EYE_DF")) { float df = (float)atof(getenv("MW2_EYE_DF")), hh2 = g_pl.heading * 3.14159265f / 180.0f; hp[0] += sinf(hh2) * df; hp[2] += cosf(hh2) * df; }
                         v.eye[0] = hp[0]; v.eye[1] = hp[1]; v.eye[2] = hp[2];
+                        {   /* the view's roll: half the eye object's (0x3a060: 0x1e190's roll, from 0x3c33f: atan2 of the
+                             * matrix's +3 / +4 - its x axis' rise against its y axis') - nonzero when the torso is both twisted
+                             * and tilted: the tilt turns the torso about the legs' x axis, then the twist (0x26d05 ->
+                             * 0x1e350 -> 0x3bfb2: pitch, yaw, roll 0) */
+                            const mech3d *em = g_plpit_ok && !getenv("MW2_EYE_FULL") && g_plpit.eye_ok ? &g_plpit : &g_pl;
+                            if (em->eye_ok) v.look_roll = atan2f(em->eye_rot[3], em->eye_rot[4]) * 0.5f * 180.0f / 3.14159265f;
+                        }
                         if (getenv("MW2_DEBUG_EYE")) fprintf(stderr, "eye %.0f %.0f %.0f  origin %d %d %d\n", (double)hp[0], (double)hp[1], (double)hp[2], g_pl.origin[0], g_pl.origin[1], g_pl.origin[2]);
                     } else {
                         v.eye[0] = (float)g_pl.origin[0] + sinf(aim) * 250.0f;
@@ -6748,7 +6763,7 @@ int main(int argc, char **argv)
                         if (gl) { glanced = 1; if (gp != 0) g_eye_pan = 0; if (gt != 0) g_eye_tilt = 0; }
                         else if (glanced) { glanced = 0; g_eye_pan = g_eye_tilt = 0; }
                         v.look_yaw += g_eye_pan + gp;
-                        v.look_pitch = g_pitch + g_eye_tilt + gt + (getenv("MW2_EYE_PITCH") ? (float)atof(getenv("MW2_EYE_PITCH")) : 0.0f);
+                        v.look_pitch = g_pitch * 0.5f + g_eye_tilt + gt + (getenv("MW2_EYE_PITCH") ? (float)atof(getenv("MW2_EYE_PITCH")) : 0.0f);
                     }
                 } else {
                     v.eye[0] = (float)g_pl.origin[0] - sinf(aim) * 2600.0f;
@@ -7930,6 +7945,26 @@ int main(int argc, char **argv)
                  * sets (3Dfx 0x1002e750 / 0x1002dca5); the external orbit, ordnance and ejection cameras clear it. Base
                  * DOSBox YELLSCN1 'c': the HUD without the reticle */
                 if (g_camode != 0) { static const hud_sprite no_reticle; rs = &no_reticle; }
+                /* the aim point (0x29be0: a point ahead on the torso's line, 0x545e0 / 0x54560 / 0x1dcf0) is at the full tilt,
+                 * the view at half of it (0x3a060 / 0x26d05): the reticle sits that much above (below) the centre -
+                 * DOSBox JESSSCN1, Down held: 296 px up at 1024 x 768. In the DOS look through the frame's integers
+                 * (0x3fdd0 = glr_dos_project), the aim and the view's axis both; else the view's float projection */
+                float aim_dx = 0.0f, aim_dy = 0.0f;   /* HUD units (640 x 480) */
+                if (g_camode == 0 && fabsf(g_pitch - v.look_pitch) > 1e-3f) {
+                    float ap = g_pitch * 3.14159265f / 180.0f, d[3] = {sinf(yaw) * cosf(ap), sinf(ap), cosf(yaw) * cosf(ap)};
+                    float az = d[0] * fx + d[1] * fy + d[2] * fz, ay = d[0] * ux + d[1] * uy + d[2] * uz;
+                    int done = 0;
+                    if (g_tex_kind == 3) {
+                        const float pa[3] = {v.eye[0] + d[0] * 1.0e6f, v.eye[1] + d[1] * 1.0e6f, -(v.eye[2] + d[2] * 1.0e6f)};
+                        const float pc[3] = {v.eye[0] + fx * 1.0e6f, v.eye[1] + fy * 1.0e6f, -(v.eye[2] + fz * 1.0e6f)};
+                        int sxa, sya, sxc, syc;
+                        if (glr_dos_project(r, pa, &sxa, &sya, NULL) >= 0 && glr_dos_project(r, pc, &sxc, &syc, NULL) >= 0) {
+                            aim_dx = (float)(sxa - sxc) * hud_px_x(g_hud, 1.0f); aim_dy = (float)(sya - syc) * hud_px_y(g_hud, 1.0f);
+                            done = 1;
+                        }
+                    }
+                    if (!done && az > 1e-3f) aim_dy = -(ay / az / th) * 240.0f;
+                }
                 {   /* at the aim point's projection (DOS 0x29860 -> 0x3f320, 3Dfx 0x10022c40 -> 0x1002f9f0; GBL MW2.EXE the
                      * same code, 0x29be0 -> 0x3fdd0): x = centre + q, y = (y1 - y0) - centre - q with the view's centre
                      * (y0 + y1 + 1) >> 1 (DOS 0x3ef30) - one row above the middle: 640 x 480 (320, 239), 1024 x 768 (512,
@@ -7937,8 +7972,8 @@ int main(int argc, char **argv)
                     const float ux = hud_px_x(g_hud, 1.0f), uy = hud_px_y(g_hud, 1.0f);
                     const int W1 = (int)lrintf(640.0f / ux) - 1, H1 = (int)lrintf(480.0f / uy) - 1;
                     const float rx = (float)((W1 + 1) >> 1) * ux, ry = (float)(H1 - ((H1 + 1) >> 1)) * uy;
-                    if (dos) hud_draw_f(g_hud, rs, rx, ry, -1.0f);
-                    else hud_draw(g_hud, rs, rx, ry, NULL);
+                    if (dos) hud_draw_f(g_hud, rs, rx + aim_dx, ry + aim_dy, -1.0f);
+                    else hud_draw(g_hud, rs, rx + aim_dx, ry + aim_dy, NULL);
                 }
             }
             /* target bracket (engine dispatcher 0x10022830): a mech (0x10022cc0) gets four corner pieces TGTGP1-4 (+E enemy,
