@@ -560,12 +560,23 @@ static int set_layer(glr *r, int li, const mech3d *m, const uint8_t palette[256]
                     else if (!part->ti && ls == 0x3f) ls += part->ti_insignia;   /* a world object: its structure's team */
                     batch = GLR_SLOTS;
                     if (ty >= 5 && !part->flat && ls < GLR_SLOTS && r->ti_slots[ls]) batch = GLR_TI + ls;
+                    /* no bitmap in the slot's entry: 0x10053280 hands kinds 5-7 to 0x10001081, which gets -1 from 0x1000219e
+                     * and draws nothing; with its object's texture switch off it is the kind 1 shade all the same (0x1001b466) -
+                     * so as kind 2 (v_ticm 3). The slot table (0x102e7de0) is cleared only once a run (0x10001f96) and each
+                     * map's BMIDs set entries over it: taken as a fresh run's (ASSUMED: no earlier mission's map, e.g. SACH's
+                     * 0xe7 / 0xe8 water, set only by MW2_MAP1, which only BRO2SCN1 / CALISCN2 include) */
+                    if (ty >= 5 && !part->flat && batch == GLR_SLOTS) tk2 = 1;
                 }
                 if (r->dos && !model->extended) {   /* DOS bitmaps: types 5-7 bitmap = low byte; type 3 (scrub / effect cards,
                                                      * 0x3250 ...) bitmap = (word >> 4) & 0xff, transparent texels */
                     int ty = (q->color >> 12) & 7, bs = ty == 3 ? (q->color >> 4) & 0xff : q->color & 0xff;
                     batch = GLR_SLOTS;
                     if ((ty >= 5 || ty == 3) && !part->flat && slots && slots[bs]) batch = bs;
+                    /* types 5-7 with no bitmap in the slot: GBL 0x3c610 -> 0x382f0 returns 0 for an entry with no group
+                     * (0x13f856 == 0 / 0x13f858 < 0) or no cel, and nothing is drawn (the table 0x13f850 is cleared at the
+                     * first load, 0x385f0 -> 0x38790). No GBL scene has such a polygon (all 23 checked); SACH's river and
+                     * waterfall are type 0 in GBL's models (0x0260 / 0x0280 - only the Titanium models' are 0x5de7 / 0x5de8) */
+                    if (ty >= 5 && !part->flat && slots && !slots[bs]) continue;
                 }
                 if (bb_tri) batch = GLR_WO;   /* (the DOS billboard's triangle: image enhancement only) */
                 else if (part->shadow) batch = GLR_SLOTS + 1;   /* a shadow: drawn last, translucent */
@@ -672,7 +683,7 @@ static int set_layer(glr *r, int li, const mech3d *m, const uint8_t palette[256]
                 }
                 if (r->dos && !model->extended) {   /* the DOS colour word (MW2.EXE 0x38ae3): (kind, base index, intensity) */
                     int ty = (q->color >> 12) & 7;
-                    if ((ty >= 5 || ty == 3) && batch < GLR_SLOTS) { poly_col[0] = 2; poly_col[1] = 0; poly_col[2] = 255; }
+                    if ((ty >= 5 || ty == 3) && batch < GLR_SLOTS) { poly_col[0] = 2; poly_col[1] = (float)(ty == 5 || ty == 6 ? ty : 0); poly_col[2] = 255; }   /* (g: the type, world.frag dos_ttex) */
                     else if (ty == 0 || ty == 2 || ty == 3) { poly_col[0] = 0; poly_col[1] = (float)((q->color >> 4) & 0xff); poly_col[2] = 0; }
                     else { poly_col[0] = ty == 4 ? 3.0f : 1.0f; poly_col[1] = (float)(((q->color >> 8) & 0xf) * 16); poly_col[2] = ty >= 5 ? 255.0f : (float)(q->color & 0xff); }
                 }
@@ -793,7 +804,7 @@ static int set_layer(glr *r, int li, const mech3d *m, const uint8_t palette[256]
                         /* DOS Gouraud: its fan's first vertex + 1 (dos_gouraud); the flat colour types 0 / 1 and the affine
                          * textured type 7 too - their fills (0x5a900, 0x5ccc9) step the same spans */
                         if (r->dos && !model->extended && ((batch == GLR_SLOTS && (tk4 || ((q->color >> 12) & 7) <= 1)) ||
-                                                           (batch < GLR_SLOTS && ((q->color >> 12) & 7) == 7))) f[11] = (float)(pfirst + 1);
+                                                           (batch < GLR_SLOTS && ((q->color >> 12) & 7) >= 5))) f[11] = (float)(pfirst + 1);   /* (5 / 6: 0x673b0 / 0x68ac2, the same chains) */
                         if (tik == 1 && batch >= GLR_TI && batch < GLR_TB) f[11] = (float)-k2cls;   /* (textured kinds 5-7: their switch class) */
                         if (tik) {
                             float *t = tic + pos[batch] * 4;

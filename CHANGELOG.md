@@ -10,6 +10,9 @@
     Apple's OpenGL got it wrong).
   - **New minimum hardware:** Direct3D 12 (feature level 11_0), Vulkan 1.0 or Metal (macOS 10.14). See README's
     System requirements. If none starts, the game tells you why.
+  - **Windows fixes** (found running the Windows build under Wine): missions start from the menus again (the program's
+    own path was doubled); the menus no longer crash at start when Direct3D 12 can't draw them and Vulkan takes over;
+    a Direct3D 12 driver that can't run the game's shaders now hands over to Vulkan instead of stopping the game.
 
 - **`gbl`** (`make gbl`): MechWarrior 2: Ghost Bear's Legacy as its own program, as GBL.EXE was. The shell is rebuilt
   from GBL's MW2SHELL.EXE:
@@ -81,6 +84,11 @@
 - **DOS look: cockpit struts as in the original.** The struts of cockpits that reach close to the eye (the Timber Wolf's)
   no longer show thin lines of sky along their seams, and lighting uses the original's own intensity, which can be one
   shade darker.
+- **DOS look: perspective textures as in the original.** Textured surfaces drawn in perspective (the scree slopes of
+  JESS, dropship panels) now cover the same pixels and pick the same texels as the original, in its 16-pixel steps.
+- **TITANIUM: SACH's waterfall and river.** Textured surfaces with no bitmap in the mission's texture set are no longer
+  drawn as dark flat colours: Titanium leaves them out. In SACH the river shows the water ground beneath it and the
+  waterfall its cliff face, instead of dark green slabs.
 - **Torso tilt as in the original:** tilting the torso now turns the view by half as much, with the cockpit frame staying
   put and the reticle moving to where the guns point, and it reaches 60 degrees each way. With the torso twisted too, the
   view rolls a little, as the original's does.

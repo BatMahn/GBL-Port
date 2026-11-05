@@ -132,6 +132,69 @@ ivec2 dos_gchain(ivec2 V[20], int C[20], int m, int top, int dir, int y, int ybo
   return ivec2(int(uint(V[a].x * 65536 + 0x8000) + t * uint(dos_idiv((V[b].x - V[a].x) * 65536, cnt))),
                int(uint(C[a] + 0x8000) + t * uint(dos_idiv(C[b] - C[a], cnt))));
 }
+// one chain's edge at DOS row y, as dos_gchain walks it: (a, b, rows into the edge, its row count)
+ivec4 dos_gedge(ivec2 V[20], int m, int top, int dir, int y, int ybot) {
+  int a = top, b = (a + dir + m) % m, r0 = V[top].y;
+  for (int g = 0; g < 20 && V[b].y == V[a].y && b != top; g++) { a = b; b = (a + dir + m) % m; }
+  int cnt = V[b].y - V[a].y, yq = y == ybot && y > r0 ? y - 1 : y;
+  for (int g = 0; g < 20 && yq >= r0 + cnt && b != top; g++) { r0 += cnt; a = b; b = (a + dir + m) % m; cnt = V[b].y - V[a].y; if (cnt == 0) cnt = 1; }
+  if (cnt == 0) cnt = 1;
+  return ivec4(a, b, y - r0, cnt);
+}
+// The textured types 5 / 6 (GBL MW2.EXE 0x3c610 -> 0x382f0 -> 0x405d0 -> 0x760ec, its renderer from the table 0x653b0 by
+// the flags: 0x691 perspective, 0x673b0, for type 5 with DISPLAY DETAIL high (DAT_000a79ac 0); 0x491 affine, 0x68ac2, for
+// type 6 (0x3c610 sets DAT_000a79ac for it)). Their coverage is the Gouraud fill's (chains from x << 16 + 0x8000, rows
+// and spans inclusive); the texel of pixel k of a span (w = xR - xL + 1 pixels):
+//  affine: u = uL + 0x8000 + k trunc((uR - uL) / w), the chains carrying u, v (16.16, the vertex's texel << 16);
+//  perspective: the chains carry u q, v q and q (q = (zoom x half width << 16) / z, 0x3c610), u = u q / q + 0x8000
+//  exactly at every 16th pixel from the left end (u q, q stepped by 16 trunc(d / w)) and at the right end for the last
+//  run of w & 15, linear between: (u_end - u_start) >> 4 a pixel in a run of 16, trunc((u_end - u_start) / n) in the last.
+// The texel is (u >> 16) & (width - 1), (v >> 16) & (height - 1). Here in floats where the original's 64-bit products
+// lose nothing (u q / q), integers for the steps. ivec2(-1): not applicable (near-clipped, not trusted)
+ivec2 dos_ttex(bool persp) {
+  int s = v_texsel - 1, n = 0, top = 0, ybot;
+  ivec2 V[20]; vec3 A[20];   // (u or u q, v or v q, q)
+  for (int t = 0; t < 16; t++) {
+    int b = s + 3 * t;
+    for (int c = (t == 0 ? 0 : 1); c < 3; c++) {
+      if (c == 2 && ((int(dvtx(b * 13 + 12) + 0.5) % 32 / 3) & 2) == 0) break;
+      int b2 = (b + c) * 13;
+      vec3 w = vec3(dvtx(b2), dvtx(b2 + 1), dvtx(b2 + 2));
+      vec4 q = u_mvp * vec4(w, 1.0);
+      if (q.z + q.w < 0.0 || n >= 18) return ivec2(-1);
+      ivec3 cc = dos_cam(w);
+      if (cc.z < 1) return ivec2(-1);
+      V[n] = dos_camscr(cc);
+      float u = dvtx(b2 + 6) * 65536.0, v = dvtx(b2 + 7) * 65536.0;
+      if (persp) { float qq = 1.0 / float(cc.z); A[n] = vec3(u * qq, v * qq, qq); } else A[n] = vec3(u, v, 0.0);
+      n++;
+    }
+    if (((int(dvtx(b * 13 + 12) + 0.5) % 32 / 3) & 2) != 0) break;
+  }
+  if (n < 3) return ivec2(-1);
+  ybot = V[0].y;
+  for (int i = 0; i < n; i++) { if (V[i].y <= V[top].y) top = i; ybot = max(ybot, V[i].y); }
+  int y = clamp(int(u_vp.y) - 1 - (int(floor(glFragCoord.y)) - int(u_vpo.y)), V[top].y, ybot);
+  ivec4 e1 = dos_gedge(V, n, top, -1, y, ybot), e2 = dos_gedge(V, n, top, 1, y, ybot);
+  int x1 = int(uint(V[e1.x].x * 65536 + 0x8000) + uint(e1.z) * uint(dos_idiv((V[e1.y].x - V[e1.x].x) * 65536, e1.w)));
+  int x2 = int(uint(V[e2.x].x * 65536 + 0x8000) + uint(e2.z) * uint(dos_idiv((V[e2.y].x - V[e2.x].x) * 65536, e2.w)));
+  vec3 a1 = A[e1.x] + float(e1.z) * (A[e1.y] - A[e1.x]) / float(e1.w), a2 = A[e2.x] + float(e2.z) * (A[e2.y] - A[e2.x]) / float(e2.w);
+  if (x2 <= x1) { int ti = x1; x1 = x2; x2 = ti; vec3 ta = a1; a1 = a2; a2 = ta; }   // (0x67681: the larger x the right)
+  int xL = x1 >> 16, w = (x2 >> 16) - xL + 1, k = clamp(int(floor(glFragCoord.x)) - int(u_vpo.x) - xL, 0, w - 1);
+  ivec2 uv;
+  if (!persp) {
+    uv = ivec2(int(a1.x) + 0x8000 + k * int(trunc((a2.x - a1.x) / float(w))), int(a1.y) + 0x8000 + k * int(trunc((a2.y - a1.y) / float(w))));
+  } else {
+    vec3 d16 = 16.0 * (a2 - a1) / float(w);
+    int r = k >> 4, j = k & 15, nr = w >> 4;
+    vec3 p0 = a1 + float(r) * d16;
+    ivec2 u0 = ivec2(trunc(p0.xy / p0.z)) + 0x8000, u1;
+    if (r < nr) { vec3 p1 = p0 + d16; u1 = ivec2(trunc(p1.xy / p1.z)) + 0x8000; uv = u0 + j * ((u1 - u0) >> 4); }
+    else { u1 = ivec2(trunc(a2.xy / a2.z)) + 0x8000; int rem = w & 15; uv = u0 + j * ivec2(trunc(vec2(u1 - u0) / float(max(rem, 1)))); }
+  }
+  ivec2 ts = ivec2(u_texsize);
+  return ivec2((uv.x >> 16) & (ts.x - 1), (uv.y >> 16) & (ts.y - 1));
+}
 vec3 dos_gouraud(float lev) {
 #if DOS_DEBUG
   if (v_texsel <= 0) return vec3(0.5, 0.5, 0.5);
@@ -312,7 +375,13 @@ void main() {
 // part in its u (i, or 0); filled and dithered as 0x59e77 does (dos_gouraud). Flat-lit (types 1 / 2, 0x59180) and
 // textured (5-7: 0x5b549 affine, 0x3fb20 perspective) polygons have no dither in DOS
     if (kind == 3) { o_color = vec4(dos_gouraud(lev), 1.0); return; }
-    vec4 tx = texture(u_tex, v_uv / u_texsize); if (tx.a < 0.5) discard;
+    vec4 tx = texture(u_tex, v_uv / u_texsize);
+    int ptype = int(base);   // (5 / 6: the textured types with the exact spans and texel mapping, glr set_layer)
+    if ((ptype == 5 || ptype == 6) && v_texsel > 0 && u_dos_exact != 0 && v_dtrust != 0) {
+      ivec2 tc = dos_ttex(ptype == 5);
+      if (tc.x >= 0) tx = texelFetch(u_tex, tc, 0);
+    }
+    if (tx.a < 0.5) discard;
     float ti = floor(tx.r * 255.0 + 0.5);
     float si = lev >= 15.0 ? ti : floor(texture(u_dos_tab, vec2((ti + 0.5) / 256.0, (lev + 0.5) / 17.0)).r * 255.0 + 0.5);
     o_color = vec4(dos_colour(si), 1.0); return;

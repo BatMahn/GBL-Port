@@ -1264,7 +1264,12 @@ int main(int argc, char **argv)
     portcfg_set_app("gblport", "gblport.cfg", "GBL-game", "GBL");   /* (before --sim too: the sim reads and writes gblport.cfg) */
     if (argc >= 2 && strcmp(argv[1], "--sim") == 0) return glview_main(argc - 1, argv + 1);   /* the simulation */
     snprintf(g_exe_path, sizeof g_exe_path, "%s", argv[0]);
+#ifdef _WIN32
+    mw2_exe_path(g_exe_path, sizeof g_exe_path);   /* argv[0] has backslashes, may be relative or lack .exe (Explorer, cmd) */
+    if (!g_exe_path[0]) snprintf(g_exe_path, sizeof g_exe_path, "%s", argv[0]);
+#else
     if (!strchr(argv[0], '/')) { bp = SDL_GetBasePath(); snprintf(g_exe_path, sizeof g_exe_path, "%s%s", bp ? bp : "./", argv[0]); }
+#endif
     headless = g_headless = getenv("SDL_VIDEODRIVER") && (!strcmp(getenv("SDL_VIDEODRIVER"), "offscreen") || !strcmp(getenv("SDL_VIDEODRIVER"), "dummy"));
     bp = SDL_GetBasePath();
     snprintf(g_exe_dir, sizeof g_exe_dir, "%s", bp ? bp : "./");
@@ -1318,21 +1323,31 @@ int main(int argc, char **argv)
         /* the menus through the same GPU interface as the simulation (gblport.cfg gpu=, rb.h): SDL's Direct3D 12 or Vulkan
          * renderer on Windows, Vulkan on Linux, Metal on macOS - the other one, then SDL's software renderer, if it can't
          * start; never OpenGL */
-        SDL_SetHint(SDL_HINT_RENDER_DRIVER,
+        {   /* one renderer at a time (SDL_RENDER_DRIVER, a list, overrides; tests): SDL 3.2 trying a list itself keeps a failed
+             * renderer's state - on Windows a Direct3D 12 renderer that can't start left the Vulkan one taking its texture
+             * formats, and the menus' RGB24 texture was refused (a crash at the first frame) */
+            const char *list = getenv("SDL_RENDER_DRIVER");
+            char names[128], *at, *end;
+            if (!list || !list[0])
 #if defined(_WIN32)
-                    pc.gpu == PORTCFG_GPU_VULKAN ? "vulkan,direct3d12,software" : "direct3d12,vulkan,software"
+                list = pc.gpu == PORTCFG_GPU_VULKAN ? "vulkan,direct3d12,software" : "direct3d12,vulkan,software";
 #elif defined(__APPLE__)
-                    "metal,software"
+                list = "metal,software";
 #else
-                    "vulkan,software"
+                list = "vulkan,software";
 #endif
-                    );
-        g_grd = SDL_CreateRenderer(g_win, NULL);
+            snprintf(names, sizeof names, "%s", list);
+            for (at = names; at && *at && !g_grd; at = end) {
+                if ((end = strchr(at, ','))) *end++ = 0;
+                if (*at) g_grd = SDL_CreateRenderer(g_win, at);
+            }
+        }
         if (!g_grd) { fprintf(stderr, "SDL: %s\n", SDL_GetError()); return 1; }
         fprintf(stderr, "gbl: menus drawn with SDL's %s renderer\n", SDL_GetRendererName(g_grd));
         SDL_SetRenderVSync(g_grd, 1);
         gbl_logical(g_grd, 1);
         g_gtx = SDL_CreateTexture(g_grd, SDL_PIXELFORMAT_RGB24, SDL_TEXTUREACCESS_STREAMING, W, H);
+        if (!g_gtx) { fprintf(stderr, "SDL: the menus' picture: %s\n", SDL_GetError()); return 1; }
         SDL_SetTextureScaleMode(g_gtx, SDL_SCALEMODE_NEAREST);   /* (SDL2's default; SDL3's is linear) */
         g_text_hires = 1;
     }

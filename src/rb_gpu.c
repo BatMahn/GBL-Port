@@ -256,6 +256,25 @@ static SDL_PropertiesID device_props(int b)
     return p;
 }
 
+static int g_probing;   /* rb_init's check of the programs: a shader or pipeline the driver refuses fails the backend */
+static SDL_GPUShader *shader(int i);
+static SDL_GPUGraphicsPipeline *pipeline(int prog, int has_depth, int samples, int cmask, SDL_GPUTextureFormat cfmt);
+static char g_probe_err[256];
+
+/* every program's pipeline made once (the world ones with depth as drawn): a driver that has the device but can't take
+ * the shaders (e.g. a Direct3D 12 translation layer without full DXIL support) fails here, in rb_init, so the next
+ * backend is tried instead of the game stopping at its first draw. 0 if all were made */
+static int probe_programs(void)
+{
+    int prog;
+    g_probing = 1;
+    g_probe_err[0] = 0;
+    for (prog = 0; prog <= PROG_CLEAR && !g_probe_err[0]; prog++)
+        pipeline(prog, prog != RB_PROG_HUD, 1, prog == PROG_CLEAR ? 31 : 15, COLOR_FMT);
+    g_probing = 0;
+    return g_probe_err[0] ? -1 : 0;
+}
+
 int rb_init(SDL_Window *win, int pref, int samples, char *err, size_t errn)
 {
     int order[3], n, k;
@@ -263,7 +282,9 @@ int rb_init(SDL_Window *win, int pref, int samples, char *err, size_t errn)
     if (env) pref = SDL_strcasecmp(env, "vulkan") == 0 ? RB_GPU_VULKAN : SDL_strcasecmp(env, "d3d12") == 0 ? RB_GPU_D3D12 : pref;
     order_for(pref, order, &n);
     if (err && errn) err[0] = 0;
-    for (k = 0; k < n && !g_dev; k++) {
+    k = 0;
+retry:
+    for (; k < n && !g_dev; k++) {
         SDL_PropertiesID p = device_props(order[k]);
         g_dev = SDL_CreateGPUDeviceWithProperties(p);
         SDL_DestroyProperties(p);
@@ -320,6 +341,14 @@ int rb_init(SDL_Window *win, int pref, int samples, char *err, size_t errn)
     memset(&S, 0, sizeof S);
     S.dtest = 0; S.dwrite = 1; S.dfunc = RB_LESS;
     g_win_samples = samples > 1 ? samples : 1;
+    if (probe_programs() != 0) {
+        if (err && errn) { size_t at = strlen(err); SDL_snprintf(err + at, errn - at, "%s%s (shaders): %s", at ? "; " : "", backend_sdl_name(g_backend), g_probe_err); }
+        fprintf(stderr, "gpu: %s can't run the game's shaders (%s)%s\n", rb_backend_name(), g_probe_err, k < n ? " - trying the next" : "");
+        rb_quit();
+        g_depth_fmt = SDL_GPU_TEXTUREFORMAT_INVALID;
+        g_win_fmt = COLOR_FMT;
+        goto retry;
+    }
     printf("gpu: %s (%s)\n", rb_backend_name(), g_devname);
     fflush(stdout);
     return 0;
@@ -368,7 +397,10 @@ static SDL_GPUShader *shader(int i)
     else if (g_fmt == SDL_GPU_SHADERFORMAT_DXIL) { ci.code = b->dxil; ci.code_size = b->dxil_size; ci.entrypoint = "main"; }
     else { ci.code = (const Uint8 *)b->msl; ci.code_size = b->msl_size; ci.entrypoint = "main0"; }
     g_sh[i] = SDL_CreateGPUShader(g_dev, &ci);
-    if (!g_sh[i]) { fprintf(stderr, "rb: shader %s: %s\n", b->name, SDL_GetError()); exit(1); }
+    if (!g_sh[i]) {
+        if (g_probing) { SDL_snprintf(g_probe_err, sizeof g_probe_err, "shader %s: %s", b->name, SDL_GetError()); return NULL; }
+        fprintf(stderr, "rb: shader %s: %s\n", b->name, SDL_GetError()); exit(1);
+    }
     return g_sh[i];
 }
 
@@ -399,6 +431,7 @@ static SDL_GPUGraphicsPipeline *pipeline(int prog, int has_depth, int samples, i
     memset(&ctd, 0, sizeof ctd);
     pi.vertex_shader = shader(PROG_VS[prog]);
     pi.fragment_shader = shader(PROG_FS[prog]);
+    if (!pi.vertex_shader || !pi.fragment_shader) return NULL;   /* (rb_init's probe) */
     for (k = 0; k < PROG_NV[prog]; k++) { vbd[k].slot = (Uint32)k; vbd[k].pitch = PROG_STRIDE[prog][k]; vbd[k].input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX; }
     if (PROG_IS_WORLD(prog)) {
         static const struct { int buf, fmt, off; } A[8] = {{0, 3, 0}, {0, 3, 12}, {0, 2, 24}, {0, 3, 32}, {0, 1, 44}, {0, 1, 48}, {1, 4, 0}, {2, 4, 0}};
@@ -451,7 +484,10 @@ static SDL_GPUGraphicsPipeline *pipeline(int prog, int has_depth, int samples, i
     e->prog = prog; e->blend = blend; e->dtest = dtest; e->dwrite = dwrite; e->dfunc = dtest ? dfunc : 0; e->bias = bias;
     e->slope = bias ? S.slope : 0; e->units = bias ? S.units : 0; e->cmask = cmask & 15; e->samples = samples; e->dfmt = dfmt; e->cfmt = cfmt;
     e->p = SDL_CreateGPUGraphicsPipeline(g_dev, &pi);
-    if (!e->p) { fprintf(stderr, "rb: pipeline (program %d): %s\n", prog, SDL_GetError()); exit(1); }
+    if (!e->p) {
+        if (g_probing) { SDL_snprintf(g_probe_err, sizeof g_probe_err, "program %d: %s", prog, SDL_GetError()); return NULL; }
+        fprintf(stderr, "rb: pipeline (program %d): %s\n", prog, SDL_GetError()); exit(1);
+    }
     g_npipes++;
     return e->p;
 }
