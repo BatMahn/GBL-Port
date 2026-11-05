@@ -58,7 +58,7 @@ build/gblres.o: packaging/windows/gblport.rc
 
 build/miniaudio.o: third_party/miniaudio.c third_party/miniaudio.h
 	@mkdir -p build
-	$(CC) -O2 -w -c $< -o $@
+	$(CC) $(filter-out -std=% -include src/wincompat.h,$(CFLAGS)) -O2 -w -c $< -o $@
 
 shelltool: tools/shelltool.c src/shelldb.c src/smk.c src/shelldb.h src/smk.h
 	$(CC) $(CFLAGS) -Isrc $(filter %.c,$^) -o $@
