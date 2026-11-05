@@ -6,9 +6,29 @@ or Vulkan on Windows, Vulkan on Linux, Metal on macOS); builds on macOS, Linux a
 
 As on DOS, Ghost Bear's Legacy is its own program: `gbl`.
 
-## Status (2026-10-21)
-Playable from start to finish. Tagged releases (`v*`) are built by GitHub Actions: a macOS app (Apple Silicon), a
-Debian / Ubuntu package, a Fedora RPM and a Windows zip. Or build from source (below).
+## Status (2026-11-04)
+Complete and playable from start to finish: all 22 campaign missions, the Combat Simulator and the Mech Lab. Tagged
+releases (`v*`) are built by GitHub Actions: a macOS app (Apple Silicon), a Debian / Ubuntu package, a Fedora RPM and a
+Windows zip. Or build from source (below).
+
+Since the first playable release the work has been fidelity: checking the port against the original running in DOSBox,
+frame by frame and value by value, and fixing what differs. Every mission in MW2.PRJ (63) and all 23 GBL scenes complete
+their objectives in an automated headless run. Recent rounds matched, among others:
+
+- **AI:** units stay still and hold fire until they have powered up; lancemates' and enemies' first shots, attack
+  orders and reactions when hit; jump-jet braking when a 'Mech drops from a height (the JESS ridge Ravens).
+- **Combat:** GBL's own weapon timings (SRM / LRM ranges), centre-to-centre aiming, torso damage spread, ammunition
+  explosions, projectiles flown once a frame as in DOS (the Torpedo in Underwater Strike), start-up and shut-down
+  behaviour.
+- **DOS look:** the original's polygon fill, draw order and lighting to within a few pixels a frame (turrets on the hills,
+  thin parts, textured slopes, the cockpit struts), and the cockpit view's torso tilt and twist.
+- **TITANIUM look:** Titanium's own draw order, back-face test, model placement and fog rules.
+
+Platforms: macOS (Metal) is played and tested by hand; Linux (Vulkan) runs the automated tests; the Windows build runs
+under Wine with Vulkan, but has not yet been tried on a real Windows PC, and its Direct3D 12 path has never drawn a
+frame. See [KNOWN_ISSUES.md](KNOWN_ISSUES.md).
+
+What the port covers:
 
 - **Shell:** a new shell, written from GBL's own MW2SHELL.EXE. It covers:
   - the Ghost Bear title and the Esc menu, with Combat Variables, Cockpit Controls, Hall of Honor and The Keshik
