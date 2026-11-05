@@ -1,6 +1,6 @@
-# MechWarrior 2: Ghost Bear's Legacy (DOS, 1995) - 64-bit port
+# MechWarrior 2: Ghost Bear's Legacy (DOS, 1995) - native port
 
-A native 64-bit reimplementation of **MechWarrior 2: Ghost Bear's Legacy**, the 1995 expansion, rebuilt from the
+A native 64-bit reimplementation (with a 32-bit legacy build for Windows XP-era PCs) of **MechWarrior 2: Ghost Bear's Legacy**, the 1995 expansion, rebuilt from the
 original disc's `GBL\MW2SHELL.EXE` and `GBL\MW2.EXE`. Portable C99 with SDL3, drawn through SDL3's GPU API (Direct3D 12
 or Vulkan on Windows, Vulkan on Linux, Metal on macOS); builds on macOS, Linux and Windows. You need your own copy of the game (see "Setting up the game folder").
 
@@ -8,8 +8,9 @@ As on DOS, Ghost Bear's Legacy is its own program: `gbl`.
 
 ## Status (2026-11-04)
 Complete and playable from start to finish: all 22 campaign missions, the Combat Simulator and the Mech Lab. Tagged
-releases (`v*`) are built by GitHub Actions: a macOS app (Apple Silicon), a Debian / Ubuntu package, a Fedora RPM and a
-Windows zip. Or build from source (below).
+releases (`v*`) are built by GitHub Actions: a macOS app (Apple Silicon), a Debian / Ubuntu package, a Fedora RPM, a
+Windows zip and a Windows legacy zip (32-bit, Windows XP and newer, OpenGL 1.2 - see "The legacy build"). Or build from
+source (below).
 
 Since the first playable release the work has been fidelity: checking the port against the original running in DOSBox,
 frame by frame and value by value, and fixing what differs. Every mission in MW2.PRJ (63) and all 23 GBL scenes complete
@@ -26,7 +27,8 @@ their objectives in an automated headless run. Recent rounds matched, among othe
 
 Platforms: macOS (Metal) is played and tested by hand; Linux (Vulkan) runs the automated tests; the Windows build runs
 under Wine with Vulkan, but has not yet been tried on a real Windows PC, and its Direct3D 12 path has never drawn a
-frame. See [KNOWN_ISSUES.md](KNOWN_ISSUES.md).
+frame. The legacy build's renderer is tested on Linux against Mesa's OpenGL, not yet on Windows XP or a real OpenGL 1.x
+driver. See [KNOWN_ISSUES.md](KNOWN_ISSUES.md).
 
 What the port covers:
 
@@ -64,7 +66,7 @@ the binaries or measured in DOSBox running the original. See [CHANGELOG.md](CHAN
 [KNOWN_ISSUES.md](KNOWN_ISSUES.md) for what is still open.
 
 ## System requirements
-The game draws through SDL3's GPU API. There is no OpenGL renderer any more.
+The game draws through SDL3's GPU API; the legacy Windows build (below) through OpenGL 1.2 instead.
 
 | System | Graphics | Minimum |
 |---|---|---|
@@ -73,9 +75,27 @@ The game draws through SDL3's GPU API. There is no OpenGL renderer any more.
 | macOS | Metal | macOS 10.14 or newer; Apple Silicon or a Metal-capable Intel Mac |
 
 In practice that means a GeForce GTX 600, Radeon HD 7700, Intel Haswell (Direct3D 12) or Skylake (Vulkan) or newer.
-Older OpenGL 3.3-era cards (GeForce 8 to 500, Radeon HD 2000 to 6000) and Windows 7 can't run it. If no graphics
-interface starts, the game says why in a message and exits. A legacy OpenGL 2.1 renderer for older PCs may come later
-(see [docs/RENDERER.md](docs/RENDERER.md)).
+Older cards and Windows 7 can't run it - use the legacy build. If no graphics interface starts, the game says why in a
+message and exits.
+
+### The legacy build (older PCs)
+
+For PCs those minimums leave out there is a legacy Windows build (`windows-x86-legacy` zip): the same game, all three
+looks, drawn with OpenGL 1.2's fixed-function pipeline ([docs/RENDERER_GL12.md](docs/RENDERER_GL12.md)) and running on
+SDL2 (SDL3 does not run on Windows XP).
+
+| | Legacy build (`windows-x86-legacy`) |
+|---|---|
+| System | Windows XP SP3 or newer, 32-bit (runs on 64-bit Windows too) |
+| CPU | Pentium 4 / Athlon 64 or newer (SSE2: the simulation's arithmetic is the 64-bit builds', so missions play the same) |
+| Graphics | an OpenGL 1.2 driver, or OpenGL 1.1 with `GL_EXT_texture_edge_clamp` - the card maker's driver, not Windows' built-in OpenGL 1.1 software renderer. Typical cards: GeForce 2 and newer, Radeon 7000 and newer, Intel GMA 900 and newer, 3dfx Voodoo 3-5 (256 x 256 textures: the HUD's larger art is tiled, larger world textures scaled down) |
+
+The legacy build has no multisampling (the RESOLUTION row's AA steps do nothing) and shows `GPU OPENGL` in Combat
+Variables; its menus use SDL's OpenGL renderer. The DOS look's exact polygon fill is worked out on the CPU there, so a
+slow CPU may want a lower resolution. It is tested on Linux against Mesa's OpenGL (the same frames as the normal
+build's to a few pixels, docs/RENDERER_GL12.md) and runs the same missions identically (the objective sweep of a 32-bit
+SSE2 build matches the 64-bit one), but it has **not yet been tested on real Windows XP hardware or a real OpenGL 1.x
+driver** (KNOWN_ISSUES.md).
 
 ## Build
 Needs a C99 compiler, make, pkg-config and SDL3 3.2.12 or newer (development files). Nothing graphics-specific is linked:
@@ -104,6 +124,16 @@ mingw-w64-x86_64-sdl3`), then `make gbl`. Or cross-compile from Linux with SDL3'
     make gbl WINDOWS=1 CC=x86_64-w64-mingw32-gcc PKG_CONFIG_PATH=/path/to/SDL3-x.y.z/x86_64-w64-mingw32/lib/pkgconfig
 
 Put `SDL3.dll` (its `bin/`) beside `gbl.exe`. Run `make clean` when you switch between a Windows build and a native build.
+
+The legacy build (32-bit, Windows XP SP3 and newer) cross-compiles with MinGW-w64's i686 compiler and the SDL2 MinGW
+development package (SDL2-devel-2.32.10-mingw.tar.gz; SDL2 2.0.18 or newer):
+
+    make gbl WINDOWS=1 RB=gl12 SDL=2 CC=i686-w64-mingw32-gcc SDL2_DIR=/path/to/SDL2-2.32.10/i686-w64-mingw32
+
+and put `SDL2.dll` (that folder's `bin/SDL2.dll`) beside `gbl.exe`. `RB=gl12` picks the OpenGL 1.2 renderer
+(src/rb_gl12.c), `SDL=2` SDL2 (src/sdlcompat.h maps the SDL3 calls); the Makefile then adds `-msse2 -mfpmath=sse
+-mstackrealign` and `_WIN32_WINNT=0x0501` (XP). Each also works on its own for testing: `make gbl RB=gl12` on Linux or
+macOS with the system's OpenGL, `make gbl SDL=2 RB=gl12` with the system's SDL2.
 
 The macOS app is only ad-hoc signed. A downloaded copy needs `xattr -dr com.apple.quarantine "Ghost Bear's Legacy.app"`
 once (or System Settings > Privacy & Security > Open Anyway). Move it out of Downloads first: run from there, macOS

@@ -820,8 +820,9 @@ static const char *gbl_frame_mission_title(int i)
  * HEAT TRACKING row (FULL SCREEN / WINDOWED / WxH) and the HUD layout (HUD WIDE / HUD ORIGINAL) the right part of the DIFFICULTY row (x 495 on, where
  * those rows' values leave room). The port's GPU interface (gblport.cfg gpu=) is the right part of the TRANSITIONS row:
  * GPU D3D12 / GPU VULKAN on Windows (a click switches between those that run here), GPU VULKAN (Linux) / GPU METAL
- * (macOS) greyed - fixed there. The port's words are drawn in the values' own font (entry 28). */
-#if defined(_WIN32)
+ * (macOS) greyed - fixed there; the legacy build (RB=gl12) GPU OPENGL, greyed. The port's words are drawn in the values'
+ * own font (entry 28). */
+#if defined(_WIN32) && !defined(MW2_RB_GL12)
 /* the backends SDL's GPU API can run here (1 Direct3D 12, 2 Vulkan), asked once */
 static int gpu_backends(void)
 {
@@ -844,7 +845,10 @@ static int gpu_backends(void)
 /* the GPU interface the simulation will start with this setting (rb_init's order: the chosen one, else the other) */
 static const char *gpu_backend_text(int gpu)
 {
-#if defined(_WIN32)
+#if defined(MW2_RB_GL12)   /* the legacy build: OpenGL 1.2 only */
+    (void)gpu;
+    return "GPU OPENGL";
+#elif defined(_WIN32)
     const int m = gpu_backends();
     if (gpu == PORTCFG_GPU_VULKAN) return (m & 2) || !(m & 1) ? "GPU VULKAN" : "GPU D3D12";
     return (m & 1) || !(m & 2) ? "GPU D3D12" : "GPU VULKAN";
@@ -958,7 +962,7 @@ static void gbl_combat_variables(void)
         gbl_frame_text(28, 500, ROW_Y[0], pc.hud_original ? "HUD ORIGINAL" : "HUD WIDE", -1);
         gbl_frame_text(28, 500, ROW_Y[1], disp, -1);
         gbl_frame_text(28, 500, ROW_Y[13], pc.dos_sky_smooth ? "DOS SMOOTH" : "DOS DITHERED", -1);
-#if defined(_WIN32)
+#if defined(_WIN32) && !defined(MW2_RB_GL12)
         gbl_frame_text(28, 500, ROW_Y[8], gpu_backend_text(pc.gpu), -1);
 #else
         gbl_frame_text(28, 500, ROW_Y[8], gpu_backend_text(pc.gpu), grey);   /* (fixed on this system) */
@@ -997,7 +1001,7 @@ static void gbl_combat_variables(void)
                 if (x >= 495 && (i == 0 || i == 1 || i == 2 || i == 3 || i == 8 || i == 13)) {   /* the port's right-hand words */
                     if (i == 0) pc.hud_original ^= 1;
                     else if (i == 8) {   /* GPU (Windows: Direct3D 12 <-> Vulkan, those that run here; elsewhere fixed) */
-#if defined(_WIN32)
+#if defined(_WIN32) && !defined(MW2_RB_GL12)
                         if (pc.gpu == PORTCFG_GPU_VULKAN) { if (gpu_backends() & 1) pc.gpu = PORTCFG_GPU_D3D12; }
                         else if (gpu_backends() & 2) pc.gpu = PORTCFG_GPU_VULKAN;
 #endif

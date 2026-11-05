@@ -6,7 +6,7 @@
  * of the base game's shell, and these pieces are the ones it kept unchanged. Included by tools/gblshell.c (one
  * translation unit with the screens in tools/gbl/); addresses cited as "base" are the base game's MW2SHELL.EXE.
  */
-#include <SDL3/SDL.h>
+#include "sdlcompat.h"   /* SDL3 (SDL2 in the legacy build: SDL=2) */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

@@ -36,7 +36,11 @@ static FILE *gbl_dp_fopen(const char *name, const char *mode);
 #undef dp_fopen
 /* the program's entry point: on Windows SDL3's WinMain (a GUI program, -mwindows) calls main below with UTF-8
  * arguments - SDL2's SDL2main did; elsewhere main is left as it is */
+#ifdef MW2_SDL2
+#include <SDL_main.h>        /* (the legacy build: SDL2main's WinMain -> SDL_main) */
+#else
 #include <SDL3/SDL_main.h>
+#endif
 static FILE *gbl_dp_fopen(const char *name, const char *mode)
 {
     char path[1400], alt[64];
@@ -248,7 +252,7 @@ static void gbl_present_video(SDL_Texture *t)
     gbl_logical(g_grd, 0);
     SDL_SetRenderViewport(g_grd, NULL);
     SDL_GetRenderOutputSize(g_grd, &ow, &oh);
-    tw = t->w; th = t->h;
+    { float fw = 0, fh = 0; SDL_GetTextureSize(t, &fw, &fh); tw = (int)fw; th = (int)fh; }   /* (SDL2 in the legacy build: no public w / h) */
     src.x = 0; src.y = 0; src.w = (float)tw; src.h = (float)th;
     if (g_gvid_fit == PORTCFG_FIT_FILL && ow > 0 && oh > 0) {
         if ((long)ow * th > (long)oh * tw) { int h = (int)((long)tw * oh / ow); src.h = (float)h; src.y = (float)((th - h) / 2); }   /* wider: cut top / bottom */
@@ -1322,14 +1326,16 @@ int main(int argc, char **argv)
         if (!g_win) { fprintf(stderr, "SDL: %s\n", SDL_GetError()); return 1; }
         /* the menus through the same GPU interface as the simulation (gblport.cfg gpu=, rb.h): SDL's Direct3D 12 or Vulkan
          * renderer on Windows, Vulkan on Linux, Metal on macOS - the other one, then SDL's software renderer, if it can't
-         * start; never OpenGL */
+         * start; never OpenGL - except in the legacy build (RB=gl12: no SDL_GPU), SDL's OpenGL renderer, else its software one */
         {   /* one renderer at a time (SDL_RENDER_DRIVER, a list, overrides; tests): SDL 3.2 trying a list itself keeps a failed
              * renderer's state - on Windows a Direct3D 12 renderer that can't start left the Vulkan one taking its texture
              * formats, and the menus' RGB24 texture was refused (a crash at the first frame) */
             const char *list = getenv("SDL_RENDER_DRIVER");
             char names[128], *at, *end;
             if (!list || !list[0])
-#if defined(_WIN32)
+#if defined(MW2_RB_GL12)
+                list = "opengl,software";
+#elif defined(_WIN32)
                 list = pc.gpu == PORTCFG_GPU_VULKAN ? "vulkan,direct3d12,software" : "direct3d12,vulkan,software";
 #elif defined(__APPLE__)
                 list = "metal,software";

@@ -2,6 +2,15 @@
 
 ## Unreleased (work in progress)
 
+- **Legacy Windows build for XP-era PCs:** a second Windows zip (`windows-x86-legacy`): 32-bit, Windows XP SP3 and
+  newer, a Pentium 4 / Athlon 64 (SSE2) and an OpenGL 1.2 card (GeForce 2, Radeon 7000, GMA 900, Voodoo 3 and newer).
+  The same game and all three looks, drawn by a new OpenGL 1.2 fixed-function renderer (docs/RENDERER_GL12.md) on SDL2.
+  Against the normal renderer: the DOS look the same to a few pixels a frame, ENHANCED and TITANIUM to a level or two.
+  No multisampling; Combat Variables shows GPU OPENGL. Not yet tested on real XP hardware.
+  - **Same missions on every build:** the simulation's atan2f is now the same function everywhere (the 32-bit C
+    libraries' rounded differently, and one mission played out differently in a 32-bit build); a 32-bit build plays all
+    86 missions exactly as the 64-bit one.
+
 - **New renderer: SDL3's GPU API instead of OpenGL.** The game, menus included, now draws with Direct3D 12 or Vulkan on
   Windows (your choice in Combat Variables' GPU; the other one is tried if it can't start), Vulkan on Linux and Metal on
   macOS. OpenGL is gone, and with it Apple's deprecated OpenGL layer and its problems on the Mac. All three looks

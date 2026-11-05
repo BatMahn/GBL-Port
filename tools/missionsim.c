@@ -6,6 +6,7 @@
  */
 #include <stdio.h>
 #include <math.h>
+#include "simmath.h"   /* (atan2f the same on every build) */
 #include <stdlib.h>
 #include <string.h>
 

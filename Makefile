@@ -13,6 +13,29 @@ PKG_CONFIG ?= pkg-config
 SDL3_CONFIG ?= $(if $(PKG_CONFIG_PATH),PKG_CONFIG_PATH='$(PKG_CONFIG_PATH)' )$(PKG_CONFIG) sdl3
 SDL_CFLAGS = $(shell $(SDL3_CONFIG) --cflags 2>/dev/null)
 SDL_LIBS = $(shell $(SDL3_CONFIG) --libs 2>/dev/null)
+SDL_CHECK =
+# The legacy build (Windows XP: SDL3 does not run there) - SDL=2 builds against SDL2 (2.0.18 or newer; src/sdlcompat.h maps
+# the SDL3 calls the port makes), through pkg-config's sdl2 module or SDL2_DIR=<prefix> (the SDL2 MinGW development
+# package's i686-w64-mingw32 folder). The SDL3 build is unaffected (sdlcompat.h is then <SDL3/SDL.h>).
+ifeq ($(SDL),2)
+  SDL2_MIN_VERSION = 2.0.18
+  ifdef SDL2_DIR
+    SDL2_PKG = PKG_CONFIG_LIBDIR="$(SDL2_DIR)/lib/pkgconfig" PKG_CONFIG_PATH= $(PKG_CONFIG) --define-variable=prefix=$(SDL2_DIR)
+  else
+    SDL2_PKG = $(if $(PKG_CONFIG_PATH),PKG_CONFIG_PATH='$(PKG_CONFIG_PATH)' )$(PKG_CONFIG)
+  endif
+  SDL_CFLAGS = $(filter-out -Dmain=SDL_main,$(shell $(SDL2_PKG) --cflags sdl2 2>/dev/null)) -DMW2_SDL2
+  SDL_LIBS = $(shell $(SDL2_PKG) --libs sdl2 2>/dev/null)
+  SDL_CHECK = @$(SDL2_PKG) --exists 'sdl2 >= $(SDL2_MIN_VERSION)' 2>/dev/null || { echo "SDL2 >= $(SDL2_MIN_VERSION) not found by $(PKG_CONFIG) (sdl2.pc): set SDL2_DIR=<prefix> (README, Build: the legacy build)" >&2; exit 1; }
+endif
+# The render backend (src/rb.h): SDL_GPU (default; Direct3D 12 / Vulkan / Metal), or RB=gl12 - OpenGL 1.2's fixed-function
+# pipeline (src/rb_gl12.c, the legacy build for older PCs; docs/RENDERER_GL12.md), linked to the system's OpenGL
+ifeq ($(RB),gl12)
+  RB_SRC = src/rb_gl12.c src/rb_gl12_world.c
+  CFLAGS += -DMW2_RB_GL12
+else
+  RB_SRC = src/rb_gpu.c src/rb_shaders.c
+endif
 # RPATH: where the executable looks for libSDL3 first, e.g. the .deb's  make gbl RPATH='$$ORIGIN/../lib/gblport'
 ifdef RPATH
   LDFLAGS += -Wl,-rpath,'$(RPATH)'
@@ -26,6 +49,14 @@ endif
 ifeq ($(WINDOWS),1)
   UNAME_S = Windows
   CFLAGS += -include src/wincompat.h
+  ifeq ($(SDL),2)
+    # the legacy build (32-bit, Windows XP SP3 and newer): XP's API level; SSE2 arithmetic as the 64-bit builds' (the
+    # simulation's floats the same - README; a Pentium 4 / Athlon 64 or newer), the stack realigned for it in callbacks
+    # from 4-byte-aligned Windows code; libgcc linked in (no DLL of it to ship)
+    LEGACY_FLAGS = -msse2 -mfpmath=sse -mstackrealign
+    CFLAGS += $(LEGACY_FLAGS) -D_WIN32_WINNT=0x0501 -DWINVER=0x0501 -DMW2_LEGACY_XP
+    LDFLAGS += -static-libgcc
+  endif
   LDLIBS = -lm
   DLLIB =
   WINSRC = src/wincompat.c
@@ -43,6 +74,15 @@ ifeq ($(UNAME_S),Linux)
 endif
 ifeq ($(UNAME_S),Darwin)
   LDLIBS += -framework CoreFoundation -framework CoreAudio -framework AudioToolbox
+endif
+ifeq ($(RB),gl12)
+  ifeq ($(UNAME_S),Windows)
+    RB_LIBS = -lopengl32
+  else ifeq ($(UNAME_S),Darwin)
+    RB_LIBS = -framework OpenGL
+  else
+    RB_LIBS = -lGL
+  endif
 endif
 
 LIB_SRC = src/prj.c src/datapath.c src/cdaudio.c src/mek.c
@@ -70,10 +110,10 @@ cdrip: tools/cdrip.c
 	$(CC) $(CFLAGS) $^ -o $@
 
 HDRS = $(wildcard src/*.h tools/*.h)
-# the renderer: the world (glr.c), the HUD (hud.c) and the render backend on SDL_GPU (rb_gpu.c; the shaders compiled
-# for Vulkan, Direct3D 12 and Metal in rb_shaders.c - generated, checked in: "make shaders" remakes it). SDL loads the
-# GPU API (Vulkan / Direct3D 12 / Metal) at run time: nothing graphics-specific to link
-GL3D_SRC = src/rb_gpu.c src/rb_shaders.c src/hud.c src/shp.c src/glr.c src/skygnd.c src/anim.c src/mek.c src/mtbl.c src/msim.c src/fx.c src/combat.c src/ai.c src/mech3d.c src/render.c src/tex.c src/wtb.c src/bwd.c src/prj.c src/datapath.c
+# the renderer: the world (glr.c), the HUD (hud.c) and the render backend - on SDL_GPU (rb_gpu.c; the shaders compiled
+# for Vulkan, Direct3D 12 and Metal in rb_shaders.c - generated, checked in: "make shaders" remakes it; SDL loads the GPU
+# API at run time: nothing graphics-specific to link), or RB=gl12 (OpenGL 1.2, linked: RB_LIBS)
+GL3D_SRC = $(RB_SRC) src/hud.c src/shp.c src/glr.c src/skygnd.c src/anim.c src/mek.c src/mtbl.c src/msim.c src/fx.c src/combat.c src/ai.c src/mech3d.c src/render.c src/tex.c src/wtb.c src/bwd.c src/prj.c src/datapath.c
 
 missionsim: tools/missionsim.c src/msim.c src/fx.c src/ai.c src/combat.c src/mtbl.c src/anim.c src/mek.c src/mech3d.c src/wtb.c src/bwd.c src/prj.c src/datapath.c $(HDRS)
 	$(CC) $(CFLAGS) -Wno-conversion -Isrc $(filter %.c,$^) -o $@ -lm
@@ -83,13 +123,15 @@ missionsim: tools/missionsim.c src/msim.c src/fx.c src/ai.c src/combat.c src/mtb
 # (no MIDI: GBL's shell never plays menu music, docs/gbl/A_frame.md 1.5; CD audio stays)
 GBL_SHELL_SRC = tools/gblshell.c tools/gbl/gbl_common.c tools/gbl/gbl_frame.c tools/gbl/gbl_pilots.c tools/gbl/gbl_campaign.c tools/gbl/gbl_lab.c
 gbl: $(WINRES) $(GBL_SHELL_SRC) tools/glview.c src/shelldb.c src/smk.c src/vidfx.c src/lance.c src/ttext.c src/cockpitcfg.c src/sfx.c src/portcfg.c src/cdaudio.c build/miniaudio.o $(GL3D_SRC) $(WINSRC) $(HDRS)
+	$(SDL_CHECK)
 	@mkdir -p build
-	$(CC) $(CFLAGS) -Wno-conversion -Isrc -Ithird_party $(SDL_CFLAGS) -c tools/glview.c -Dmain=glview_main -o build/glview_sim.o
+	$(CC) $(CFLAGS) -Wno-conversion -Isrc -Ithird_party $(SDL_CFLAGS) -DSDL_MAIN_HANDLED -c tools/glview.c -Dmain=glview_main -o build/glview_sim.o
 	$(CC) $(CFLAGS) -Wno-conversion -Isrc -Ithird_party -Itools -c tools/gblshell.c $(SDL_CFLAGS) -o build/gblshell_one.o
-	$(CC) $(CFLAGS) -Wno-conversion -Isrc -Ithird_party $(SDL_CFLAGS) build/gblshell_one.o build/glview_sim.o $(sort $(filter src/%.c,$^)) build/miniaudio.o $(WINRES) -o $@ $(LDFLAGS) $(SDL_LIBS) -lm -lpthread $(DLLIB) $(WINLIBS)
+	$(CC) $(CFLAGS) -Wno-conversion -Isrc -Ithird_party $(SDL_CFLAGS) build/gblshell_one.o build/glview_sim.o $(sort $(filter src/%.c,$^)) build/miniaudio.o $(WINRES) -o $@ $(LDFLAGS) $(SDL_LIBS) $(RB_LIBS) -lm -lpthread $(DLLIB) $(WINLIBS)
 
 glview: tools/glview.c src/sfx.c src/portcfg.c src/cdaudio.c build/miniaudio.o $(GL3D_SRC) $(HDRS)
-	$(CC) $(CFLAGS) -Wno-conversion -Isrc -Ithird_party $(SDL_CFLAGS) $(filter %.c,$^) $(filter %.o,$^) -o $@ $(LDFLAGS) $(SDL_LIBS) -lm -lpthread $(DLLIB)
+	$(SDL_CHECK)
+	$(CC) $(CFLAGS) -Wno-conversion -Isrc -Ithird_party $(SDL_CFLAGS) $(filter %.c,$^) $(filter %.o,$^) -o $@ $(LDFLAGS) $(SDL_LIBS) $(RB_LIBS) -lm -lpthread $(DLLIB)
 
 gl: $(GLBIN)
 

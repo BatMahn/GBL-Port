@@ -29,10 +29,11 @@
 #define RTLD_DEFAULT ((void *)-2)   /* <dlfcn.h>'s value, hidden under strict POSIX */
 #endif
 #endif
-#include "rb.h"           /* the render backend (SDL_GPU) */
+#include "rb.h"           /* the render backend (SDL_GPU, or OpenGL 1.2 in the RB=gl12 build) */
 #include "rb_shaders.h"
-#include <SDL3/SDL.h>
+#include "sdlcompat.h"   /* SDL3 (SDL2 in the legacy build: SDL=2) */
 #include <math.h>
+#include "simmath.h"   /* (atan2f the same on every build) */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -5215,20 +5216,26 @@ int main(int argc, char **argv)
         if (getenv("MW2_RENDER")) { g_render_w = g_render_h = 0; sscanf(getenv("MW2_RENDER"), "%dx%d", &g_render_w, &g_render_h); }   /* tests */
         if (g_render_w) aa = 0;   /* the original resolutions: no multisampling (the window is only blitted to) */
         gpu = pc.gpu == PORTCFG_GPU_D3D12 ? RB_GPU_D3D12 : pc.gpu == PORTCFG_GPU_VULKAN ? RB_GPU_VULKAN : RB_GPU_AUTO;
-        win = SDL_CreateWindow("MechWarrior 2: Ghost Bear's Legacy", g_win_w, g_win_h, flags);   /* (centred) */
+        /* (the render backend's own flags added - the OpenGL backend: an OpenGL window, 8-8-8 colour / 24-bit depth, else
+         * 5-6-5 / 16) */
+        win = SDL_CreateWindow("MechWarrior 2: Ghost Bear's Legacy", g_win_w, g_win_h, flags | (SDL_WindowFlags)rb_window_flags(0));   /* (centred) */
+        if (!win && rb_window_flags(1)) win = SDL_CreateWindow("MechWarrior 2: Ghost Bear's Legacy", g_win_w, g_win_h, flags | (SDL_WindowFlags)rb_window_flags(1));
         if (win && !test && pc.mode == 2) {   /* exclusive fullscreen at the chosen mode (the closest the display has) */
             SDL_DisplayMode got;
             if (SDL_GetClosestFullscreenDisplayMode(SDL_GetPrimaryDisplay(), pc.w, pc.h, 0.0f, false, &got)) SDL_SetWindowFullscreenMode(win, &got);
             SDL_SetWindowFullscreen(win, true);
         }
-        if (!win) win = SDL_CreateWindow("MechWarrior 2: Ghost Bear's Legacy", 1280, 720, SDL_WINDOW_RESIZABLE);   /* last resort: windowed */
+        if (!win) win = SDL_CreateWindow("MechWarrior 2: Ghost Bear's Legacy", 1280, 720, SDL_WINDOW_RESIZABLE | (SDL_WindowFlags)rb_window_flags(0));   /* last resort: windowed */
+        if (!win && rb_window_flags(1)) win = SDL_CreateWindow("MechWarrior 2: Ghost Bear's Legacy", 1280, 720, SDL_WINDOW_RESIZABLE | (SDL_WindowFlags)rb_window_flags(1));
         /* the GPU device (SDL_GPU: Direct3D 12 / Vulkan on Windows, Vulkan on Linux, Metal on macOS) with the chosen
          * samples - the window's picture multisampled, stepping down to what the GPU has */
         if (!win || rb_init(win, gpu, aa, gerr, sizeof gerr) != 0) {
             /* said on stderr and in a box (the Windows program and the macOS app have no console; tests: no box) */
             char m[1024];
             snprintf(m, sizeof m,
-#if defined(_WIN32)
+#if defined(MW2_RB_GL12)
+                     "Could not start OpenGL:\n%s\n\nThe game needs an OpenGL 1.2 driver (or 1.1 with GL_EXT_texture_edge_clamp): install the graphics card's own driver.",
+#elif defined(_WIN32)
                      "Could not start Direct3D 12 or Vulkan:\n%s\n\nUpdate your graphics driver and try again.",
 #elif defined(__APPLE__)
                      "Could not start Metal:\n%s\n\nThis Mac's graphics can't run the game (it needs a Metal GPU and macOS 10.14 or newer).",

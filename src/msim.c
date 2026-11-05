@@ -10,6 +10,7 @@ static unsigned startup_ticks(msim *s);
 #include "datapath.h"
 
 #include <math.h>
+#include "simmath.h"   /* (atan2f the same on every build) */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

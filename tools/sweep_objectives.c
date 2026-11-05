@@ -40,6 +40,7 @@
  */
 #include <errno.h>
 #include <math.h>
+#include "simmath.h"   /* (atan2f the same on every build) */
 #include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>

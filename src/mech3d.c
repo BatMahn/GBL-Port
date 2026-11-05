@@ -242,6 +242,7 @@ void mech3d_free(mech3d *m)
 /* ---- world objects ----------------------------------------------------------- */
 
 #include <math.h>
+#include "simmath.h"   /* (atan2f the same on every build) */
 
 typedef struct {
     int     present;

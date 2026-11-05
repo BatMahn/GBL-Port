@@ -3,6 +3,7 @@
 #include "mek.h"
 
 #include <math.h>
+#include "simmath.h"   /* (atan2f the same on every build) */
 #include <stdio.h>
 #include <string.h>
 

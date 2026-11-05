@@ -75,6 +75,25 @@ int mw2_pick_folder(const char *title, char *out, size_t n)
     if (SUCCEEDED(hr)) CoUninitialize();
     return r;
 }
+
+#ifdef MW2_LEGACY_XP
+/* ---- the legacy build (Windows XP SP3): calls whose usual implementations need Windows Vista. (The program is C only:
+ * none of the C++ runtime's thread and static-initialisation pieces - libgcc's gthr-win32, __cxa_guard_* - is linked;
+ * the import check in the release workflow keeps it so) */
+int mw2_setenv(const char *k, const char *v, int overwrite)
+{
+    size_t n;
+    char *kv;
+    int r;
+    if (!overwrite && getenv(k)) return 0;
+    n = strlen(k) + strlen(v ? v : "") + 2;
+    if (!(kv = (char *)malloc(n))) return -1;
+    snprintf(kv, n, "%s=%s", k, v ? v : "");
+    r = _putenv(kv) == 0 ? 0 : -1;   /* (MSVCRT copies the string; an empty value removes the variable) */
+    free(kv);
+    return r;
+}
+#endif
 #else
 typedef int mw2_wincompat_unused;   /* ISO C: a translation unit must not be empty */
 #endif
