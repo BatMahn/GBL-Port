@@ -89,20 +89,22 @@ static void dos_camscr(const int c[3], int o[2])
 }
 static void dos_scr(const float w[3], int o[2]) { int c[3]; dos_cam(w, c); dos_camscr(c, o); }
 #define DOS_PIT_NEAR 32
-static void dos_pitclip(const int A[3], const int B[3], int o[3], float *t)
+static void dos_nclip(const int A[3], const int B[3], int nr, int o[3], float *t)
 {
     if (B[2] <= A[2]) {
-        int dz = A[2] - B[2], e2 = DOS_PIT_NEAR - B[2];
+        int dz = A[2] - B[2], e2 = nr - B[2];
         *t = 1.0f - (float)e2 / (float)(dz > 1 ? dz : 1);
         o[0] = dos_idiv((A[0] - B[0]) * e2, dz) + B[0]; o[1] = dos_idiv((A[1] - B[1]) * e2, dz) + B[1];
     } else {
-        int dz = B[2] - A[2], e2 = DOS_PIT_NEAR - A[2];
+        int dz = B[2] - A[2], e2 = nr - A[2];
         *t = (float)e2 / (float)(dz > 1 ? dz : 1);
         o[0] = dos_idiv((B[0] - A[0]) * e2, dz) + A[0]; o[1] = dos_idiv((B[1] - A[1]) * e2, dz) + A[1];
     }
-    o[2] = DOS_PIT_NEAR;
+    o[2] = nr;
 }
 static int dos_ispit(int vtx) { int e = (int)(dvtx(vtx * FPV + 12) + 0.5f) / 65536; return e >= 1 && e < 200; }
+/* world_common.glsl dos_nearof: the cockpit set's near plane, or the view's (with the DOS order on), else 0 */
+static int dos_nearof(int vtx) { return dos_ispit(vtx) ? DOS_PIT_NEAR : G.F.u_dos_order != 0 ? G.F.u_dos_near : 0; }
 /* a polygon's corners in the layer (its fan from first vertex s: corner 0, each triangle's next, the closing one's last) */
 static int poly_corners(int s, int *I, int cap)
 {
@@ -121,7 +123,7 @@ static int poly_corners(int s, int *I, int cap)
 /* ---- the vertex stage (world.vert), per-polygon results kept while the vertices of one polygon follow each other */
 static struct { int s, ok, n; float Q[18][2]; } pc_push;          /* the exact fill's corners on screen (polygon s) */
 static struct { int s, isnear, any; int lo[2], hi[2]; } pc_pit;      /* a cockpit polygon's near-clipped screen box */
-static struct { int t; float km, kn, ks; int kc, back, dosf; } pc_key;   /* the fog / order keys, light, facing (fan t) */
+static struct { int t; float km, kn, ks, kcl; int kc, back, dosf; } pc_key;   /* the fog / order keys, light, facing (fan t) */
 static struct { int t, wok; float wd, km; } pc_ti;                 /* TITANIUM: winding . (v0 - eye), deepest corner (fan t) */
 
 static void poly_cache_reset(void) { pc_push.s = pc_pit.s = pc_key.t = pc_ti.t = -1; }
@@ -211,21 +213,22 @@ static void vertex_stage(int vid, int i, wv *o)
             o->clip[0] = (B[0] + off[0]) / hx * o->clip[3]; o->clip[1] = (B[1] + off[1]) / hy * o->clip[3];
         }
     }
-    if (g_dosprog && g_sb && F->u_dos != 0 && F->u_dos_exact != 0 && (int)(a[8] + 0.5f) <= 3 && a[11] > 0.5f && pit > 0 && pit < 200) {
-        /* a cockpit polygon with a corner nearer than its near plane: clipped there in the camera's integers, each fan
-         * triangle laid over the clipped polygon's screen box (the fragment keeps the DOS span's pixels) */
-        const int s = (int)(a[11] + 0.5f) - 1, rel = vid - s, cn = rel - 3 * (rel / 3);
+    if (g_dosprog && g_sb && F->u_dos != 0 && F->u_dos_exact != 0 && (int)(a[8] + 0.5f) <= 3 && a[11] > 0.5f && !tiwind && dos_nearof((int)(a[11] + 0.5f) - 1) > 0) {
+        /* a polygon with a corner nearer than its near plane (the cockpit set's, or the view's: world.vert): clipped
+         * there in the camera's integers, each fan triangle laid over the clipped polygon's screen box (the fragment
+         * keeps the DOS span's pixels) */
+        const int s = (int)(a[11] + 0.5f) - 1, rel = vid - s, cn = rel - 3 * (rel / 3), nr = dos_nearof(s);
         if (pc_pit.s != s) {
             int I[18], n = poly_corners(s, I, 18), Cc[18][3], k;
             pc_pit.s = s; pc_pit.isnear = 0; pc_pit.any = 0;
             pc_pit.lo[0] = pc_pit.lo[1] = 1 << 30; pc_pit.hi[0] = pc_pit.hi[1] = -(1 << 30);
-            for (k = 0; k < n; k++) { float w3[3]; dpos(I[k], w3); dos_cam(w3, Cc[k]); if (Cc[k][2] < DOS_PIT_NEAR) pc_pit.isnear = 1; }
+            for (k = 0; k < n; k++) { float w3[3]; dpos(I[k], w3); dos_cam(w3, Cc[k]); if (Cc[k][2] < nr) pc_pit.isnear = 1; }
             if (pc_pit.isnear)
                 for (k = 0; k <= n && n >= 3; k++) {
-                    const int cur = k % n, prv = (k + n - 1) % n, bc = Cc[cur][2] < DOS_PIT_NEAR, bp = Cc[prv][2] < DOS_PIT_NEAR;
+                    const int cur = k % n, prv = (k + n - 1) % n, bc = Cc[cur][2] < nr, bp = Cc[prv][2] < nr;
                     int qc[3], qs[2], have = 0;
                     float tt;
-                    if (k > 0 && bc != bp) { dos_pitclip(Cc[prv], Cc[cur], qc, &tt); dos_camscr(qc, qs); have = 1; }
+                    if (k > 0 && bc != bp) { dos_nclip(Cc[prv], Cc[cur], nr, qc, &tt); dos_camscr(qc, qs); have = 1; }
                     if (have) {
                         if (qs[0] < pc_pit.lo[0]) pc_pit.lo[0] = qs[0];
                         if (qs[1] < pc_pit.lo[1]) pc_pit.lo[1] = qs[1];
@@ -289,6 +292,7 @@ static void vertex_stage(int vid, int i, wv *o)
             for (k = 0; k < 16 && t > 0; k++) { if (ebits(3 * t) & 4) break; t--; }
             if (pc_key.t != t) {   /* the polygon's keys, its light intensity and facing (world.vert) */
                 float P0[3], nn[3], nl;
+                float zl[18];
                 pc_key.t = t; pc_key.km = -1e9f; pc_key.kn = 1e9f; pc_key.ks = 0; pc_key.kc = 0; pc_key.back = 0; pc_key.dosf = 0;
                 for (k = 0; k < 16; k++) {
                     int b = 3 * (t + k), last = (ebits(b) & 2) != 0;
@@ -296,9 +300,21 @@ static void vertex_stage(int vid, int i, wv *o)
                         float w3[3], z;
                         dpos(b + c, w3); z = dos_camz(w3);
                         if (z > pc_key.km) pc_key.km = z;
-                        if ((c == 0 && k == 0) || c == 1 || (c == 2 && last)) { if (z < pc_key.kn) pc_key.kn = z; pc_key.ks += z; pc_key.kc++; }
+                        if ((c == 0 && k == 0) || c == 1 || (c == 2 && last)) { if (z < pc_key.kn) pc_key.kn = z; if (pc_key.kc < 18) zl[pc_key.kc] = z; pc_key.kc++; }
                     }
                     if (last) break;
+                }
+                {   /* the mean over the near-clipped polygon's corners (world.vert) */
+                    const float nz = F->u_dos_near > 0 ? (float)F->u_dos_near : 4.0f;
+                    float kcl = 0.0f;
+                    int i2;
+                    if (pc_key.kc > 18) pc_key.kc = 18;
+                    for (i2 = 0; i2 < pc_key.kc; i2++) {
+                        const float za = zl[i2], zp = zl[(i2 + pc_key.kc - 1) % pc_key.kc];
+                        if ((za < nz) != (zp < nz)) { pc_key.ks += nz; kcl += 1.0f; }
+                        if (za >= nz) { pc_key.ks += za; kcl += 1.0f; }
+                    }
+                    pc_key.kcl = kcl;
                 }
                 dpos(3 * t, P0);
                 nn[0] = dvtx(3 * t * FPV + 3); nn[1] = dvtx(3 * t * FPV + 4); nn[2] = dvtx(3 * t * FPV + 5);
@@ -330,7 +346,10 @@ static void vertex_stage(int vid, int i, wv *o)
             o->dkey = pc_key.km;
             if (g_dosprog) o->dosf = pc_key.dosf;
             if (pc_key.back && e < 1024) cull(o->clip);   /* (back: only with a normal) */
-            key = (kmode & 2) ? floorf(pc_key.ks / (float)(pc_key.kc > 1 ? pc_key.kc : 1)) : (kmode & 4) ? (pc_key.kn > 4.0f ? pc_key.kn : 4.0f) : pc_key.km;
+            {
+                const float nz = F->u_dos_near > 0 ? (float)F->u_dos_near : 4.0f;
+                key = (kmode & 2) ? floorf(pc_key.ks / (pc_key.kcl > 1.0f ? pc_key.kcl : 1.0f)) : (kmode & 4) ? (pc_key.kn > nz ? pc_key.kn : nz) : pc_key.km;
+            }
             if (pit == 0 && key > 0.0f) {   /* the DOS draw order: the polygon at its key's depth, on the view axis */
                 const float *v = F->u_view;
                 float fw[3] = {-v[2], -v[6], -v[10]}, ep[4] = {F->u_dos_eye[0] + fw[0] * key * 0.25f, F->u_dos_eye[1] + fw[1] * key * 0.25f, F->u_dos_eye[2] + fw[2] * key * 0.25f, 1.0f}, qq[4];
@@ -863,23 +882,23 @@ static void dpoly_make(int s, float lev, dpoly *P)
     }
     P->n = n;
     P->cmin = 1e9f; P->cmax = -1e9f;
-    if (trust && dos_ispit(s)) {   /* a cockpit polygon reaching nearer than its near plane: clipped in the camera's integers */
-        int Cc[18][3], isnear = 0, k;
+    if (trust && dos_nearof(s) > 0) {   /* a polygon reaching nearer than its near plane: clipped in the camera's integers */
+        int Cc[18][3], isnear = 0, k, nr = dos_nearof(s);
         for (i = 0; i < n; i++) {
             float w3[3];
             dpos(I[i], w3); dos_cam(w3, Cc[i]);
-            if (Cc[i][2] < DOS_PIT_NEAR) isnear = 1;
+            if (Cc[i][2] < nr) isnear = 1;
             if (C[i] < P->cmin) P->cmin = C[i];
             if (C[i] > P->cmax) P->cmax = C[i];
         }
         if (isnear) {
             pitclip = 1;
             for (k = 0; k <= n; k++) {
-                const int cur = k % n, prv = (k + n - 1) % n, bc = Cc[cur][2] < DOS_PIT_NEAR, bp = Cc[prv][2] < DOS_PIT_NEAR;
+                const int cur = k % n, prv = (k + n - 1) % n, bc = Cc[cur][2] < nr, bp = Cc[prv][2] < nr;
                 float tt;
                 if (k > 0 && bc != bp && m < 20) {
                     int qc[3];
-                    dos_pitclip(Cc[prv], Cc[cur], qc, &tt);
+                    dos_nclip(Cc[prv], Cc[cur], nr, qc, &tt);
                     dos_camscr(qc, P->V[m]);
                     P->CF[m] = (int)floorf((C[prv] + (C[cur] - C[prv]) * tt) * 65536.0f + 0.5f);
                     m++;
@@ -931,6 +950,13 @@ static void dpoly_make(int s, float lev, dpoly *P)
     }
 }
 
+/* world.frag dos_xstep: an edge's x step trunc((dx << 16) / rows) modulo 2^32, in parts (no overflow of dx << 16) */
+static unsigned dos_xstep(int dx, int cnt)
+{
+    const int qd = dos_idiv(dx, cnt), rd = dx - qd * cnt;
+    const int sf = abs(rd) < 32768 ? dos_idiv(rd * 65536, cnt) : (int)truncf((float)rd * 65536.0f / (float)cnt);
+    return (unsigned)qd * 65536u + (unsigned)sf;
+}
 /* one chain (dir -1 backward, + 1 forward) at DOS row y: (x, c) in 16.16 (dos_gchain) */
 static void dos_gchain(const dpoly *P, int dir, int y, int out[2])
 {
@@ -942,7 +968,7 @@ static void dos_gchain(const dpoly *P, int dir, int y, int out[2])
     for (g = 0; g < 20 && yq >= r0 + cnt && b != top; g++) { r0 += cnt; a = b; b = (a + dir + m) % m; cnt = P->V[b][1] - P->V[a][1]; if (cnt == 0) cnt = 1; }
     if (cnt == 0) cnt = 1;
     t = (unsigned)(y - r0);
-    out[0] = (int)((unsigned)(P->V[a][0] * 65536 + 0x8000) + t * (unsigned)dos_idiv((P->V[b][0] - P->V[a][0]) * 65536, cnt));
+    out[0] = (int)((unsigned)P->V[a][0] * 65536u + 0x8000u + t * dos_xstep(P->V[b][0] - P->V[a][0], cnt));
     out[1] = (int)((unsigned)(P->CF[a] + 0x8000) + t * (unsigned)dos_idiv(P->CF[b] - P->CF[a], cnt));
 }
 /* DOS row y's span: its left end x0, w (the last pixel - the first), the shade at the left end and its step per pair */
@@ -963,29 +989,40 @@ static void dos_row(const dpoly *P, int y, drow *R)
 typedef struct { int s, ok, persp, n, top, ybot; int V[20][2]; double A[20][3]; } tpoly;
 static void tpoly_make(int s, int persp, tpoly *T)
 {
-    int t, n = 0, i;
+    int t, n = 0, i, nc = 0, nr = dos_nearof(s), isnear = 0, k;
+    int Cc[18][3];
+    float Uc[18][2];
     memset(T, 0, sizeof *T);
     T->s = s; T->persp = persp;
     for (t = 0; t < 16; t++) {
         int b = s + 3 * t, c;
         for (c = t == 0 ? 0 : 1; c < 3; c++) {
             float w4[4], q[4];
-            int cc[3];
             if (c == 2 && !(ebits(b) & 2)) break;
             dpos(b + c, w4); w4[3] = 1.0f;
             mat4v(G.F.u_mvp, w4, q);
-            if (q[2] + q[3] < 0.0f || n >= 18) return;
-            dos_cam(w4, cc);
-            if (cc[2] < 1) return;
-            dos_camscr(cc, T->V[n]);
-            {
-                float u = dvtx((b + c) * FPV + 6) * 65536.0f, v = dvtx((b + c) * FPV + 7) * 65536.0f;
-                if (persp) { float qq = 1.0f / (float)cc[2]; T->A[n][0] = u * qq; T->A[n][1] = v * qq; T->A[n][2] = qq; }
-                else { T->A[n][0] = u; T->A[n][1] = v; T->A[n][2] = 0; }
-            }
-            n++;
+            if (nc >= 18 || (nr == 0 && q[2] + q[3] < 0.0f)) return;
+            dos_cam(w4, Cc[nc]);
+            Uc[nc][0] = dvtx((b + c) * FPV + 6) * 65536.0f; Uc[nc][1] = dvtx((b + c) * FPV + 7) * 65536.0f;
+            if (Cc[nc][2] < (nr > 1 ? nr : 1)) isnear = 1;
+            nc++;
         }
         if (ebits(b) & 2) break;
+    }
+    if (isnear && nr == 0) return;
+    /* the corners in front, and on the near plane where an edge crosses it (0x3e8fe: x, y, u, v by the same share) */
+    for (k = 0; k <= nc && nc >= 3; k++) {
+        const int cur = k % nc, prv = (k + nc - 1) % nc, n1 = nr > 1 ? nr : 1, bc = Cc[cur][2] < n1, bp = Cc[prv][2] < n1;
+        int cc[3], pass;
+        float uu[2], tt;
+        for (pass = 0; pass < 2; pass++) {
+            if (pass == 0) { if (!(k > 0 && bc != bp) || n >= 18) continue; dos_nclip(Cc[prv], Cc[cur], n1, cc, &tt); uu[0] = Uc[prv][0] + (Uc[cur][0] - Uc[prv][0]) * tt; uu[1] = Uc[prv][1] + (Uc[cur][1] - Uc[prv][1]) * tt; }
+            else { if (!(k < nc && !bc) || n >= 18) continue; memcpy(cc, Cc[cur], sizeof cc); memcpy(uu, Uc[cur], sizeof uu); }
+            dos_camscr(cc, T->V[n]);
+            if (persp) { float qq = 1.0f / (float)cc[2]; T->A[n][0] = uu[0] * qq; T->A[n][1] = uu[1] * qq; T->A[n][2] = qq; }
+            else { T->A[n][0] = uu[0]; T->A[n][1] = uu[1]; T->A[n][2] = 0; }
+            n++;
+        }
     }
     if (n < 3) return;
     T->n = n; T->ok = 1;
@@ -1009,8 +1046,8 @@ static void ttex_row(const tpoly *T, int y, trow *R)
     int e1[4], e2[4], x1, x2, c;
     float a1[3], a2[3];
     tedge(T, -1, y, e1); tedge(T, 1, y, e2);
-    x1 = (int)((unsigned)(T->V[e1[0]][0] * 65536 + 0x8000) + (unsigned)e1[2] * (unsigned)dos_idiv((T->V[e1[1]][0] - T->V[e1[0]][0]) * 65536, e1[3]));
-    x2 = (int)((unsigned)(T->V[e2[0]][0] * 65536 + 0x8000) + (unsigned)e2[2] * (unsigned)dos_idiv((T->V[e2[1]][0] - T->V[e2[0]][0]) * 65536, e2[3]));
+    x1 = (int)((unsigned)T->V[e1[0]][0] * 65536u + 0x8000u + (unsigned)e1[2] * dos_xstep(T->V[e1[1]][0] - T->V[e1[0]][0], e1[3]));
+    x2 = (int)((unsigned)T->V[e2[0]][0] * 65536u + 0x8000u + (unsigned)e2[2] * dos_xstep(T->V[e2[1]][0] - T->V[e2[0]][0], e2[3]));
     for (c = 0; c < 3; c++) {
         a1[c] = (float)T->A[e1[0]][c] + (float)e1[2] * ((float)T->A[e1[1]][c] - (float)T->A[e1[0]][c]) / (float)e1[3];
         a2[c] = (float)T->A[e2[0]][c] + (float)e2[2] * ((float)T->A[e2[1]][c] - (float)T->A[e2[0]][c]) / (float)e2[3];

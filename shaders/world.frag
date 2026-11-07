@@ -122,6 +122,14 @@ int dos_q(float p) { return (int(trunc(p * 4.0)) + 2) >> 2; }
 // 0x3dfb7: quarter pixels, + 2 >> 2
 ivec2 dos_gvtx(vec4 q) { vec2 p = q.xy / q.w * 0.5 * u_vp; ivec2 c = ivec2(u_vp) / 2; return ivec2(c.x + dos_q(p.x), c.y - dos_q(p.y)); }
 // one chain (dir -1: backward, the first, 0x5a5eb; + 1 forward, 0x5a689) at DOS row y: (x, c) in 16.16
+// an edge's x step, trunc((dx << 16) / rows), modulo 2^32 as the original's 32-bit registers hold it - computed in parts so
+// that a dx of 32768 px or more (a corner far off the window at high resolutions) does not overflow (dx << 16) here first:
+// the chain's x at a row in the window then comes out exactly (the wrapped terms cancel)
+uint dos_xstep(int dx, int cnt) {
+  int qd = dos_idiv(dx, cnt), rd = dx - qd * cnt;
+  int sf = abs(rd) < 32768 ? dos_idiv(rd * 65536, cnt) : int(trunc(float(rd) * 65536.0 / float(cnt)));
+  return uint(qd) * 65536u + uint(sf);
+}
 ivec2 dos_gchain(ivec2 V[20], int C[20], int m, int top, int dir, int y, int ybot) {
   int a = top, b = (a + dir + m) % m, r0 = V[top].y;
   for (int g = 0; g < 20 && V[b].y == V[a].y && b != top; g++) { a = b; b = (a + dir + m) % m; }
@@ -129,7 +137,7 @@ ivec2 dos_gchain(ivec2 V[20], int C[20], int m, int top, int dir, int y, int ybo
   for (int g = 0; g < 20 && yq >= r0 + cnt && b != top; g++) { r0 += cnt; a = b; b = (a + dir + m) % m; cnt = V[b].y - V[a].y; if (cnt == 0) cnt = 1; }
   if (cnt == 0) cnt = 1;
   uint t = uint(y - r0);
-  return ivec2(int(uint(V[a].x * 65536 + 0x8000) + t * uint(dos_idiv((V[b].x - V[a].x) * 65536, cnt))),
+  return ivec2(int(uint(V[a].x) * 65536u + 0x8000u + t * dos_xstep(V[b].x - V[a].x, cnt)),
                int(uint(C[a] + 0x8000) + t * uint(dos_idiv(C[b] - C[a], cnt))));
 }
 // one chain's edge at DOS row y, as dos_gchain walks it: (a, b, rows into the edge, its row count)
@@ -152,8 +160,9 @@ ivec4 dos_gedge(ivec2 V[20], int m, int top, int dir, int y, int ybot) {
 // The texel is (u >> 16) & (width - 1), (v >> 16) & (height - 1). Here in floats where the original's 64-bit products
 // lose nothing (u q / q), integers for the steps. ivec2(-1): not applicable (near-clipped, not trusted)
 ivec2 dos_ttex(bool persp) {
-  int s = v_texsel - 1, n = 0, top = 0, ybot;
+  int s = v_texsel - 1, n = 0, top = 0, ybot, nc = 0, nr = dos_nearof(s);
   ivec2 V[20]; vec3 A[20];   // (u or u q, v or v q, q)
+  ivec3 Cc[18]; vec2 Uc[18]; bool near = false;
   for (int t = 0; t < 16; t++) {
     int b = s + 3 * t;
     for (int c = (t == 0 ? 0 : 1); c < 3; c++) {
@@ -161,23 +170,31 @@ ivec2 dos_ttex(bool persp) {
       int b2 = (b + c) * 13;
       vec3 w = vec3(dvtx(b2), dvtx(b2 + 1), dvtx(b2 + 2));
       vec4 q = u_mvp * vec4(w, 1.0);
-      if (q.z + q.w < 0.0 || n >= 18) return ivec2(-1);
-      ivec3 cc = dos_cam(w);
-      if (cc.z < 1) return ivec2(-1);
-      V[n] = dos_camscr(cc);
-      float u = dvtx(b2 + 6) * 65536.0, v = dvtx(b2 + 7) * 65536.0;
-      if (persp) { float qq = 1.0 / float(cc.z); A[n] = vec3(u * qq, v * qq, qq); } else A[n] = vec3(u, v, 0.0);
-      n++;
+      if (nc >= 18 || (nr == 0 && q.z + q.w < 0.0)) return ivec2(-1);
+      Cc[nc] = dos_cam(w); Uc[nc] = vec2(dvtx(b2 + 6), dvtx(b2 + 7)) * 65536.0;
+      if (Cc[nc].z < max(nr, 1)) near = true;
+      nc++;
     }
     if (((int(dvtx(b * 13 + 12) + 0.5) % 32 / 3) & 2) != 0) break;
+  }
+  if (near && nr == 0) return ivec2(-1);
+  // the corners in front, and on the near plane where an edge crosses it (0x3e8fe: x, y, u, v by the same share)
+  for (int k = 0; k <= nc && nc >= 3; k++) {
+    int cur = k % nc, prv = (k + nc - 1) % nc; float tt;
+    bool bc = Cc[cur].z < max(nr, 1), bp = Cc[prv].z < max(nr, 1);
+    ivec3 cc; vec2 uu;
+    if (k > 0 && bc != bp && n < 18) { cc = dos_nclip(Cc[prv], Cc[cur], max(nr, 1), tt); uu = mix(Uc[prv], Uc[cur], tt);
+      V[n] = dos_camscr(cc); if (persp) { float qq = 1.0 / float(cc.z); A[n] = vec3(uu * qq, qq); } else A[n] = vec3(uu, 0.0); n++; }
+    if (k < nc && !bc && n < 18) { cc = Cc[cur]; uu = Uc[cur];
+      V[n] = dos_camscr(cc); if (persp) { float qq = 1.0 / float(cc.z); A[n] = vec3(uu * qq, qq); } else A[n] = vec3(uu, 0.0); n++; }
   }
   if (n < 3) return ivec2(-1);
   ybot = V[0].y;
   for (int i = 0; i < n; i++) { if (V[i].y <= V[top].y) top = i; ybot = max(ybot, V[i].y); }
   int y = clamp(int(u_vp.y) - 1 - (int(floor(glFragCoord.y)) - int(u_vpo.y)), V[top].y, ybot);
   ivec4 e1 = dos_gedge(V, n, top, -1, y, ybot), e2 = dos_gedge(V, n, top, 1, y, ybot);
-  int x1 = int(uint(V[e1.x].x * 65536 + 0x8000) + uint(e1.z) * uint(dos_idiv((V[e1.y].x - V[e1.x].x) * 65536, e1.w)));
-  int x2 = int(uint(V[e2.x].x * 65536 + 0x8000) + uint(e2.z) * uint(dos_idiv((V[e2.y].x - V[e2.x].x) * 65536, e2.w)));
+  int x1 = int(uint(V[e1.x].x) * 65536u + 0x8000u + uint(e1.z) * dos_xstep(V[e1.y].x - V[e1.x].x, e1.w));
+  int x2 = int(uint(V[e2.x].x) * 65536u + 0x8000u + uint(e2.z) * dos_xstep(V[e2.y].x - V[e2.x].x, e2.w));
   vec3 a1 = A[e1.x] + float(e1.z) * (A[e1.y] - A[e1.x]) / float(e1.w), a2 = A[e2.x] + float(e2.z) * (A[e2.y] - A[e2.x]) / float(e2.w);
   if (x2 <= x1) { int ti = x1; x1 = x2; x2 = ti; vec3 ta = a1; a1 = a2; a2 = ta; }   // (0x67681: the larger x the right)
   int xL = x1 >> 16, w = (x2 >> 16) - xL + 1, k = clamp(int(floor(glFragCoord.x)) - int(u_vpo.x) - xL, 0, w - 1);
@@ -214,17 +231,18 @@ vec3 dos_gouraud(float lev) {
       if (((int(dvtx(b * 13 + 12) + 0.5) % 32 / 3) & 2) != 0) { P[n] = dos_gclip(b + 2); C[n] = dos_gshade(b + 2, g); I[n] = b + 2; n++; break; }
     }
     cmin = 1e9; cmax = -1e9;
-    // a cockpit polygon reaching nearer than its near plane: clipped in the camera's integers (world.vert)
-    bool pitclip = false;
-    if (trust && dos_ispit(s)) {
+    // a polygon reaching nearer than its near plane (the cockpit set's, or the view's): clipped in the camera's integers
+    // (world.vert)
+    bool pitclip = false; int nr = dos_nearof(s);
+    if (trust && nr > 0) {
       ivec3 Cc[18]; bool near = false;
-      for (int i = 0; i < n; i++) { int b2 = I[i] * 13; Cc[i] = dos_cam(vec3(dvtx(b2), dvtx(b2 + 1), dvtx(b2 + 2))); if (Cc[i].z < DOS_PIT_NEAR) near = true; cmin = min(cmin, C[i]); cmax = max(cmax, C[i]); }
+      for (int i = 0; i < n; i++) { int b2 = I[i] * 13; Cc[i] = dos_cam(vec3(dvtx(b2), dvtx(b2 + 1), dvtx(b2 + 2))); if (Cc[i].z < nr) near = true; cmin = min(cmin, C[i]); cmax = max(cmax, C[i]); }
       if (near) {
         pitclip = true; float tt;
         for (int k = 0; k <= n; k++) {
           int cur = k % n, prv = (k + n - 1) % n;
-          bool bc = Cc[cur].z < DOS_PIT_NEAR, bp = Cc[prv].z < DOS_PIT_NEAR;
-          if (k > 0 && bc != bp && m < 20) { ivec3 q = dos_pitclip(Cc[prv], Cc[cur], tt); V[m] = dos_camscr(q); CF[m] = int(floor(mix(C[prv], C[cur], tt) * 65536.0 + 0.5)); m++; }
+          bool bc = Cc[cur].z < nr, bp = Cc[prv].z < nr;
+          if (k > 0 && bc != bp && m < 20) { ivec3 q = dos_nclip(Cc[prv], Cc[cur], nr, tt); V[m] = dos_camscr(q); CF[m] = int(floor(mix(C[prv], C[cur], tt) * 65536.0 + 0.5)); m++; }
           if (k < n && !bc && m < 20) { V[m] = dos_camscr(Cc[cur]); CF[m] = int(floor(C[cur] * 65536.0 + 0.5)); m++; }
         }
       }

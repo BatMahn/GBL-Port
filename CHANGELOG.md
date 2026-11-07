@@ -93,6 +93,12 @@
 - **DOS look: cockpit struts as in the original.** The struts of cockpits that reach close to the eye (the Timber Wolf's)
   no longer show thin lines of sky along their seams, and lighting uses the original's own intensity, which can be one
   shade darker.
+- **No gap at the horizon when the view rolls.** With the torso twisted and tilted the view rolls; the sky (and in the
+  DOS look the horizon line) now rolls with the ground instead of staying level and leaving a sliver of black between
+  them. All looks, both renderers.
+- **DOS look: close walls no longer vanish at high resolutions.** Polygons nearer than the original's near plane are
+  clipped there as the original does, and the fill's arithmetic no longer overflows in large windows - the JESS hangar
+  walls stopped coming and going as you walk in.
 - **DOS look: perspective textures as in the original.** Textured surfaces drawn in perspective (the scree slopes of
   JESS, dropship panels) now cover the same pixels and pick the same texels as the original, in its 16-pixel steps.
 - **TITANIUM: SACH's waterfall and river.** Textured surfaces with no bitmap in the mission's texture set are no longer

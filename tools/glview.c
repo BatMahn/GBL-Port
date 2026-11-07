@@ -607,6 +607,7 @@ static fx_defs     g_fxd;
 static fx_world    g_fxw;
 static int         g_fx_ok, g_fx_ati;
 static prj_archive *g_fx_ta;
+static prj_archive *g_fx_da;   /* the archive the effect definitions (MW2_XPL1's CEL ids) were read from: the mission's */
 static texture    *g_fxtex[4096];
 
 static prj_archive *g_ma;
@@ -830,21 +831,26 @@ static texture *fx_texture(int cel)
 {
     prj_record r;
     texture *t;
-    if (cel < 0 || cel >= 4096 || !g_fx_ta) return NULL;
+    prj_archive *da = g_fx_da ? g_fx_da : g_fx_ta;
+    if (cel < 0 || cel >= 4096 || !da) return NULL;
     if (g_fxtex[cel]) return g_fxtex[cel]->rgba ? g_fxtex[cel] : NULL;
     t = g_fxtex[cel] = calloc(1, sizeof *t);
     if (!t) return NULL;
-    if (prj_read(g_fx_ta, prj_find_type(g_fx_ta, "CEL"), cel, &r) == PRJ_OK) {
+    /* the CEL id is the mission archive's (MW2_XPL1's BMPJ, fx_load_scene): its record names the frame. The Titanium
+     * archive numbers its CELs differently (GBL id 493 A9RLAS01 is its A9JFLG02, a frame of the waving Jade Falcon flag;
+     * 780 A9FLAM01 its LG15DRAC), so the frame is taken from it by that name only - all 383 GBL effect frames are there */
+    if (prj_read(da, prj_find_type(da, "CEL"), cel, &r) == PRJ_OK) {
         prj_record tr;
-        /* the Titanium look: the frame of this name in its archive (the effect frames are among the names it has) */
+        /* the Titanium look: the frame of this name in its archive */
         if (c3d_ti && g_fx_ati != 3 && prj_read_named(c3d_ti, "CEL", r.name, &tr) == PRJ_OK) {
             int ok = tex_decode(tr.data, tr.size, TEX_TITANIUM, t) == 0;
             prj_record_free(&tr);
             if (ok) { prj_record_free(&r); return t; }
         }
-        /* DOS: the palette-indexed CELs; the Titanium archive's other records: ARGB4444 (tex.h TEX_4444) */
-        if (tex_decode(r.data, r.size, g_fx_ati == 3 ? TEX_DOS : TEX_4444, t) != 0) t->rgba = NULL;
-        else if (g_fx_ati == 3) {   /* DOS: the effect frames in the mission's palette (index 0xff transparent) */
+        /* the mission archive's own frame: a DOS CEL (palette indices) in the mission's palette (index 0xff transparent);
+         * a 3D archive's frame (no DOS archive given): ARGB4444 (tex.h TEX_4444) */
+        if (tex_decode(r.data, r.size, da != g_fx_ta || g_fx_ati == 3 ? TEX_DOS : TEX_4444, t) != 0) t->rgba = NULL;
+        else if (da != g_fx_ta || g_fx_ati == 3) {
             size_t q;
             for (q = 0; q < (size_t)t->w * (size_t)t->h; q++) {
                 unsigned ix = t->rgba[q] & 0xff, al = t->rgba[q] >> 24;
@@ -3826,7 +3832,7 @@ static int load(glr *r, prj_archive *ma, prj_archive *ta, int ati, const char *r
         }
         if (!g_fx_ok) {
             g_fx_ok = fx_load_scene(ma, &g_fxd, scene) == 0;
-            g_fx_ta = ta; g_fx_ati = ati;   /* before the dump: it loads frames */
+            g_fx_ta = ta; g_fx_da = ma; g_fx_ati = ati;   /* before the dump: it loads frames */
             if (g_fx_ok && getenv("MW2_DUMP_FXTEX")) {   /* tests: list effect texture slots and dump the first frame of some */
                 int q;
                 for (q = 0; q < 512; q++) if (g_fxd.tex[q].frames > 0) {
@@ -3835,7 +3841,7 @@ static int load(glr *r, prj_archive *ma, prj_archive *ta, int ati, const char *r
                     if (t0) { char pn[64]; FILE *tf; int i3; snprintf(pn, sizeof pn, "%s/fxtex_%03x.ppm", getenv("MW2_DUMP_FXTEX"), q); tf = fopen(pn, "wb"); fprintf(tf, "P6 %d %d 255\n", t0->w, t0->h); for (i3 = 0; i3 < t0->w * t0->h; i3++) { const unsigned char *px = (const unsigned char *)t0->rgba + i3 * 4; fputc(px[3] < 128 ? 255 : px[0], tf); fputc(px[3] < 128 ? 0 : px[1], tf); fputc(px[3] < 128 ? 255 : px[2], tf); } fclose(tf); }
                 }
             }
-            g_fx_ta = ta; g_fx_ati = ati;
+            g_fx_ta = ta; g_fx_da = ma; g_fx_ati = ati;
             g_ma = ma;
         }
         g_sim.player_unit.hold_fire_above = 0;     /* a human pilot fires as they choose */

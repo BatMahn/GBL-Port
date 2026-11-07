@@ -1708,6 +1708,10 @@ void glr_draw_rect(glr *r, const glr_view *v, int x0, int y0, int w, int h)
             {64e6f, 2.2e6f, -64e6f, 0, 0}, {64e6f, 2.2e6f, 64e6f, 1, 0}, {76.8e6f, -0.4e6f, 76.8e6f, 1, 1}, {76.8e6f, -0.4e6f, -76.8e6f, 0, 1}};
         float env[(24 + 6 + 6 + 6) * FLOATS_PER_VERTEX], *f = env, sproj[16], sview[16], smvp[16], origin[3] = {0, 0, 0};
         float half = 2.0e6f, gs = r->tile_ground / 32.0e6f;  /* repeats per unit */
+        /* a rolled first-person view (the torso tilt's roll, view[] from the DOS camera's rows above): the sky, the
+         * dome and the DOS horizon fill turn with it - before, they were built level and the ground rolled away from
+         * them (a black sliver at the horizon) */
+        const int rolled = v->free_cam && v->look_roll != 0 && v->ortho_w <= 0;
         float cx = eye[0], cz = eye[2];
         int q, c;
         static const int QUAD[6] = {0, 1, 2, 0, 2, 3};
@@ -1746,6 +1750,11 @@ void glr_draw_rect(glr *r, const glr_view *v, int x0, int y0, int w, int h)
             Rv[0] = -Fv[2]; Rv[1] = 0; Rv[2] = Fv[0];   /* F x (0, 1, 0) */
             rl = sqrtf(Rv[0] * Rv[0] + Rv[2] * Rv[2]); if (rl < 1e-6f) rl = 1; Rv[0] /= rl; Rv[2] /= rl;
             Uv[0] = Rv[1] * Fv[2] - Rv[2] * Fv[1]; Uv[1] = Rv[2] * Fv[0] - Rv[0] * Fv[2]; Uv[2] = Rv[0] * Fv[1] - Rv[1] * Fv[0];
+            if (rolled) {   /* a rolled view: the fill's line follows it - GBL 0x3ca90 tests each window corner and cuts the
+                             * edges with the camera's own rows (0x3aae0 / 0x3ab4d / 0x3abb0: the world-y parts of its right
+                             * and up rows, +0x58 / +0x64, and of its forward, +0x70) - the view's rows here */
+                for (c = 0; c < 3; c++) { Rv[c] = view[c * 4]; Uv[c] = view[c * 4 + 1]; Fv[c] = -view[c * 4 + 2]; }
+            }
             fy = (float)h * 0.5f / tanf(v->vfov * 3.14159265f / 360.0f);
             rb_texture(1, r->dos_tex);
             UV(r->F.u_mvp, ident, 16);
@@ -1764,8 +1773,9 @@ void glr_draw_rect(glr *r, const glr_view *v, int x0, int y0, int w, int h)
             r->D.u_horizon = 0;
         }
         if (r->env_has[1] && !r->dos) {
-            /* rotation-only view so the tent stays centred on the eye */
+            /* rotation-only view so the tent stays centred on the eye (rolled with the view, as the ground) */
             look_at(sview, origin, (float[3]){r->center[0] - eye[0], r->center[1] - eye[1], r->center[2] - eye[2]});
+            if (rolled) { memcpy(sview, view, sizeof sview); sview[12] = sview[13] = sview[14] = 0.0f; }
             perspective(sproj, v->vfov, (float)w / (float)(h > 0 ? h : 1), 1.0e5f, 2.0e8f);
             mat_mul(smvp, sproj, sview);
             rb_depth_test(0);
@@ -1804,6 +1814,7 @@ void glr_draw_rect(glr *r, const glr_view *v, int x0, int y0, int w, int h)
                         f = env_vertex(f, q[0], q[1] - eye[1], q[2], 0, 0, 0, q[3] + du, q[4] + dvv);
                     }
                 look_at(dview, origin, (float[3]){r->center[0] - eye[0], r->center[1] - eye[1], r->center[2] - eye[2]});
+                if (rolled) { memcpy(dview, view, sizeof dview); dview[12] = dview[13] = dview[14] = 0.0f; }
                 perspective(dproj, v->vfov, (float)w / (float)(h > 0 ? h : 1), 100.0f, 2.0e8f);
                 mat_mul(dmvp, dproj, dview);
                 glr_bind_stream(glr_stream(dv, (size_t)r->dome_n * FLOATS_PER_VERTEX));
@@ -1915,6 +1926,11 @@ void glr_draw_rect(glr *r, const glr_view *v, int x0, int y0, int w, int h)
             U3(r->F.u_dos_ry, (float)((double)R[1][0] / 134217728.0), (float)((double)R[1][1] / 134217728.0), (float)((double)R[1][2] / 134217728.0));
             U3(r->F.u_dos_rz, (float)((double)R[2][0] / 134217728.0), (float)((double)R[2][1] / 134217728.0), (float)((double)R[2][2] / 134217728.0));
             U2(r->F.u_dos_ps, sh2[0], sh2[1]);
+            /* the view's near plane in the camera's quarter units (DAT_001617f8 = +0x3c x 4, +0x3c = (zoom x half width
+             * >> 17) + 1 from 0x3ef30): every listed polygon is clipped there (0x3ec8e -> 0x3e8fe; world.vert) - 257 cm at
+             * 1024 wide. ASSUMED for windows wider than the original's widest mode (1024): its near plane (half width 512),
+             * not one growing with the window (9 m at 3600 px) */
+            r->F.u_dos_near = (int32_t)((((uint64_t)zoom * (hw < 512 ? hw : 512)) >> 17) + 1) * 4;
             if (r->dos_rec) {   /* (glr_dos_project: the HUD's markers through the same integers) */
                 memcpy(r->dos_R, R, sizeof r->dos_R);
                 r->dos_sh[0] = sh2[0]; r->dos_sh[1] = sh2[1]; r->dos_vw = w; r->dos_vh = h; r->dos_ok = 1;

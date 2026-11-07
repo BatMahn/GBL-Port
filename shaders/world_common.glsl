@@ -38,6 +38,7 @@ layout(std140, set = UBO_SET, binding = 0) uniform WorldFrame {
     vec4  u_tidp[8];
     vec4  u_tidc[8];   // xyz (was vec3[8])
     ivec4 u_pit_rank4[32];   // u_pit_rank[128] (GLR_PIT_MAX), four to an ivec4
+    int   u_dos_near;      // the DOS view's near plane, camera z in quarter units: (+0x3c = (zoom x half width >> 17) + 1) x 4 (DAT_001617f8)
 };
 
 layout(std140, set = UBO_SET, binding = 1) uniform WorldDraw {
@@ -76,16 +77,21 @@ ivec3 dos_cam(vec3 w) {
   return ivec3(int(dos_rnd(dot(u_dos_rx, d))), int(dos_rnd(dot(u_dos_ry, d))), int(dos_rnd(dot(u_dos_rz, d))));
 }
 ivec2 dos_camscr(ivec3 c) { ivec2 h = ivec2(u_vp) / 2; int z = max(c.z, 1); return ivec2(h.x + dos_pq(c.x, u_dos_ps.x, z), h.y - dos_pq(c.y, u_dos_ps.y, z)); }
-// a cockpit polygon's corner on the near plane (GBL 0x3e8fe = base 0x3de4e) between a (behind) and b, or b and a: x, y
-// interpolated to z = NEAR (the cockpit set's: 32 quarter units, DAT_0014feb0) with imul / idiv; t the share for the shade
+// a polygon's corner on the near plane (GBL 0x3e8fe = base 0x3de4e) between a (behind) and b, or b and a: x, y
+// interpolated to z = nr (the cockpit set's: 32 quarter units, DAT_0014feb0; the view's u_dos_near) with imul / idiv; t
+// the share for the shade
 const int DOS_PIT_NEAR = 32;
-ivec3 dos_pitclip(ivec3 A, ivec3 B, out float t) {
-  if (B.z <= A.z) { int dz = A.z - B.z, e2 = DOS_PIT_NEAR - B.z; t = 1.0 - float(e2) / float(max(dz, 1));
-    return ivec3(dos_idiv((A.x - B.x) * e2, dz) + B.x, dos_idiv((A.y - B.y) * e2, dz) + B.y, DOS_PIT_NEAR); }
-  int dz = B.z - A.z, e2 = DOS_PIT_NEAR - A.z; t = float(e2) / float(max(dz, 1));
-  return ivec3(dos_idiv((B.x - A.x) * e2, dz) + A.x, dos_idiv((B.y - A.y) * e2, dz) + A.y, DOS_PIT_NEAR);
+ivec3 dos_nclip(ivec3 A, ivec3 B, int nr, out float t) {
+  if (B.z <= A.z) { int dz = A.z - B.z, e2 = nr - B.z; t = 1.0 - float(e2) / float(max(dz, 1));
+    return ivec3(dos_idiv((A.x - B.x) * e2, dz) + B.x, dos_idiv((A.y - B.y) * e2, dz) + B.y, nr); }
+  int dz = B.z - A.z, e2 = nr - A.z; t = float(e2) / float(max(dz, 1));
+  return ivec3(dos_idiv((B.x - A.x) * e2, dz) + A.x, dos_idiv((B.y - A.y) * e2, dz) + A.y, nr);
 }
 bool dos_ispit(int vtx) { int e = int(dvtx(vtx * 13 + 12) + 0.5) / 65536; return e >= 1 && e < 200; }
+// the near plane a polygon is clipped at in the camera's integers (GBL 0x3ec8e -> 0x3e8fe, DAT_001617f8): the cockpit
+// set's, or the view's (u_dos_near, every listed polygon - world objects and units alike; with MW2_DOS_ORDER=0 the
+// world polygons keep GL's near plane and depths: 0 here)
+int dos_nearof(int vtx) { return dos_ispit(vtx) ? DOS_PIT_NEAR : u_dos_order != 0 ? u_dos_near : 0; }
 ivec2 dos_scr(vec3 w) {
   vec3 d = vec3(dos_rnd(w.x) - dos_rnd(u_dos_eye.x), dos_rnd(w.y) - dos_rnd(u_dos_eye.y), dos_rnd(-w.z) - dos_rnd(-u_dos_eye.z));
   int xc = int(dos_rnd(dot(u_dos_rx, d))), yc = int(dos_rnd(dot(u_dos_ry, d))), zc = max(int(dos_rnd(dot(u_dos_rz, d))), 1);

@@ -117,15 +117,19 @@ void main() {
   // short and leave its coverage unaligned (DOSBox BASSSCN1 Timber Wolf: the sill's seams showed the sky). Each fan
   // triangle is laid over the clipped polygon's screen box (w 1: not clipped by GL) and the fragment shader keeps the
   // DOS span's pixels
-  if (u_dos != 0 && u_dos_exact != 0 && int(a_color.r + 0.5) <= 3 && a_texsel > 0.5 && pit > 0 && pit < 200) {
-    int s = int(a_texsel + 0.5) - 1, rel = vertex_id - s, cn = rel - 3 * (rel / 3);
+  // World polygons the same, at the view's near plane (DAT_001617f8 = +0x3c x 4, (zoom x half width >> 17) + 1 cm - 257
+  // cm at 1024 wide): GBL 0x3ec8e clips every listed polygon there. Before, only GL's near plane (60 cm) cut them, and a
+  // corner between the two projected far outside the window - beyond 32767 px at high resolutions, where the span
+  // integers (x << 16) wrapped and the wall's pixels were discarded (JESS hangar walls flickering in and out)
+  if (u_dos != 0 && u_dos_exact != 0 && int(a_color.r + 0.5) <= 3 && a_texsel > 0.5 && pit < 300 && dos_nearof(int(a_texsel + 0.5) - 1) > 0) {
+    int s = int(a_texsel + 0.5) - 1, rel = vertex_id - s, cn = rel - 3 * (rel / 3), nr = dos_nearof(s);
     ivec3 Cc[18]; int n = 0; bool near = false;
     for (int k = 0; k < 16; k++) {
       int b = s + 3 * k;
       for (int c = (k == 0 ? 0 : 1); c < 3; c++) {
         if (c == 2 && ((int(dvtx(b * 13 + 12) + 0.5) % 32 / 3) & 2) == 0) break;
         Cc[n] = dos_cam(vec3(dvtx((b + c) * 13), dvtx((b + c) * 13 + 1), dvtx((b + c) * 13 + 2)));
-        if (Cc[n].z < DOS_PIT_NEAR) near = true;
+        if (Cc[n].z < nr) near = true;
         n++;
       }
       if (((int(dvtx(b * 13 + 12) + 0.5) % 32 / 3) & 2) != 0) break;
@@ -134,8 +138,8 @@ void main() {
       ivec2 lo = ivec2(1 << 30), hi = ivec2(-(1 << 30)); bool any = false; float tt;
       for (int k = 0; k <= n && n >= 3; k++) {
         int cur = k % n, prv = (k + n - 1) % n;
-        bool bc = Cc[cur].z < DOS_PIT_NEAR, bp = Cc[prv].z < DOS_PIT_NEAR;
-        if (k > 0 && bc != bp) { ivec2 q = dos_camscr(dos_pitclip(Cc[prv], Cc[cur], tt)); lo = min(lo, q); hi = max(hi, q); any = true; }
+        bool bc = Cc[cur].z < nr, bp = Cc[prv].z < nr;
+        if (k > 0 && bc != bp) { ivec2 q = dos_camscr(dos_nclip(Cc[prv], Cc[cur], nr, tt)); lo = min(lo, q); hi = max(hi, q); any = true; }
         if (k < n && !bc) { ivec2 q = dos_camscr(Cc[cur]); lo = min(lo, q); hi = max(hi, q); any = true; }
       }
       vec2 h = 0.5 * u_vp;
@@ -190,7 +194,7 @@ void main() {
     int vid = vertex_id, t = vid / 3, k, c;
     if (abs(dvtx(vid * 13) - a_pos.x) + abs(dvtx(vid * 13 + 2) - a_pos.z) < 0.01) {
       for (k = 0; k < 16 && t > 0; k++) { if (((int(dvtx(3 * t * 13 + 12) + 0.5) % 32 / 3) & 4) != 0) break; t--; }
-      float km = -1e9, kn = 1e9, ks = 0.0; int kc = 0;
+      float km = -1e9, kn = 1e9, ks = 0.0, zl[18]; int kc = 0;
       for (k = 0; k < 16; k++) {
         int b = 3 * (t + k);
         bool last = ((int(dvtx(b * 13 + 12) + 0.5) % 32 / 3) & 2) != 0;
@@ -198,7 +202,7 @@ void main() {
           float z = dos_camz(vec3(dvtx((b + c) * 13), dvtx((b + c) * 13 + 1), dvtx((b + c) * 13 + 2)));
           km = max(km, z);
           // the polygon's corners once each (the fan: corner 0, each triangle's next, the closing one's last)
-          if ((c == 0 && k == 0) || c == 1 || (c == 2 && last)) { kn = min(kn, z); ks += z; kc++; }
+          if ((c == 0 && k == 0) || c == 1 || (c == 2 && last)) { kn = min(kn, z); if (kc < 18) zl[kc] = z; kc++; }
         }
         if (last) break;
       }
@@ -245,8 +249,17 @@ void main() {
       // cliff is painted over the cliff's faces whose farthest corners lie beyond it, wherever its pieces pass into the
       // rock (DOSBox JESSSCN1). Here: each polygon's fragments at one depth (world.frag) - that of its key, on the view
       // axis - so the depth test keeps the polygon with the smaller key, as painting in that order does (equal keys:
-      // the first drawn; the original's quicksort keeps no order either). The nearest corner's floor (1 cm) ASSUMED
-      float key = (kmode & 2) != 0 ? floor(ks / float(max(kc, 1))) : (kmode & 4) != 0 ? max(kn, 4.0) : km;
+      // the first drawn; the original's quicksort keeps no order either).
+      // the listed corners are the polygon's clipped at the near plane (0x3e8fe: those behind it replaced by the edge's
+      // points on it): the nearest at least the plane's z, the mean over the clipped polygon's corners
+      float nz = u_dos_near > 0 ? float(u_dos_near) : 4.0, kcl = 0.0;
+      kc = min(kc, 18);
+      for (int i = 0; i < kc; i++) {
+        float za = zl[i], zp = zl[(i + kc - 1) % kc];
+        if ((za < nz) != (zp < nz)) { ks += nz; kcl += 1.0; }
+        if (za >= nz) { ks += za; kcl += 1.0; }
+      }
+      float key = (kmode & 2) != 0 ? floor(ks / max(kcl, 1.0)) : (kmode & 4) != 0 ? max(kn, nz) : km;
       if (pit == 0 && key > 0.0) {
         vec3 fwd = -vec3(u_view[0][2], u_view[1][2], u_view[2][2]);
         vec4 q = u_mvp * vec4(u_dos_eye + fwd * (key * 0.25), 1.0);

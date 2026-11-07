@@ -65,6 +65,38 @@ static void c3d_free_scene(c3d_scene *s)
     }
 }
 
+/* The include tree in the engine's order: an INCL chunk loads the included record there and then (mercsw 0x10071152 ->
+ * 0x100702bd -> the same parser, depth first, every time it is included; GBL DOS likewise) - bwd_mission_load lists the
+ * records breadth first. Records in the order their chunks take effect, each kept at its LAST visit (a record's chunks
+ * set the same values each time, so the last visit decides). Exact while no record's BMID / CAMO follow one of its own
+ * INCLs - true in every GBL scene of both archives. Only Titanium's TIM_SCN1 orders differently: its tim_PLT1 includes
+ * jeehmap1 before the scene's own tim_MAP1, so tim_MAP1 wins (camo sets, ground, 32 slots) */
+static int c3d_dfs(const bwd_mission *bm, int r, int depth, int *seq, int n, int cap)
+{
+    int c, j;
+    if (n < cap) seq[n++] = r;
+    if (depth >= 16) return n;
+    for (c = 0; c < bm->records[r].chunk_count; c++) {
+        uint16_t iid;
+        char inm[11];
+        if (bwd_incl(&bm->records[r].chunks[c], &iid, inm) != 0) continue;
+        for (j = 0; j < bm->record_count; j++)
+            if (strcasecmp(bm->records[j].name, inm) == 0) { n = c3d_dfs(bm, j, depth + 1, seq, n, cap); break; }
+    }
+    return n;
+}
+static int c3d_include_order(const bwd_mission *bm, int *order, int cap)
+{
+    int seq[1024], n, i, j, m = 0;
+    if (bm->record_count <= 0) return 0;
+    n = c3d_dfs(bm, 0, 0, seq, 0, 1024);
+    for (i = 0; i < n; i++) {
+        for (j = i + 1; j < n && seq[j] != seq[i]; j++) ;
+        if (j == n && m < cap) order[m++] = seq[i];
+    }
+    return m;
+}
+
 /* mission: 4-letter code, e.g. "CYAN" (uses CYANMAP1 and the CYAN_DA palette) */
 static int c3d_load_scene(prj_archive *models, prj_archive *texs, int ati, const char *mission, c3d_scene *s)
 {
@@ -84,8 +116,9 @@ static int c3d_load_scene(prj_archive *models, prj_archive *texs, int ati, const
         int k, c, maps = 0;
         snprintf(name, sizeof name, "%.4sSCN1", mission);
         if (bwd_mission_load(models, name, &bm) == 0) {
-            for (k = 0; k < bm.record_count; k++) {
-                int has = 0;
+            static int order[1024];
+            int no = c3d_include_order(&bm, order, 1024), oi;
+            for (k = 0; k < bm.record_count; k++)
                 for (c = 0; c < bm.records[k].chunk_count; c++) {
                     const bwd_chunk *ch = &bm.records[k].chunks[c];
                     if (strcmp(ch->tag, "PALG") == 0 && !s->slot_ok[0]) {   /* the first PALG: PAL ids per slot */
@@ -104,6 +137,9 @@ static int c3d_load_scene(prj_archive *models, prj_archive *texs, int ati, const
                         }
                     }
                 }
+            for (oi = 0; oi < no; oi++) {
+                int has = 0;
+                k = order[oi];
                 for (c = 0; c < bm.records[k].chunk_count; c++)
                     if (strcmp(bm.records[k].chunks[c].tag, "BMID") == 0) { has = 1; break; }
                 if (!has || bwd_texmap_decode(bm.records[k].data, bm.records[k].size, &map) != 0) continue;
@@ -239,15 +275,17 @@ static void c3d_ti_environment(glr *r, c3d_scene *s, const char *mission, glr_vi
     }
     if (!dome) glr_set_skydome(r, NULL, ts.slot);
     {   /* the stars' camouflage sets: the maps' CAMO chunks {i32 star, i32 set}, each clamped 0..7 (mercsw 0x10073a6b ->
-         * 0x100a11f0, initially {0..7}; the engine keeps the previous mission's, here reset per mission) */
+         * 0x100a11f0, initially {0..7}; the engine keeps the previous mission's, here reset per mission), in include order */
         char name[16];
         bwd_mission bm;
         int c;
         for (k = 0; k < 8; k++) c3d_ti_camo[k] = k;
         snprintf(name, sizeof name, "%.4sSCN1", mission);
         if (bwd_mission_load(keep, name, &bm) == 0) {
-            for (k = 0; k < bm.record_count; k++)
-                for (c = 0; c < bm.records[k].chunk_count; c++) {
+            static int order[1024];
+            int no = c3d_include_order(&bm, order, 1024), oi;
+            for (oi = 0; oi < no; oi++)
+                for (k = order[oi], c = 0; c < bm.records[k].chunk_count; c++) {
                     const bwd_chunk *ch = &bm.records[k].chunks[c];
                     int32_t st, set;
                     if (strcmp(ch->tag, "CAMO") != 0 || ch->size < 8) continue;
