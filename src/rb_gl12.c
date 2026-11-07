@@ -852,6 +852,7 @@ void rb_program(int prog) { G.prog = prog; }
 void rb_texture(int unit, rb_tex t) { if (unit >= 0 && unit < 3) G.tex[unit] = t; }
 void rb_vertex(int binding, rb_buf b, size_t offset) { if (binding >= 0 && binding < 3) { G.vb[binding] = b; G.voff[binding] = offset; } }
 void rb_storage(rb_buf b) { G.sb = b; }
+void rb_storage_aux(rb_buf b) { G.sb2 = b; }
 void rb_uniforms(int slot, const void *data, size_t bytes)
 {
     if (G.prog == RB_PROG_HUD) { if (slot == 0 && bytes == sizeof G.H) memcpy(&G.H, data, bytes); return; }

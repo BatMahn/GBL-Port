@@ -65,6 +65,13 @@ typedef struct {
     int       dos_sort;      /* world objects: the DOS draw list's key mode (bwd_obj.sortkey & 7: 1 behind, 2 average, 4
                                 nearest corner; 0 the farthest - every unit piece: the unit loader 0x37bb0 loads with 0) */
     int       dos_pit;       /* the cockpit set (repr 4) in the DOS look: its polygons in the DOS draw order (glr) */
+    int       dos_sky;       /* the scene's sky object: the first object of type 0x90 in the original's list at the start (GBL
+                                0x103c0, Titanium mercsw 0x1001bdbe), listed and painted on its own before the world (set by
+                                glview) */
+    int64_t   dos_link;      /* the DOS look's draw list (glr glr_dos_list): the object's place in the original's object list -
+                                each object is linked at the head when it is made or shown (GBL 0x1fa10 / 0x1fce0), so the
+                                larger (linked later) is walked first. Set by the caller (glview): a world object's insertion
+                                order (msim clist_seq), a unit's pieces the unit's last relink (msim unit_link) */
     int       ti_insignia;   /* world objects: added to that model's slot 0x3f (its structure's AFFL team, mercsw 0x100748ab) */
 } mech3d_part;
 
@@ -242,6 +249,9 @@ int  world3d_paths_step(world3d_paths *p, mech3d *world, float now_ticks);
  * (-1 none) and its children are placed at its current world transform. Returns 1 if anything was moved. */
 int  world3d_paths_destroyed(world3d_paths *p, mech3d *world, int intact, int destroyed);
 void world3d_paths_free(world3d_paths *p);
+/* Record `rec` moved as a whole by (dx, dy, dz) (the scrub patch's root following the camera, GBL 0x1f4c0 -> 0x1e1f0): its
+ * path-carried parts move with it, their paths being relative to the root (the falling snow of BASS / CLAI) */
+void world3d_paths_shift(world3d_paths *p, mech3d *world, const char *rec, float dx, float dy, float dz);
 /* The running sound tasks (TSK type 4, 0x1000ec90 -> 0x10032cc0): the node's world position now, the audible range (cm),
  * the SNDTABLE name, and a stable id (the task). Returns how many (at most max). */
 typedef struct { float pos[3]; int range, task, runs; char name[24]; } world3d_sound;

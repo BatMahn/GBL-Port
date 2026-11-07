@@ -645,6 +645,71 @@ static mech3d *actor_lod(int k, const mech3d *full, const char *skel, float dist
     return m;
 }
 
+/* The DOS look's draw list (glr glr_dos_list): each object's place in the original's object list, where every object is
+ * linked at the HEAD when it is made or shown (GBL 0x1fa10 / 0x1fce0), so the list runs from the last linked to the first.
+ * World objects: their insertion order (msim clist_seq: outside blocks as loaded, then the block table, a destroyed
+ * variant when it appears - the same rule as the 3D engine's collision list). Units: the level-of-detail manager (GBL
+ * 0x37fa0 -> 0x381e3, msim collision_lods) relinks every piece of a unit whose representation changes (0x37a80 ->
+ * 0x37bb0: the unit's piece table in order, each to the head), the first frame every unit, by unit index; the same
+ * clock (clist_next) as the world's. A scrub patch (SCRG chunk, GBL 0x4fcbb -> 0x1f370) is hidden there - the objects
+ * it has by then: all of it when its objects lie outside any block (created as loaded: ANDY, FRAN, PROV), only its root
+ * otherwise (0x36ea0 loads the root then; the block table's other objects are created after the load, shown) - and shown
+ * on the first frame (0x1f4c0 -> 0x1e440: the node's object unless of type 0x70, then its children, the last made first -
+ * 0x1dfb0 puts a child at the head - each one's own after it; 0x1fce0 relinks only a hidden object). ASSUMED: that frame's
+ * relinks before the units'; the player's own unit linked first among them; a unit's pieces in the
+ * port's part order; shots and debris (pool objects shown when they fly, 0x1fce0) newer than everything else, the
+ * newest first. Values << 8 + the piece. */
+static int64_t *g_dlink, *g_dlink_scrg;   /* per world part: clist_seq << 8 (glr_set_dos_links); the scrub patch's first show */
+static int      g_dlink_n;
+static int64_t  g_ulink[64], g_ulink_pl;   /* per unit: its last relink */
+static int      g_urepr[64], g_ulink_ok;
+static void dos_scrg_show(int k)   /* 0x1e440 over the patch's node tree from part k */
+{
+    const mech3d_part *p = &g_mech.parts[k];
+    int c;
+    if ((p->objtype & 0xf0) != 0x70) g_dlink_scrg[k] = ++g_sim.clist_next;
+    for (c = g_mech.part_count - 1; c >= 0; c--)   /* its children, the last made (the highest OBJ index: ASSUMED) first */
+        if (c != k && g_mech.parts[c].parent_obj == p->obj_index && strcmp(g_mech.parts[c].rec, p->rec) == 0) dos_scrg_show(c);
+}
+static void dos_links_frame(glr *r)
+{
+    int k;
+    if (!g_sim_ok || !g_world || !g_sim.clist_seq || g_sim.clist_seq_n != g_mech.part_count) { glr_set_dos_links(r, NULL, 0); return; }
+    if (g_dlink_n != g_mech.part_count) {
+        int64_t *nl = realloc(g_dlink, (size_t)(g_mech.part_count > 0 ? g_mech.part_count : 1) * sizeof *nl);
+        int64_t *ns = nl ? realloc(g_dlink_scrg, (size_t)(g_mech.part_count > 0 ? g_mech.part_count : 1) * sizeof *ns) : NULL;
+        if (nl) g_dlink = nl;
+        if (!nl || !ns) { glr_set_dos_links(r, NULL, 0); g_dlink_n = 0; return; }
+        g_dlink_scrg = ns; g_dlink_n = g_mech.part_count;
+        g_ulink_ok = 0;
+    }
+    {   static const int *seen; if (seen != g_sim.clist_seq) { seen = g_sim.clist_seq; g_ulink_ok = 0; } }   /* (a new mission) */
+    if (!g_ulink_ok) {
+        g_ulink_ok = 1;
+        for (k = 0; k < g_mech.part_count; k++) g_dlink_scrg[k] = 0;
+        for (k = 0; k < g_mech.part_count; k++)   /* a whole patch hidden at the load: its roots (no parent in it) shown, tree by tree */
+            if (g_mech.parts[k].scrg && g_mech.parts[k].parent_obj < 0 && g_sim.clist_seq[k] > 0 && g_sim.clist_seq[k] <= g_sim.clist_split) dos_scrg_show(k);
+        g_ulink_pl = ++g_sim.clist_next;
+        for (k = 0; k < 64; k++) g_urepr[k] = -1;
+        {   /* the sky object (GBL 0x103c0, mercsw 0x1001bdbe): at the start the first object of type 0x90 in the list - the
+             * latest linked of them (JESS's PLANETS; BRAN / ZACK: the last of their STARs) - goes to a list of its own */
+            int sky = -1, changed = 0;
+            for (k = 0; k < g_mech.part_count; k++)
+                if ((g_mech.parts[k].objtype & 0xf0) == 0x90 && !g_mech.parts[k].hidden && (sky < 0 || g_sim.clist_seq[k] > g_sim.clist_seq[sky])) sky = k;
+            for (k = 0; k < g_mech.part_count; k++) if (g_mech.parts[k].dos_sky != (k == sky)) { g_mech.parts[k].dos_sky = k == sky; changed = 1; }
+            if (getenv("MW2_DOS_LIST_DUMP") && sky >= 0) fprintf(stderr, "sky object: part %d %s seq %d\n", sky, g_mech.parts[sky].model_name, g_sim.clist_seq[sky]);
+            if (changed) glr_set_mech(r, &g_mech, (const uint8_t (*)[3])g_scene.palette, g_scene.slot, g_camo, g_clan);
+        }
+    }
+    for (k = 0; k < g_mech.part_count; k++) g_dlink[k] = (g_dlink_scrg[k] > g_sim.clist_seq[k] ? g_dlink_scrg[k] : (int64_t)g_sim.clist_seq[k]) << 8;
+    glr_set_dos_links(r, g_dlink, g_dlink_n);
+    for (k = 0; k < g_actor_count && k < 64; k++) {
+        int rp = msim_unit_repr(&g_sim, k);
+        if (rp != g_urepr[k]) { g_urepr[k] = rp; g_ulink[k] = ++g_sim.clist_next; }
+    }
+}
+static int64_t dos_link_world(int part) { return g_dlink && part >= 0 && part < g_dlink_n ? g_dlink[part] : 0; }
+
 /* TEXTURES TITANIUM: a mech or vehicle drawn as the Titanium archive's model of its record (mech3d_ti_load: its own meshes,
  * skeleton offsets and texture slots; the ANIM records are byte-identical, so it is posed with the actor's animation and
  * time) at the actor's level of detail; the simulation keeps the original model. k 0-63 an actor, 64 the player. */
@@ -2092,9 +2157,16 @@ static void scrub_follow(glr *r, float camx, float camz)
             nz = (z + (z < 0 ? -step : step) / 2) / step;
         }
         if (nx != cellx || nz != cellz) {
-            int dx = nx * step - gx, dz = nz * step - gz;
+            /* DOS 0x1f4c0 -> 0x1e1f0: the patch object's node gets the translation (nx x step, 0, nz x step) - set, not added:
+             * its OBJ offset (BASSSCRI's root (0, 5000, 0)) is gone after the first move - and the rest of the patch hangs on
+             * it, the path-carried pieces too (BASS / CLAI's falling snow: the "snow" path moves a child of the root) */
+            int dx = nx * step - gx, dz = nz * step - gz, dy = 0, root = -1;
+            for (k = 0; k < g_mech.part_count && root < 0; k++) if (g_mech.parts[k].scrg && g_mech.parts[k].parent_obj < 0) root = k;
+            if (root >= 0) { dx = nx * step - g_mech.parts[root].pos[0]; dy = -g_mech.parts[root].pos[1]; dz = nz * step - g_mech.parts[root].pos[2]; }
             for (k = 0; k < g_mech.part_count; k++)
-                if (g_mech.parts[k].scrg) { g_mech.parts[k].pos[0] += dx; g_mech.parts[k].pos[2] += dz; }
+                if (g_mech.parts[k].scrg) { g_mech.parts[k].pos[0] += dx; g_mech.parts[k].pos[1] += dy; g_mech.parts[k].pos[2] += dz; }
+            if (g_sim.paths && root >= 0) world3d_paths_shift(g_sim.paths, &g_mech, g_mech.parts[root].rec, (float)dx, (float)dy, (float)dz);
+            dx = nx * step - gx; dz = nz * step - gz;
             gx += dx; gz += dz; cellx = nx; cellz = nz;
             moved = 1;
             if (getenv("MW2_STATE_DUMP")) {   /* TEST hook: the grid point and the patch's first piece */
@@ -6793,6 +6865,7 @@ int main(int argc, char **argv)
             }
             all.parts = NULL;
             g_pit_first = -1;
+            dos_links_frame(r);   /* the DOS draw list's object order */
             if (g_sim_ok) {   /* leave destroyed pieces out; add the player's mech (not in the cockpit) */
                 int k, total = 0, show_pl = g_pl_ok && g_pilot && !VIEW_IN_COCKPIT && (!g_sim.player_unit.destroyed || g_sim.player_unit.intact_out || g_camode == 1);   /* state 5: it stands; state 4 seen from the orbit: standing too (DOSBox) */
                 if (show_pl && g_camode == 1 && g_sim.player_eye_ok) {
@@ -6840,6 +6913,7 @@ int main(int argc, char **argv)
                             int gq = src->parts[q].group;
                             if (mech3d_fly_loc(src, q, fly)) continue;
                             all.parts[all.part_count] = src->parts[q];
+                            all.parts[all.part_count].dos_link = (k < 64 ? g_ulink[k] << 8 : 0) + q;
                             /* the damage shading (0x1002b9b0, glr_set_damage_shade): a mech's location pieces (type word 0x100) */
                             all.parts[all.part_count].dmg_nib = g_sim.armed[k] && gq >= 1 && gq <= 8 ? loc_nibble(&g_sim.units[k], gq) : 0;
                             if (dead) {   /* image enhancement (0x1002a4b0 / DOS 0x38ae3): colour 8, the dark red */
@@ -6869,6 +6943,7 @@ int main(int argc, char **argv)
                     for (q = 0; q < pm->part_count; q++) {
                         if (mech3d_fly_loc(pm, q, fly)) continue;
                         all.parts[all.part_count] = pm->parts[q];
+                        all.parts[all.part_count].dos_link = (g_ulink_pl << 8) + q;
                         all.parts[all.part_count++].dmg_nib = loc_nibble(&g_sim.player_unit, pm->parts[q].group);   /* (0x1002b9b0) */
                     }
                 }
@@ -6907,6 +6982,7 @@ int main(int argc, char **argv)
                      * 0: 0x400 -> colour 0xb; DOSBox YELLSCN1: missiles and lasers red outlines); their textures stay on with
                      * OBJECT TEXTURES off (0x1002a768 switches only 0x100 / 0x200 / 0x800 objects) */
                     pp.objtype = 0x400;
+                    pp.dos_link = ((int64_t)2 << 40) + ((int64_t)sh->id << 8);
                     if (tipool) { static int said; if (!said) { said = 1; printf("titanium: shot drawn as pool model %s\n", pp.model_name); } }
                     all.parts[all.part_count++] = pp;
                 }
@@ -6943,6 +7019,7 @@ int main(int argc, char **argv)
                         memcpy(pp.rot, rr, sizeof rr);
                     }
                     pp.group = 0;
+                    pp.dos_link = d->kind == 3 ? dos_link_world(d->part) : ((int64_t)1 << 40) + ((int64_t)k << 8);
                     all.parts[all.part_count++] = pp;
                 }
                 if (all.parts && g_sim.paths && g_sim.world) {   /* world parts carried by path tasks (PTBL): as placed now */
@@ -6952,7 +7029,7 @@ int main(int argc, char **argv)
                     if (nm && (grown = realloc(all.parts, (size_t)(total + nm) * sizeof *all.parts))) {
                         all.parts = grown; total += nm;
                         for (q = 0; q < g_sim.world->part_count; q++)
-                            if (g_sim.world->parts[q].moving && !g_sim.world->parts[q].hidden) { all.parts[all.part_count] = g_sim.world->parts[q]; all.parts[all.part_count].moving = 0; ie_world_colour(&all.parts[all.part_count++]); }
+                            if (g_sim.world->parts[q].moving && !g_sim.world->parts[q].hidden) { all.parts[all.part_count] = g_sim.world->parts[q]; all.parts[all.part_count].moving = 0; all.parts[all.part_count].dos_link = dos_link_world(q); ie_world_colour(&all.parts[all.part_count++]); }
                     }
                 }
                 if (all.parts && g_sim.world) {
@@ -6973,6 +7050,7 @@ int main(int argc, char **argv)
                             if (!fp->facing || fp->hidden) continue;
                             all.parts[all.part_count] = *fp;
                             all.parts[all.part_count].facing = 0;
+                            all.parts[all.part_count].dos_link = dos_link_world(q);
                             all.parts[all.part_count].has_rot = 0;
                             all.parts[all.part_count].yaw = mech3d_heading(eye[0] - (float)fp->pos[0], eye[2] - (float)fp->pos[2]);
                             ie_world_colour(&all.parts[all.part_count]);

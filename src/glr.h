@@ -199,6 +199,13 @@ int32_t glr_dos_cos(int32_t a);
 int32_t glr_dos_atan2(int32_t a, int32_t b);
 /* that frame's zoom (16.16) x half width (the view's +0x94) and the view's size */
 void glr_dos_view(const glr *r, uint32_t *zhw, int *w, int *h);
+/* The DOS look's draw list (GBL 0x3d9c0, glr.c glr_dos_list): the static (world) layer's objects' places in the original's
+ * object list, by part index of the mech3d last given to glr_set_mech (link[part]: the larger is walked first - linked
+ * later, at the head); NULL: each part's own mech3d_part.dos_link. The array is the caller's, read every frame */
+void glr_set_dos_links(glr *r, const int64_t *link, int n);
+/* the last list: entries, polygons of 2+ corners, the original's limits it passed (1 the corner pool, 2 the 1500 entries, 4 the
+ * 1400 polygons, 8 a polygon of 20 corners; MW2_DOS_LIST_CAPS=0: counted, not applied), entries painted */
+void glr_dos_list_stats(const glr *r, int out[4]);
 
 /* The DOS edition's colours (on with pal != NULL; call before uploading meshes): the polygon colour word is decoded the
  * DOS engine's way (bits 12-14 type, 8-11 ramp, 0-7 intensity or bitmap) and shaded per pixel into a palette index -

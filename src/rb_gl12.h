@@ -135,7 +135,7 @@ typedef struct {
     rb_tex tex[3];
     rb_buf vb[3];
     size_t voff[3];
-    rb_buf sb;
+    rb_buf sb, sb2;
     rb_world_frame F;
     rb_world_draw D;
     rb_hud_draw H;

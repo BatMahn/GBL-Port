@@ -1731,6 +1731,15 @@ int world3d_paths_step(world3d_paths *P, mech3d *world, float now)
     return settled;
 }
 
+void world3d_paths_shift(world3d_paths *P, mech3d *world, const char *rec, float dx, float dy, float dz)
+{
+    int i, hit = 0;
+    if (!P || !world || !rec) return;
+    for (i = 0; i < P->nrec; i++)
+        if (strcasecmp(P->recs[i].rec, rec) == 0) { P->recs[i].place.t[0] += dx; P->recs[i].place.t[1] += dy; P->recs[i].place.t[2] += dz; hit = 1; }
+    if (hit) wp_place_parts(P, world, -1, -1);
+}
+
 int world3d_paths_destroyed(world3d_paths *P, mech3d *world, int intact, int destroyed)
 {
     wp_rec *r;

@@ -42,7 +42,7 @@ enum { RB_LESS, RB_LEQUAL };
  * colour 3, texsel, edge), 1 = the bounding sphere (4 floats), 2 = the Titanium colour (4 floats); the HUD 0 = x, y,
  * u, v. Uniform slots: the world 0 rb_world_frame, 1 rb_world_draw (both stages); the HUD 0 rb_hud_draw (fragment).
  * Texture units: the world 0 u_tex, 1 u_dos_tab, 2 u_ptab; the HUD 0. Storage buffer (the DOS programs): the layer's
- * vertices */
+ * vertices; the DOS programs' vertex stage a second one: the polygons' draw-list depths (rb_storage_aux) */
 enum { RB_PROG_WORLD, RB_PROG_WORLD_DOS, RB_PROG_HUD, RB_PROG_WORLD_DOSDBG, RB_PROG_COUNT };
 /* the GPU backends (gblport.cfg gpu=): AUTO = the platform's first (Windows Direct3D 12, then Vulkan); OPENGL: the
  * RB=gl12 build's (its only one) */
@@ -108,6 +108,9 @@ void rb_uniforms(int slot, const void *data, size_t bytes);
 void rb_texture(int unit, rb_tex t);
 void rb_vertex(int binding, rb_buf b, size_t offset);
 void rb_storage(rb_buf b);
+/* the DOS program's second storage buffer, read by its vertex stage only: the layer's polygons' draw-list depths (glr.c
+ * glr_dos_list; 0: none) */
+void rb_storage_aux(rb_buf b);
 void rb_draw(int first, int count);
 
 #endif

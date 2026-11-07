@@ -77,7 +77,8 @@ The calls keep OpenGL's model, so the renderers above it read like the OpenGL 3.
 - **Vertex index**: every draw starts at vertex 0 of buffers bound at the batch's byte offset; the shader's vertex number
   is `u_first + gl_VertexIndex` (Vulkan's `gl_VertexIndex`, D3D12's `SV_VertexID` and Metal's `[[vertex_id]]` agree only
   with a zero first vertex). The DOS look's per-layer vertex table (an OpenGL buffer texture before) is a read-only
-  storage buffer.
+  storage buffer; the DOS program's vertex stage reads a second one, the layer's polygons' draw-list depths
+  (`rb_storage_aux`, glr.c `glr_dos_list`).
 - **Texture level 0 only** (`RB_NEAREST` / `RB_LINEAR` minification on a mipmapped texture): sampler max LOD 0.25 with the
   nearest mip mode (the Vulkan specification's emulation of OpenGL's non-mipmapped minification).
 - **Binding slots** (SDL_CreateGPUShader's rules): SPIR-V vertex set 0 = storage buffers, set 1 = uniform blocks;

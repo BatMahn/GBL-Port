@@ -294,6 +294,7 @@ typedef struct {
      * runs from the highest. Filled by msim_set_world (clist_order) and building_swap */
     int         *clist_seq;
     int          clist_seq_n, clist_next;
+    int          clist_split;     /* clist_seq up to this: objects outside any block (created as loaded); above: the block table's */
 } msim;
 
 /* Lancemate orders. point 0 = all points, 1 = Point 2, 2 = Point 3 ... (the lance position, engine object +0xc).

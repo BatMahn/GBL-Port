@@ -5238,7 +5238,7 @@ static void clist_order(msim *s, const mech3d *w)
     s->clist_next = 0;
     if (!s->clist_seq || !s->arch || !s->scene[0] || bwd_mission_load(s->arch, s->scene, &m) != 0) return;
     if ((done = calloc((size_t)(m.record_count > 0 ? m.record_count : 1), sizeof *done))) {
-        for (pass = 1; pass <= 2; pass++) { depth = 0; corder_visit(&m, s->scene, done, &depth, pass, &seq, w, s->clist_seq); }   /* outside, then inside blocks */
+        for (pass = 1; pass <= 2; pass++) { depth = 0; corder_visit(&m, s->scene, done, &depth, pass, &seq, w, s->clist_seq); if (pass == 1) s->clist_split = seq; }   /* outside, then inside blocks */
         free(done);
     }
     s->clist_next = seq;

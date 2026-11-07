@@ -41,6 +41,9 @@ change in `src/rb_gl12_world.c`**, or the two builds drift apart.
   (Mesa's lavapipe) computes them: the DOS integer projection decides whole pixels on those values.
 - **The draw orders** (DOS and TITANIUM: world.frag's `gl_FragDepth = v_dord`): a listed polygon's triangles are
   clipped at the near plane here (by their own depth) and then sent with z = key x w - every pixel at the key's depth.
+  The DOS look's draw list (glr.c `glr_dos_list`: the original's list and sort run on the CPU) gives each polygon its
+  depth through the second storage buffer (`rb_storage_aux`), read here as world.vert reads it: that depth, or not
+  drawn.
 - **The DOS look's exact fill** (`u_dos_exact`, on by default; `MW2_DOS_EXACT=0` turns it off as on the GPU): world.frag
   walks each pixel's polygon in the storage buffer - the integer projection (0x3dfb7), the two chains (0x59e77), the
   row's span from the left chain's x to the right's inclusive - and discards the pixels outside it. Here the same walk

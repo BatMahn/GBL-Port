@@ -48,6 +48,7 @@ layout(std140, set = UBO_SET, binding = 1) uniform WorldDraw {
     vec2  u_texsize;   int   u_textured; int u_unlit;
     int   u_shadow;    float u_alpha;    int u_blend;  int u_tinton;
     int   u_horizon;   int   u_tilit;   int u_onlayer;   // u_onlayer: drawing from a layer (its vertex buffer bound: dvtx)
+    int   u_dlist;     // the layer's DOS draw list is bound (u_dos_rank: glr_dos_list)
 };
 
 #define u_pit_rank(i) u_pit_rank4[(i) >> 2][(i) & 3]

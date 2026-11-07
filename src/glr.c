@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #define FLOATS_PER_VERTEX 13 /* pos3 normal3 uv2 color3 texsel1 edge1 */
 
@@ -39,6 +40,26 @@ typedef struct {
     float   nrm[3], v0[3];   /* kinds 1 / 2: the polygon's normal and corner 0 in the model's frame (game coordinates) */
 } glr_tipoly;
 
+/* The DOS look's draw list (GBL MW2.EXE 0x3d9c0, glr_dos_list): a layer's objects - one per part, as the original links
+ * one object per model into its list - and their polygons, in the integers the original lists them with */
+typedef struct {
+    int64_t link;      /* its place in the original's object list (mech3d_part.dos_link): the larger is walked first */
+    int     pi;        /* its part in the layer's mech3d */
+    int     vfirst, vn;   /* its model's vertices in dl_v (world, whole cm: the vertex +0xc..+0x14) */
+    int     pfirst, pn;   /* its model's polygons in dl_p, in the model's order (0x3d830 walks them so) */
+    int32_t sph[4];    /* its sphere (0x389f0: the world vertices' box middle, >> 1; the farthest one's distance, chopped) */
+    int     kmode;     /* the key mode (object +0 & 7: mech3d_part.dos_sort) */
+    int     skip;      /* not in the list: a world object of type 0x70 (hidden at the start, GBL 0x103c0, never shown) */
+    int     sky;       /* the sky object (mech3d_part.dos_sky): the sky list (glr_dos_list) */
+    char    name[17];  /* (MW2_DOS_LIST_DUMP) */
+} glr_dobj;
+typedef struct {
+    int     obj, n;
+    int     idx[WTB_MAX_POLY_VERTS];   /* its corners in dl_v */
+    double  nrm[3];    /* its normal (0x38b30's corners: -cross(P1 - P0, C - P1)), world */
+    int     twin;      /* a billboard's other winding (the port draws one of the pair: twin, the polygon before), else -1 */
+} glr_dpoly;
+
 typedef struct {
     rb_buf  vbo;       /* (the DOS look also reads it as its storage buffer - dvtx in the shaders - so a Gouraud fragment can
                         * read its whole polygon) */
@@ -54,6 +75,18 @@ typedef struct {
     glr_tipoly *tip;
     int         tip_n, tic_static_ok, tic_dyn;
     float       tic_key[24];   /* the static lights tistat was made with */
+    /* the DOS draw list (set_layer; glr_dos_list): objects, polygons (a drawn one's vertices carry its index + 1 in a_tic.x),
+     * vertices; drank: per polygon its depth this frame (GL NDC z, 3: not listed) - the DOS program's second storage buffer */
+    glr_dobj   *dl_o;
+    glr_dpoly  *dl_p;
+    int32_t   (*dl_v)[3];
+    int         dl_on, dl_ocap, dl_pn, dl_pcap, dl_vn, dl_vcap;
+    int        *vc_stamp;      /* per vertex: the object visit its camera integers below are of */
+    int32_t   (*vc)[5];        /* camera x, y (zoom rows), z (quarter units); screen x, y (-1 x: not projected yet) */
+    uint8_t    *vc_oc;         /* its window outcode (0x3ea67) */
+    float      *drank;
+    rb_buf      drank_buf;
+    int         drank_n, vc_cap, drank_cap;
 } glr_layer;
 
 struct glr {
@@ -107,6 +140,10 @@ struct glr {
     int     dos_sh[2], dos_vw, dos_vh, dos_ok, dos_rec;
     uint32_t dos_zhw;   /* zoom (16.16) x the half width: the view's +0x94 (MW2.EXE 0x3f9e0) */
     float   dos_eye[3];
+    /* the DOS draw list (glr_dos_list): the static layer's objects' places from the world's (glr_set_dos_links), and the
+     * last list's counts (glr_dos_list_stats) */
+    const int64_t *dl_link;
+    int     dl_link_n, dl_stat[4], dl_stamp;
     /* sprites (weapon effects) */
     glr_particle *par;                      /* glr_set_particles */
     int    par_n, par_cap;
@@ -149,23 +186,27 @@ static void glr_bind(rb_tex t, int minf, int magf)
     rb_tex_filter(t, minf, magf);
 }
 /* a layer's buffers (glBindVertexArray of the layer's VAO; the DOS look's storage buffer: its vertices) */
-static void glr_bind_layer(const glr *r, int li)
+static void glr_bind_layer(glr *r, int li)
 {
     const glr_layer *L = &r->layer[li];
     rb_vertex(0, L->vbo, 0);
     rb_vertex(1, L->sph_vbo, 0);
     rb_vertex(2, L->tic_vbo, 0);
     rb_storage(L->vbo);
+    rb_storage_aux(L->drank_n > 0 ? L->drank_buf : 0);
+    r->D.u_dlist = L->drank_n > 0;
     glr_on_layer = 1;
 }
 /* the transient vertices (env_vertex layout) drawn from the frame's stream: the sphere and Titanium colour zero, as the
  * OpenGL renderer's constant attributes 6 / 7 */
-static void glr_bind_stream(size_t off)
+static void glr_bind_stream(glr *r, size_t off)
 {
+    r->D.u_dlist = 0;
     rb_vertex(0, RB_STREAM, off);
     rb_vertex(1, 0, 0);
     rb_vertex(2, 0, 0);
     rb_storage(0);
+    rb_storage_aux(0);
     glr_on_layer = 0;
 }
 static size_t glr_stream(const float *v, size_t floats)
@@ -194,6 +235,7 @@ glr *glr_create(void)
         r->layer[l].vbo = rb_buf_new();
         r->layer[l].sph_vbo = rb_buf_new();
         r->layer[l].tic_vbo = rb_buf_new();
+        r->layer[l].drank_buf = rb_buf_new();
     }
     for (k = 0; k < GLR_SLOTS * 4; k++) r->tex[k] = rb_tex_new();
     for (k = 0; k < 2; k++) r->env_tex[k] = rb_tex_new();
@@ -222,7 +264,10 @@ void glr_destroy(glr *r)
         rb_buf_delete(r->layer[k].vbo);
         rb_buf_delete(r->layer[k].sph_vbo);
         rb_buf_delete(r->layer[k].tic_vbo);
+        rb_buf_delete(r->layer[k].drank_buf);
         free(r->layer[k].tic); free(r->layer[k].tipn); free(r->layer[k].tistat); free(r->layer[k].tip);
+        free(r->layer[k].dl_o); free(r->layer[k].dl_p); free(r->layer[k].dl_v);
+        free(r->layer[k].vc_stamp); free(r->layer[k].vc); free(r->layer[k].vc_oc); free(r->layer[k].drank);
     }
     free(r);
 }
@@ -377,6 +422,103 @@ static void dos_normal_corners(const wtb_object *o, const wtb_poly *q, int *a, i
     }
 }
 
+static int64_t dos_r29(int64_t v);
+static int32_t dos_sin(int32_t a);
+static int32_t dos_cos(int32_t a);
+
+/* a model vertex placed as the original's integers have it (the vertex's +0xc..+0x14, whole cm): an unturned object's
+ * vertex + its position; turned about the vertical, by the 2.29 rows of its angle (0x3bfb2's lone angle: cos, sin) >> 29
+ * rounded (0x3b522 / 0x3b20c) - ASSUMED for an object turned by its parents too (the port keeps one yaw); a posed piece
+ * (a full matrix: a unit's, a shot's) from the port's float matrix, rounded - ASSUMED (the original's node matrices are
+ * 2.29 integers too) */
+static void dl_vertex(const mech3d_part *p, const wtb_vertex *v, int32_t out[3])
+{
+    int c;
+    if (p->has_rot) {
+        for (c = 0; c < 3; c++)
+            out[c] = (int32_t)llrint((double)p->rot[c * 3] * v->x + (double)p->rot[c * 3 + 1] * v->y + (double)p->rot[c * 3 + 2] * v->z + (double)p->pos[c]);
+    } else if (p->yaw == 0.0f) {
+        out[0] = v->x + p->pos[0]; out[1] = v->y + p->pos[1]; out[2] = v->z + p->pos[2];
+    } else {
+        int32_t a = (int32_t)lrint((double)p->yaw * 65536.0);
+        int64_t cs = dos_cos(a), sn = dos_sin(a);
+        out[0] = (int32_t)dos_r29(cs * v->x + sn * v->z) + p->pos[0];
+        out[1] = v->y + p->pos[1];
+        out[2] = (int32_t)dos_r29(-sn * v->x + cs * v->z) + p->pos[2];
+    }
+}
+
+/* a part into the layer's DOS draw list: its object (sphere, key mode, place) and every polygon of its model - those the
+ * port does not draw (lines, points) too, as the original lists them; returns the index of its first polygon */
+static int dl_add_part(glr_layer *L, const mech3d_part *part, const wtb_object *o, int pi)
+{
+    glr_dobj *ob;
+    int k, c, vb = L->dl_vn;
+    int64_t mn[3], mx[3];
+    double best = 0;
+    if (L->dl_on == L->dl_ocap) {
+        glr_dobj *g = realloc(L->dl_o, (size_t)(L->dl_ocap = L->dl_ocap ? 2 * L->dl_ocap : 256) * sizeof *g);
+        if (!g) { L->dl_ocap = L->dl_on; return -1; }
+        L->dl_o = g;
+    }
+    if (L->dl_vn + o->vert_count > L->dl_vcap) {
+        int nc = L->dl_vcap ? L->dl_vcap : 4096;
+        int32_t (*g)[3];
+        while (nc < L->dl_vn + o->vert_count) nc *= 2;
+        if (!(g = realloc(L->dl_v, (size_t)nc * sizeof *g))) return -1;
+        L->dl_v = g; L->dl_vcap = nc;
+    }
+    if (L->dl_pn + o->poly_count > L->dl_pcap) {
+        int nc = L->dl_pcap ? L->dl_pcap : 4096;
+        glr_dpoly *g;
+        while (nc < L->dl_pn + o->poly_count) nc *= 2;
+        if (!(g = realloc(L->dl_p, (size_t)nc * sizeof *g))) return -1;
+        L->dl_p = g; L->dl_pcap = nc;
+    }
+    ob = &L->dl_o[L->dl_on];
+    ob->link = part->dos_link; ob->pi = pi; ob->kmode = part->dos_sort & 7;
+    memcpy(ob->name, part->model_name, sizeof ob->name);
+    ob->skip = (part->objtype & 0xf0) == 0x70;
+    ob->sky = part->dos_sky;
+    ob->vfirst = vb; ob->vn = o->vert_count; ob->pfirst = L->dl_pn; ob->pn = o->poly_count;
+    for (k = 0; k < o->vert_count; k++) {
+        int32_t *w = L->dl_v[vb + k];
+        dl_vertex(part, &o->verts[k], w);
+        for (c = 0; c < 3; c++) {
+            if (k == 0 || w[c] < mn[c]) mn[c] = w[c];
+            if (k == 0 || w[c] > mx[c]) mx[c] = w[c];
+        }
+    }
+    for (c = 0; c < 3; c++) ob->sph[c] = o->vert_count > 0 ? (int32_t)((mn[c] + mx[c]) >> 1) : 0;
+    for (k = 0; k < o->vert_count; k++) {
+        double dx = (double)(L->dl_v[vb + k][0] - ob->sph[0]), dy = (double)(L->dl_v[vb + k][1] - ob->sph[1]), dz = (double)(L->dl_v[vb + k][2] - ob->sph[2]);
+        if (dx * dx + dy * dy + dz * dz > best) best = dx * dx + dy * dy + dz * dz;
+    }
+    ob->sph[3] = (int32_t)sqrt(best);   /* (0x5db42: chopped) */
+    for (k = 0; k < o->poly_count; k++) {
+        const wtb_poly *q = &o->polys[k];
+        glr_dpoly *d = &L->dl_p[L->dl_pn + k];
+        int a = 0, b = 0, cc = 0, j;
+        d->obj = L->dl_on; d->n = q->n > WTB_MAX_POLY_VERTS ? WTB_MAX_POLY_VERTS : q->n;
+        for (j = 0; j < d->n; j++) d->idx[j] = vb + (q->idx[j] < o->vert_count ? q->idx[j] : 0);
+        d->nrm[0] = d->nrm[1] = d->nrm[2] = 0;
+        d->twin = -1;
+        if (d->n >= 3) {
+            const int32_t *P0, *P1, *C;
+            double e1[3], e2[3];
+            dos_normal_corners(o, q, &a, &b, &cc);
+            P0 = L->dl_v[vb + a]; P1 = L->dl_v[vb + b]; C = L->dl_v[vb + cc];
+            for (c = 0; c < 3; c++) { e1[c] = (double)P1[c] - P0[c]; e2[c] = (double)C[c] - P1[c]; }
+            d->nrm[0] = -(e1[1] * e2[2] - e1[2] * e2[1]);
+            d->nrm[1] = -(e1[2] * e2[0] - e1[0] * e2[2]);
+            d->nrm[2] = -(e1[0] * e2[1] - e1[1] * e2[0]);
+        }
+    }
+    L->dl_vn += o->vert_count;
+    L->dl_pn += o->poly_count;
+    return L->dl_on++ >= 0 ? ob->pfirst : -1;
+}
+
 static int set_layer(glr *r, int li, const mech3d *m, const uint8_t palette[256][3],
                      texture *const slots[GLR_SLOTS], int camo, int clan, int bounds)
 {
@@ -394,6 +536,7 @@ static int set_layer(glr *r, int li, const mech3d *m, const uint8_t palette[256]
         o = &pm->objects[0];
         for (k = 0; k < o->poly_count; k++)
             if (o->polys[k].n >= 3) cap += (size_t)(o->polys[k].n - 2) * 3 + (((o->polys[k].color >> 12) & 7) == 3 ? 6 : 0);
+            else if (o->polys[k].n == 1) cap += 6;   /* (a point: the DOS look's one pixel) */
     }
     buf = malloc((cap ? cap : 1) * FLOATS_PER_VERTEX * sizeof *buf);
     sph = malloc((cap ? cap : 1) * 4 * sizeof *sph);
@@ -403,6 +546,7 @@ static int set_layer(glr *r, int li, const mech3d *m, const uint8_t palette[256]
     pos = calloc(GLR_BATCHES, sizeof *pos);
     if (!buf || !sph || !tic || !tipn || !count || !pos) { free(buf); free(sph); free(tic); free(tipn); free(count); free(pos); return -1; }
     if (r->ti_slots) memcpy(r->ti_pal[li], palette, sizeof r->ti_pal[li]);
+    L->dl_on = L->dl_pn = L->dl_vn = 0;
 
     /* two passes: count triangles per texture batch, then write them grouped */
     for (pass = 0; pass < 2; pass++) {
@@ -426,7 +570,9 @@ static int set_layer(glr *r, int li, const mech3d *m, const uint8_t palette[256]
             else if (part->objtype & 0x400) wire_code = 2;
             else if (part->objtype & 0x100) { int cn = (part->objtype & 0xf0) >> 4; wire_code = cn < 1 ? 1 : cn < 12 ? 3 : 2; }
             else if (part->wire_hi) wire_code = 1;
-            if (part->hidden || part->moving || part->facing || !o) continue;   /* moving: a path-carried world part, facing: a fire /
+            if (part->hidden || part->moving || part->facing || !o) continue;
+            if (r->ti_slots && !r->dos && li == 0 && (part->objtype & 0xf0) == 0x70) continue;   /* TITANIUM: type 0x70 hidden at the start
+                                                                         * (mercsw 0x1001bdbe -> 0x10049575), as DOS (glr_dos_list) */   /* moving: a path-carried world part, facing: a fire /
                                                                                  * smoke card - both drawn on the actor layer */
             const int dnib = !r->dos && !ti && part->dmg_nib > 0 && part->dmg_nib < 16 ? part->dmg_nib : 0;
             /* the texture switches by the object's type word (0x1002a768: DAT_1024e228 & type, and with the OBJECT bit 0x100
@@ -435,6 +581,9 @@ static int set_layer(glr *r, int li, const mech3d *m, const uint8_t palette[256]
             int notex_cls = (li == 1 && part->objtype == 0) || (part->objtype & 0x300) || (part->objtype & 0xf0) == 0x50 ? 1
                           : (part->objtype & 0x800) ? 2 : 0;
             if (pass == 1) part_sphere(part, psph);
+            /* the DOS draw list: every object the DOS program draws in a list - not the cockpit set (its own list, 0xa0),
+             * nor a shadow piece */
+            const int dlp = pass == 1 && r->dos && !model->extended && !part->dos_pit && !part->shadow ? dl_add_part(L, part, o, pi) : -1;
             for (k = 0; k < o->poly_count; k++) {
                 const wtb_poly *q = &o->polys[k];
                 float face[3], e1[3], e2[3], poly_col[3], ti_vmin;
@@ -443,6 +592,31 @@ static int set_layer(glr *r, int li, const mech3d *m, const uint8_t palette[256]
                 const wtb_vertex *v0, *v1, *v2;
                 int slot = q->color & 0xFF, batch = GLR_SLOTS, bb_tri = 0;
                 float ground_lift = 0.0f;
+                if (q->n == 1 && r->dos && !model->extended && !part->dos_pit && !part->shadow && ((q->color >> 12) & 7) == 0) {
+                    /* a point (BRAN's and ZACK's STARs: one vertex, colour type 0): the original paints its one pixel at
+                     * its projection in the palette colour (c >> 4) & 0xff, unshaded (DOSBox BRANSCN1 / ZACKSCN1: the
+                     * mission palette's entry 0xfe) - a pixel square made by the vertex shader (65536 x (400 + corner))
+                     * at the DOS integer point, drawn only from the draw list (glr_dos_list) */
+                    float wv[3];
+                    const wtb_vertex *pv = &o->verts[q->idx[0]];
+                    if (pass == 0) { count[GLR_SLOTS] += 6; continue; }
+                    if (part->has_rot) { const float *R = part->rot; int c3; for (c3 = 0; c3 < 3; c3++) wv[c3] = R[c3 * 3] * (float)pv->x + R[c3 * 3 + 1] * (float)pv->y + R[c3 * 3 + 2] * (float)pv->z + (float)part->pos[c3]; }
+                    else { float cy = cosf(part->yaw * 3.14159265f / 180.0f), sy = sinf(part->yaw * 3.14159265f / 180.0f);
+                           wv[0] = cy * (float)pv->x + sy * (float)pv->z + (float)part->pos[0]; wv[1] = (float)(pv->y + part->pos[1]); wv[2] = -sy * (float)pv->x + cy * (float)pv->z + (float)part->pos[2]; }
+                    for (a = 0; a < 6; a++) {
+                        float *f = buf + pos[GLR_SLOTS] * FLOATS_PER_VERTEX;
+                        memset(f, 0, FLOATS_PER_VERTEX * sizeof *f);
+                        memcpy(sph + pos[GLR_SLOTS] * 4, psph, sizeof psph);
+                        f[0] = wv[0]; f[1] = wv[1]; f[2] = -wv[2];
+                        f[9] = (float)((q->color >> 4) & 0xff);
+                        f[12] = (float)(65536 * (400 + a));
+                        if (dlp >= 0) tic[pos[GLR_SLOTS] * 4] = (float)(dlp + k + 1);
+                        for (c0 = 0; c0 < 3; c0++) { if (f[c0] < mn[c0]) mn[c0] = f[c0]; if (f[c0] > mx[c0]) mx[c0] = f[c0]; }
+                        pos[GLR_SLOTS]++;
+                        n++;
+                    }
+                    continue;
+                }
                 if (q->n < 3) continue;
                 /* Titanium (mercsw 0x10053280, the draw by colour kind in the normal view): kind 2 has no case there - not drawn
                  * (lattices, rotor blades, shields, the hex glass) unless its object's texture switch is off (then the kind 1
@@ -477,7 +651,7 @@ static int set_layer(glr *r, int li, const mech3d *m, const uint8_t palette[256]
                             for (k4 = 0; k4 < q->n; k4++) if (o->polys[k - 1].idx[k4] == q->idx[k3]) hit = 1;
                             same = hit;
                         }
-                        if (same) goto bb_done;
+                        if (same) { if (dlp >= 0) L->dl_p[dlp + k].twin = dlp + k - 1; goto bb_done; }
                     }
                     for (k2 = 0; k2 < q->n; k2++) {
                         const wtb_vertex *vv = &o->verts[q->idx[k2]];
@@ -536,6 +710,7 @@ static int set_layer(glr *r, int li, const mech3d *m, const uint8_t palette[256]
                                 if (lo - 0.5f * h < mn[c]) mn[c] = lo - 0.5f * h;
                                 if (hi + 0.5f * h > mx[c]) mx[c] = hi + 0.5f * h;
                             }
+                            if (dlp >= 0) tic[pos[bb0 + bs] * 4] = (float)(dlp + k + 1);   /* (its place in the DOS draw list) */
                             pos[bb0 + bs]++;
                             n++;
                         }
@@ -816,11 +991,12 @@ static int set_layer(glr *r, int li, const mech3d *m, const uint8_t palette[256]
                         /* the wireframe's edges: this corner (0-2) + 3 x the polygon's own edges in this fan triangle
                          * (bit 0: corner 1 - 2, always; bit 1: corner 2 - 0 when it closes the polygon; bit 2: corner 0 - 1
                          * when it starts it), so the triangulation's diagonals are not drawn (DOS draws polygon outlines) */
-                        f[12] = (float)(a + 3 * (1 | (j + 2 == q->n ? 2 : 0) | (j == 1 ? 4 : 0)) + 32 * wire_code + (ti ? 256 : 0) + (ti_flat || (hi_card && (q->color >> 12) == 0xb) ? 512 : 0) + 2048 * dnib + (pit_o >= 0 ? 65536 * (pit_o + 1) : r->ti_slots && !r->dos ? 65536 * (300 + (tiw > 0 ? 1 : tiw < 0 ? 0 : 2) + (ti_nofog ? 4 : 0)) : part->dos_sort && r->dos ? 65536 * (200 + part->dos_sort) : 0));   /* (+ 512: unlit; + 65536 x (1 + n): the DOS cockpit set's polygon n; + 65536 x (200 + m): the DOS key mode m, mech3d_part.dos_sort; + 65536 x 300 / 301: the TITANIUM normal's way, tiw) */
+                        f[12] = (float)(a + 3 * (1 | (j + 2 == q->n ? 2 : 0) | (j == 1 ? 4 : 0)) + 32 * wire_code + (ti ? 256 : 0) + (ti_flat || (hi_card && (q->color >> 12) == 0xb) ? 512 : 0) + 2048 * dnib + (pit_o >= 0 ? 65536 * (pit_o + 1) : r->ti_slots && !r->dos ? 65536 * (300 + (tiw > 0 ? 1 : tiw < 0 ? 0 : 2) + (ti_nofog ? 4 : 0) + (part->dos_sky ? 8 : 0)) : part->dos_sort && r->dos ? 65536 * (200 + part->dos_sort) : 0));   /* (+ 512: unlit; + 65536 x (1 + n): the DOS cockpit set's polygon n; + 65536 x (200 + m): the DOS key mode m, mech3d_part.dos_sort; + 65536 x 300 / 301: the TITANIUM normal's way, tiw; + 8 there: the sky object) */
                         for (c = 0; c < 3; c++) {
                             if (f[c] < mn[c]) mn[c] = f[c];
                             if (f[c] > mx[c]) mx[c] = f[c];
                         }
+                        if (dlp >= 0 && !tik) tic[pos[batch] * 4] = (float)(dlp + k + 1);   /* (its place in the DOS draw list) */
                         pos[batch]++;
                         n++;
                     }
@@ -1580,6 +1756,378 @@ static void dos_pit_ranks(const glr *r, const int64_t R[3][3], const float eye_g
     for (k = 0; k < nl; k++) ranks[id[k]] = k;
 }
 
+/* ---- the DOS draw list (GBL MW2.EXE 0x3d9c0 -> 0x3d830 -> 0x3ec8e, sorted by 0x3d930, painted by 0x3dad0)
+ *
+ * The original has no depth buffer: each frame it walks its object list (0x105e10, from the head: every object is linked
+ * at the head as it is made or shown - 0x1fa10 / 0x1fce0), culls each object by its sphere (0x3ffb0), and lists every
+ * polygon of each one left (its level of detail's, in the model's order) that faces the eye and is not wholly off the
+ * window, with one key (0x3ec8e: its corners' camera z in quarter units, after the near clip - the farthest, the mean
+ * for key mode 2, the nearest for 4, | 0x40000000 for 1). The list is sorted by 0x3d930 - a quicksort, pivot first,
+ * largest key first, not stable - and painted in that order, the last painted on top. Equal keys come out in the order
+ * the sort leaves them, which depends on the whole list: so the list is built here as the original builds it, the same
+ * sort is run, and each polygon is drawn at a depth that falls strictly along the painting order (its key's own depth,
+ * pulled nearer only where it would not be below the one painted before it). A polygon the original does not list is
+ * not drawn. */
+/* The original's limits, applied (MW2_DOS_LIST_CAPS=0, testing: counted only): the 1400 polygons (reached: only the
+ * farthest polygon painted), the 1500 entries and the corner pool (the objects walked after it - the first ones loaded,
+ * the terrain - left out), 20 corners a polygon. None is reached in any GBL mission walked or turned 40 s (all 23; BASS's
+ * busiest list 1057 entries) now that BASS's snow patch follows the player as in DOS (it stayed round the map origin and
+ * the pool ran out). Each is counted (glr_dos_list_stats) */
+#define DL_CAP_POLYS 0x578   /* DAT_000a79d4 (0x10320): polygons of 2+ corners; reached: only the first sorted one is painted */
+#define DL_CAP_ENTRIES 0x5dc /* DAT_0010fb40 (0x3459b(0x80, 0x5dc)) */
+#define DL_POOL (0x80 * 1024 - 0x30)   /* the corner pool (0x34651): headers + corner pointers up, corner records down */
+
+/* the side planes' factors (0x3b5b0 at start-up: i = 0..799, t = i / 16, s = 1 / sqrt(1 + t^2) in the x87's extended
+ * precision, each chopped: T1 = s x 2^29, T2 = t s x 2^29) - ASSUMED the same values from long double off x87 */
+static int32_t dl_t1[800], dl_t2[800];
+static void dl_tables(void)
+{
+    static int done;
+    int i;
+    if (done) return;
+    done = 1;
+    for (i = 0; i < 800; i++) {
+        long double t = (long double)i * 0.0625L, s = 1.0L / sqrtl(t * t + 1.0L);
+        dl_t1[i] = (int32_t)(s * 536870912.0L);
+        dl_t2[i] = (int32_t)(t * s * 536870912.0L);
+    }
+}
+
+void glr_set_dos_links(glr *r, const int64_t *link, int n) { if (r) { r->dl_link = link; r->dl_link_n = n; } }
+void glr_dos_list_stats(const glr *r, int out[4]) { memcpy(out, r->dl_stat, sizeof r->dl_stat); }
+
+typedef struct {
+    int64_t Rz[3], Rx[3], Ry[3], raw[3][3];   /* the key row (2.29, >> 27: quarter units), the zoom rows (0x3ece0), the raw rows */
+    int64_t eye[3];
+    int     w, h, cx, cy, sh[2], near4, far4, near, far;
+    int64_t zoomx, zoomy, kx, ky, farb;
+    int     stamp;
+    int     pool_lo, pool_hi, abort, multi, ne, caps, over;   /* over: 1 the pool, 2 the entries, 4 the polygons, 8 20 corners */
+} dl_ctx;
+typedef struct { int32_t x, y, z, sx, sy; uint8_t oc; } dl_rec;
+
+static int dl_round27(int64_t t) { return (int)((t >> 27) + ((t >> 26) & 1)); }
+/* a record's window point and outcode (0x3ea67: ((x << xs) / z + 2) >> 2 from the centre, y the other way; 2 right of the
+ * window, 1 left, 8 below, 4 above) */
+static void dl_project(const dl_ctx *X, dl_rec *c)
+{
+    int64_t z = c->z;
+    c->sx = X->cx + (int)((dos_rdiv((int64_t)c->x * ((int64_t)1 << X->sh[0]), z) + 2) >> 2);
+    c->sy = X->cy - (int)((dos_rdiv((int64_t)c->y * ((int64_t)1 << X->sh[1]), z) + 2) >> 2);
+    c->oc = (uint8_t)((c->sx > X->w - 1 ? 2 : 0) | (c->sx < 0 ? 1 : 0) | (c->sy > X->h - 1 ? 8 : 0) | (c->sy < 0 ? 4 : 0));
+}
+/* 0x3466f: a corner record off the pool's top (32 bytes); out of room (0xc8 bytes kept) the list stops */
+static void dl_rec_alloc(dl_ctx *X)
+{
+    X->pool_hi -= 32;
+    if (X->pool_hi - 0xc8 <= X->pool_lo) { X->over |= 1; if (X->caps) X->abort = 1; }
+}
+/* a vertex's camera z (0x3ec8e: vertex +0x20, once an object) */
+static int32_t dl_vz(dl_ctx *X, glr_layer *L, int vi)
+{
+    if (L->vc_stamp[vi] != X->stamp) {
+        const int32_t *w = L->dl_v[vi];
+        int64_t d[3] = {w[0] - X->eye[0], w[1] - X->eye[1], w[2] - X->eye[2]};
+        L->vc_stamp[vi] = X->stamp;
+        L->vc[vi][2] = dl_round27(X->Rz[0] * d[0] + X->Rz[1] * d[1] + X->Rz[2] * d[2]);
+        L->vc[vi][3] = INT32_MIN;   /* (no corner record yet) */
+    }
+    return L->vc[vi][2];
+}
+/* a vertex's corner record (0x3e80c: camera x, y by the zoom rows, once an object; projected by the first 0x3ea67) */
+static void dl_vrec(dl_ctx *X, glr_layer *L, int vi, dl_rec *out, int project)
+{
+    if (L->vc[vi][3] == INT32_MIN) {
+        const int32_t *w = L->dl_v[vi];
+        int64_t d[3] = {w[0] - X->eye[0], w[1] - X->eye[1], w[2] - X->eye[2]};
+        L->vc[vi][0] = dl_round27(X->Rx[0] * d[0] + X->Rx[1] * d[1] + X->Rx[2] * d[2]);
+        L->vc[vi][1] = dl_round27(X->Ry[0] * d[0] + X->Ry[1] * d[1] + X->Ry[2] * d[2]);
+        L->vc[vi][3] = INT32_MAX;   /* (made, not projected) */
+        dl_rec_alloc(X);
+    }
+    out->x = L->vc[vi][0]; out->y = L->vc[vi][1]; out->z = L->vc[vi][2];
+    if (project && L->vc[vi][3] == INT32_MAX) {
+        dl_project(X, out);
+        L->vc[vi][3] = out->sx; L->vc[vi][4] = out->sy; L->vc_oc[vi] = out->oc;
+    } else if (L->vc[vi][3] != INT32_MAX) { out->sx = L->vc[vi][3]; out->sy = L->vc[vi][4]; out->oc = L->vc_oc[vi]; }
+}
+/* 0x3e8fe: the point of edge A -> B at the near plane (z = near x 4), a new record */
+static void dl_clip(dl_ctx *X, const dl_rec *A, const dl_rec *B, dl_rec *o)
+{
+    int64_t x = A->x, y = A->y;
+    if (A->z < B->z) {
+        int64_t dz = (int64_t)B->z - A->z, e = (int64_t)X->near4 - A->z;
+        if (dz) { x = dos_rdiv(((int64_t)B->x - A->x) * e, dz) + A->x; y = dos_rdiv(((int64_t)B->y - A->y) * e, dz) + A->y; }
+    } else {
+        int64_t dz = (int64_t)A->z - B->z, e = (int64_t)X->near4 - B->z;
+        x = B->x; y = B->y;
+        if (dz) { x = dos_rdiv(((int64_t)A->x - B->x) * e, dz) + B->x; y = dos_rdiv(((int64_t)A->y - B->y) * e, dz) + B->y; }
+        else { x = A->x; y = A->y; }
+    }
+    o->x = (int32_t)x; o->y = (int32_t)y; o->z = X->near4;
+    dl_rec_alloc(X);
+    dl_project(X, o);
+}
+/* 0x3ffb0: 0 when the object's sphere may be seen (the far distance, the near and far depths, the side planes) */
+static int dl_cull(const dl_ctx *X, const int32_t s[4])
+{
+    int64_t d[3] = {s[0] - X->eye[0], s[1] - X->eye[1], s[2] - X->eye[2]}, f = X->farb + s[3], dist2, dep, e;
+    int c;
+    dist2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+    if (dist2 - f * f >= 0 && (uint32_t)(dist2 - f * f) != 0) return 5;   /* (sub / sbb, then the low word: as written) */
+    dep = dos_r29(X->raw[2][0] * d[0] + X->raw[2][1] * d[1] + X->raw[2][2] * d[2]);
+    if (dep + s[3] < X->near) return 4;
+    if (dep - s[3] > X->far) return 5;
+    for (c = 0; c < 2; c++) {
+        int64_t q;
+        e = dos_r29(X->raw[c][0] * d[0] + X->raw[c][1] * d[1] + X->raw[c][2] * d[2]);
+        if (e < 0) e = -e;
+        q = dos_rdiv((c ? X->zoomy : X->zoomx) * e - dep * 65536, c ? X->ky : X->kx);
+        if ((int32_t)q > s[3]) return 6 + c;
+    }
+    return 0;
+}
+typedef struct { int layer, poly; } dl_ent;
+static const glr *dl_sort_r;
+static int64_t dl_obj_link(const glr *r, int li, const glr_dobj *o)
+{
+    if (li == 0 && r->dl_link && o->pi < r->dl_link_n) return r->dl_link[o->pi];
+    return o->link;
+}
+static int dl_obj_cmp(const void *a, const void *b)   /* the walk: the larger link first, then the actor layer, then the later part */
+{
+    const int *x = a, *y = b;
+    const glr_dobj *ox = &dl_sort_r->layer[x[0]].dl_o[x[1]], *oy = &dl_sort_r->layer[y[0]].dl_o[y[1]];
+    int64_t lx = dl_obj_link(dl_sort_r, x[0], ox), ly = dl_obj_link(dl_sort_r, y[0], oy);
+    if (lx != ly) return lx > ly ? -1 : 1;
+    if (x[0] != y[0]) return x[0] > y[0] ? -1 : 1;
+    return x[1] > y[1] ? -1 : x[1] < y[1] ? 1 : 0;
+}
+/* one object's polygons into the list (0x3d830 -> 0x3ec8e): appended to key / id / ent, which grow */
+static void dl_walk(dl_ctx *X, glr_layer *L, int li, const glr_dobj *ob, int **key, int **id, dl_ent **ent, int *kcap)
+{
+    int p;
+    for (p = ob->pfirst; p < ob->pfirst + ob->pn && !X->abort; p++) {
+        const glr_dpoly *d = &L->dl_p[p];
+        dl_rec cr[24], cur, prv, first;
+        int n = d->n, j, fl_and = 3, cnt = 0, oand = 15, b0, bp, bk;
+        if (n < 1) continue;
+        if (n >= 3) {   /* one-sided: (corner 0 - the eye) . N < 0 */
+            const int32_t *v0 = L->dl_v[d->idx[0]];
+            double dt = d->nrm[0] * (double)(v0[0] - X->eye[0]) + d->nrm[1] * (double)(v0[1] - X->eye[1]) + d->nrm[2] * (double)(v0[2] - X->eye[2]);
+            if (!(dt < 0.0)) continue;
+        }
+        for (j = 0; j < n; j++) {   /* each corner's z: 1 nearer than the near plane, 2 beyond the far one */
+            int32_t z = dl_vz(X, L, d->idx[j]);
+            fl_and &= (z < X->near4 ? 1 : 0) | (z > X->far4 ? 2 : 0);
+        }
+        if (fl_and == 1 || fl_and == 2) continue;
+        /* the walk (0x3ec8e): the corners in front, the near plane's points where an edge crosses it */
+#define DL_EMIT(rc) do { if (cnt >= 20) { X->over |= 8; X->abort = 1; } else { cr[cnt++] = (rc); oand &= (rc).oc; } } while (0)
+        b0 = L->vc[d->idx[0]][2] < X->near4;
+        if (!b0) { dl_vrec(X, L, d->idx[0], &cur, 1); DL_EMIT(cur); }
+        bp = b0;
+        for (j = 1; j < n; j++) {
+            bk = L->vc[d->idx[j]][2] < X->near4;
+            if (bk != bp) { dl_rec q; dl_vrec(X, L, d->idx[j - 1], &prv, 0); dl_vrec(X, L, d->idx[j], &cur, 0); dl_clip(X, &prv, &cur, &q); DL_EMIT(q); }
+            if (!bk) { dl_vrec(X, L, d->idx[j], &cur, 1); DL_EMIT(cur); }
+            bp = bk;
+        }
+        if (b0 != bp) { dl_rec q; dl_vrec(X, L, d->idx[n - 1], &prv, 0); dl_vrec(X, L, d->idx[0], &first, 0); dl_clip(X, &prv, &first, &q); DL_EMIT(q); }
+#undef DL_EMIT
+        if ((cnt > 2 || n < 3) && oand == 0 && cnt > 0) {
+            int64_t kk;
+            int i2;
+            X->pool_lo += 12;   /* 0x346aa: the header */
+            if (X->pool_lo + 0xc8 >= X->pool_hi) { X->over |= 1; if (X->caps) X->abort = 1; }
+            if (ob->kmode & 2) { uint32_t s = 0; for (i2 = 0; i2 < cnt; i2++) s += (uint32_t)cr[i2].z; kk = (int64_t)(s / (uint32_t)cnt); }
+            else if (ob->kmode & 4) { kk = 0x7fffffff; for (i2 = 0; i2 < cnt; i2++) if (cr[i2].z < kk) kk = cr[i2].z; }
+            else { kk = (int32_t)0x80000001; for (i2 = 0; i2 < cnt; i2++) if (cr[i2].z > kk) kk = cr[i2].z; }
+            if (ob->kmode & 1) kk |= 0x40000000;
+            X->pool_lo += 4 * cnt;   /* (its corner pointers) */
+            if (X->ne >= *kcap) {   /* (the arrays grow past the original's 1500 when its limits are off) */
+                int nc = *kcap ? 2 * *kcap : 2048;
+                int *k2 = realloc(*key, (size_t)nc * sizeof **key), *i2b = k2 ? realloc(*id, (size_t)nc * sizeof **id) : NULL;
+                dl_ent *e2 = i2b ? realloc(*ent, (size_t)nc * sizeof **ent) : NULL;
+                if (k2) *key = k2;
+                if (i2b) *id = i2b;
+                if (!e2) { X->abort = 1; break; }
+                *ent = e2; *kcap = nc;
+            }
+            if (X->ne >= DL_CAP_ENTRIES) X->over |= 2;
+            if (X->ne < DL_CAP_ENTRIES || !X->caps) {
+                if (cnt > 1) X->multi++;
+                (*key)[X->ne] = (int)kk; (*id)[X->ne] = X->ne; (*ent)[X->ne].layer = li; (*ent)[X->ne].poly = p; X->ne++;
+            } else X->abort = 1;
+        }
+    }
+}
+/* the list for this frame and each listed polygon's depth (L->drank: GL NDC z; 3 for a polygon not listed) */
+static void glr_dos_list(glr *r, const int64_t R[3][3], const int64_t raw[3][3], const float eye_gl[3], int w, int h,
+                         const int sh[2], uint32_t zoom_raw, uint32_t zoom, int near4, float far_cm, const float *mvp, const float *view)
+{
+    static int *ord, ord_cap, *key, *id, kcap, *dbg_o, *skey, *sid, scap;
+    static dl_ent *ent, *sent;
+    int sky_k, sky_ne;
+    dl_ctx X;
+    int li, k, no = 0, total_o = 0;
+    double t0 = 0;
+    static int timing = -1;
+    if (timing < 0) timing = getenv("MW2_DOS_LIST_TIME") != NULL;
+    if (timing) t0 = (double)clock();
+    dl_tables();
+    memset(&X, 0, sizeof X);
+    for (k = 0; k < 3; k++) { X.Rz[k] = R[2][k]; X.Rx[k] = R[0][k]; X.Ry[k] = R[1][k]; memcpy(X.raw[k], raw[k], sizeof X.raw[k]); }
+    X.eye[0] = (int64_t)floor((double)eye_gl[0] + 0.5); X.eye[1] = (int64_t)floor((double)eye_gl[1] + 0.5); X.eye[2] = (int64_t)floor(-(double)eye_gl[2] + 0.5);
+    X.w = w; X.h = h; X.cx = w >> 1; X.cy = h >> 1; X.sh[0] = sh[0]; X.sh[1] = sh[1];
+    X.near4 = near4; X.near = near4 / 4;
+    X.far = far_cm > 0 && far_cm < 536870911.0f ? (int)far_cm : 0x7fffffff;
+    X.far4 = X.far < 0x1fffffff ? X.far * 4 : 0x7fffffff;
+    X.farb = X.far < 0x1fffffff ? X.far : 0x7fffffff;
+    {   /* the side planes (0x3f9e0): x zoom +0x18, its factor +0xa8; y zoom +0xb0 = round16(zoom x 0xffff) x hw / hh, +0xac */
+        int64_t hw = w >> 1 > 0 ? w >> 1 : 1, hh = h >> 1 > 0 ? h >> 1 : 1, zy, i;
+        X.zoomx = zoom_raw;
+        i = (int64_t)zoom >> 12; if (i > 799) i = 799;
+        X.kx = (dl_t1[i] >> 13) + dos_r29((int64_t)zoom * dl_t2[i]);
+        zy = ((int64_t)zoom * 0xffff >> 16) + (((int64_t)zoom * 0xffff >> 15) & 1);
+        X.zoomy = zy * hw / hh;
+        i = X.zoomy >> 12; if (i > 799) i = 799;
+        X.ky = (dl_t1[i] >> 13) + dos_r29(X.zoomy * dl_t2[i]);
+        if (X.kx == 0) X.kx = 1;
+        if (X.ky == 0) X.ky = 1;
+    }
+    X.pool_lo = 0; X.pool_hi = DL_POOL;
+    for (li = 0; li < GLR_LAYERS; li++) total_o += r->layer[li].dl_on;
+    if (ord_cap < total_o) {
+        free(ord); free(dbg_o);
+        ord = malloc((size_t)(ord_cap = total_o + 256) * 2 * sizeof *ord); dbg_o = malloc((size_t)ord_cap * 3 * sizeof *dbg_o);
+        if (!ord || !dbg_o) { ord_cap = 0; return; }
+    }
+    for (li = 0; li < GLR_LAYERS; li++) {
+        glr_layer *L = &r->layer[li];
+        if (L->vc_cap < L->dl_vn || !L->vc_stamp || !L->vc || !L->vc_oc) {   /* (the per-vertex caches) */
+            free(L->vc_stamp); free(L->vc); free(L->vc_oc);
+            L->vc_cap = L->dl_vn + 1024;
+            L->vc_stamp = calloc((size_t)L->vc_cap, sizeof *L->vc_stamp);
+            L->vc = malloc((size_t)L->vc_cap * sizeof *L->vc);
+            L->vc_oc = malloc((size_t)L->vc_cap);
+            if (!L->vc_stamp || !L->vc || !L->vc_oc) { L->vc_cap = 0; return; }
+        }
+        if (L->drank_cap < L->dl_pn || !L->drank) {
+            free(L->drank);
+            L->drank_cap = L->dl_pn + 1024;
+            if (!(L->drank = malloc((size_t)L->drank_cap * sizeof *L->drank))) { L->drank_cap = 0; return; }
+        }
+        for (k = 0; k < L->dl_pn; k++) L->drank[k] = 3.0f;
+        for (k = 0; k < L->dl_on; k++) { ord[2 * no] = li; ord[2 * no + 1] = k; no++; }
+    }
+    dl_sort_r = r;
+    qsort(ord, (size_t)no, 2 * sizeof *ord, dl_obj_cmp);
+    {
+        static int caps = -1;
+        if (caps < 0) caps = getenv("MW2_DOS_LIST_CAPS") ? atoi(getenv("MW2_DOS_LIST_CAPS")) != 0 : 1;
+        X.caps = caps;
+    }
+    /* the sky list (GBL 0x103c0: the first object of type 0x90 in the list at the start - the latest linked - taken off it,
+     * DAT_000a5930; each frame 0x3dc00 lists it alone, before the main list, with the far distance off (0x3fca0(view,
+     * 0x7fffffff): no far flags, no far cull) and its own cull 0x40230 (0x3ffb0's tests less the far ones), sorts it
+     * (0x3d930) and paints it: behind everything the main list paints, over the horizon fill (0x3ca90, painted first).
+     * Its other objects of type 0x90 (BRAN's and ZACK's stars) stay in the main list */
+    sky_k = -1; sky_ne = 0;
+    for (k = 0; k < no && sky_k < 0; k++) { const glr_dobj *ob = &r->layer[ord[2 * k]].dl_o[ord[2 * k + 1]]; if (ob->sky && !ob->skip) sky_k = k; }
+    if (sky_k >= 0) {
+        dl_ctx S = X;
+        glr_layer *L = &r->layer[ord[2 * sky_k]];
+        const glr_dobj *ob = &L->dl_o[ord[2 * sky_k + 1]];
+        S.far = S.far4 = 0x7fffffff; S.farb = 0x7fffffff;
+        if (dl_cull(&S, ob->sph) == 0) {
+            if (r->dl_stamp == INT_MAX) { int l2; for (l2 = 0; l2 < GLR_LAYERS; l2++) if (r->layer[l2].vc_stamp) memset(r->layer[l2].vc_stamp, 0, (size_t)r->layer[l2].vc_cap * sizeof(int)); r->dl_stamp = 0; }
+            S.stamp = ++r->dl_stamp;
+            dl_walk(&S, L, ord[2 * sky_k], ob, &skey, &sid, &sent, &scap);
+            sky_ne = S.ne;
+            if (sky_ne > 1) dos_qsort(sid, skey, 0, sky_ne - 1);
+        }
+    }
+    {   /* stamps: a fresh object visit for every object (the vertex caches are the object's, 0x3d830) */
+        for (k = 0; k < no && !X.abort; k++) {
+            glr_layer *L = &r->layer[ord[2 * k]];
+            const glr_dobj *ob = &L->dl_o[ord[2 * k + 1]];
+            dbg_o[3 * k] = X.pool_hi; dbg_o[3 * k + 1] = X.ne; dbg_o[3 * k + 2] = -1;
+            if (ob->skip || k == sky_k) continue;
+            if (dl_cull(&X, ob->sph) != 0) continue;
+            if (r->dl_stamp == INT_MAX) { int l2; for (l2 = 0; l2 < GLR_LAYERS; l2++) if (r->layer[l2].vc_stamp) memset(r->layer[l2].vc_stamp, 0, (size_t)r->layer[l2].vc_cap * sizeof(int)); r->dl_stamp = 0; }
+            r->dl_stamp++;
+            X.stamp = r->dl_stamp;
+            dl_walk(&X, L, ord[2 * k], ob, &key, &id, &ent, &kcap);
+            dbg_o[3 * k] -= X.pool_hi; dbg_o[3 * k + 1] = X.ne - dbg_o[3 * k + 1]; dbg_o[3 * k + 2] = 0;
+            if (X.multi >= DL_CAP_POLYS) { X.over |= 4; if (X.caps) break; }
+        }
+    }
+    {   /* 0x3d930 and the painting order: depths falling strictly along it */
+        int paint = X.ne, i2;
+        double prev = 2.0;
+        const double step = 1.0 / 2097152.0;   /* (window depth: 8 x 2^-24, kept apart through D24 / D32F and the OpenGL 1.2
+                                                * build's z / w) */
+        const double fw[3] = {-view[2], -view[6], -view[10]};
+        if (X.ne > 1) dos_qsort(id, key, 0, X.ne - 1);
+        if (X.multi >= DL_CAP_POLYS && paint > 1 && X.caps) paint = 1;   /* (0x3dad0 stops copying after the first) */
+        for (i2 = -sky_ne; i2 < paint; i2++) {   /* (the sky list first, then the main one) */
+            const dl_ent *e = i2 < 0 ? &sent[sid[i2 + sky_ne]] : &ent[id[i2]];
+            const int kv = i2 < 0 ? skey[i2 + sky_ne] : key[i2];
+            double kq = (double)(kv & 0x3fffffff) * 0.25, nd, wd;
+            double P[4] = {eye_gl[0] + fw[0] * kq, eye_gl[1] + fw[1] * kq, eye_gl[2] + fw[2] * kq, 1.0}, q[4];
+            int c;
+            for (c = 0; c < 4; c++) q[c] = mvp[c] * P[0] + mvp[4 + c] * P[1] + mvp[8 + c] * P[2] + mvp[12 + c];
+            nd = q[3] > 0.0 ? q[2] / q[3] : 1.0;
+            if (nd > 1.0 - 4e-6) nd = 1.0 - 4e-6;
+            if (kv & 0x40000000) nd = 1.0 - 2e-6;
+            wd = nd * 0.5 + 0.5;
+            if (i2 < 0) wd = 1.0 - 1e-6 - (double)(i2 + sky_ne + 1) * step;   /* (the sky list just below the cleared depth, in its
+                                                                             * order: behind every main-list polygon) */
+            if (wd > prev - step) wd = prev - step;
+            prev = wd;
+            r->layer[e->layer].drank[e->poly] = (float)(wd * 2.0 - 1.0);
+        }
+        for (li = 0; li < GLR_LAYERS; li++) {   /* a billboard pair: its one drawn picture where either winding is listed */
+            glr_layer *L = &r->layer[li];
+            for (k = 0; k < L->dl_pn; k++)
+                if (L->dl_p[k].twin >= 0 && L->drank[k] < 2.5f && L->drank[L->dl_p[k].twin] > 2.5f) L->drank[L->dl_p[k].twin] = L->drank[k];
+        }
+        r->dl_stat[0] = X.ne; r->dl_stat[1] = X.multi; r->dl_stat[2] = X.over; r->dl_stat[3] = paint;
+        {   /* MW2_DOS_LIST_DUMP=n (a diagnostic): the n-th list, in painting order (and the objects walked) */
+            static int calls, at = -2;
+            if (at == -2) at = getenv("MW2_DOS_LIST_DUMP") ? atoi(getenv("MW2_DOS_LIST_DUMP")) : -1;
+            if (++calls == at) {
+                fprintf(stderr, "dos list %d: sky object %d (%d entries); eye %lld %lld %lld, %d entries, %d multi, abort %d, over %d, painted %d, pool %d / %d\n", calls, sky_k, sky_ne, (long long)X.eye[0], (long long)X.eye[1], (long long)X.eye[2], X.ne, X.multi, X.abort, X.over, paint, X.pool_lo, X.pool_hi);
+                for (i2 = 0; i2 < no; i2++) {
+                    const glr_dobj *o2 = &r->layer[ord[2 * i2]].dl_o[ord[2 * i2 + 1]];
+                    fprintf(stderr, "  obj %d: layer %d %-12s link %lld cull %d sph %d %d %d r %d", i2, ord[2 * i2], o2->name, (long long)dl_obj_link(r, ord[2 * i2], o2), dl_cull(&X, o2->sph), o2->sph[0], o2->sph[1], o2->sph[2], o2->sph[3]);
+                    if (i2 < k && dbg_o[3 * i2 + 2] == 0) fprintf(stderr, " records %d listed %d", dbg_o[3 * i2] / 32, dbg_o[3 * i2 + 1]);
+                    fputc('\n', stderr);
+                }
+                for (i2 = 0; i2 < X.ne; i2++) {
+                    const dl_ent *e = &ent[id[i2]];
+                    const glr_layer *L2 = &r->layer[e->layer];
+                    const glr_dobj *o2 = &L2->dl_o[L2->dl_p[e->poly].obj];
+                    fprintf(stderr, "  paint %d: entry %d key %d layer %d %-12s poly %d\n", i2, id[i2], key[i2], e->layer, o2->name, e->poly - o2->pfirst);
+                }
+            }
+        }
+    }
+    for (li = 0; li < GLR_LAYERS; li++) {
+        glr_layer *L = &r->layer[li];
+        L->drank_n = L->dl_pn;
+        if (L->dl_pn > 0) rb_buf_data(L->drank_buf, L->drank, (size_t)L->dl_pn * sizeof *L->drank);
+    }
+    if (timing) {
+        static double acc; static int nfr;
+        acc += ((double)clock() - t0) / CLOCKS_PER_SEC; nfr++;
+        static int over_or, ne_max, multi_max;
+        over_or |= X.over; if (X.ne > ne_max) ne_max = X.ne; if (X.multi > multi_max) multi_max = X.multi;
+        if (nfr == 60) { fprintf(stderr, "dos list: %.3f ms a frame (%d objects, %d listed, %d multi; the last 60: at most %d listed, %d multi, limits passed %d)\n", acc / nfr * 1000.0, no, X.ne, X.multi, ne_max, multi_max, over_or); acc = 0; nfr = 0; over_or = ne_max = multi_max = 0; }
+    }
+}
+
 void glr_draw_rect(glr *r, const glr_view *v, int x0, int y0, int w, int h)
 {
     float proj[16], view[16], mvp[16], eye[3], L[3], ll, dist;
@@ -1653,6 +2201,7 @@ void glr_draw_rect(glr *r, const glr_view *v, int x0, int y0, int w, int h)
     r->F.u_ambient = v->ambient;
     UV(r->F.u_fog_color, v->fog_color, 3);
     r->F.u_dos = 0;
+    { int l2; for (l2 = 0; l2 < GLR_LAYERS; l2++) r->layer[l2].drank_n = 0; }   /* (the DOS draw list: set below) */
     {   /* the TITANIUM look's draw order (world.vert; mercsw paints its sorted list without a working depth test).
          * MW2_TI_ORDER=0 (testing): the pixels' own depths, both faces. (The DOS look sets its own below) */
         static int tio = -1;
@@ -1740,7 +2289,7 @@ void glr_draw_rect(glr *r, const glr_view *v, int x0, int y0, int w, int h)
             for (c = 0; c < 6; c++) { int k = QUAD[c]; f = env_vertex(f, QX[k], QY[k], 0.999f, 0, 0, 0, 0, 0); }
         }
         const size_t env_off = glr_stream(env, sizeof env / sizeof *env);
-        glr_bind_stream(env_off);
+        glr_bind_stream(r, env_off);
         if (r->dos) {
             /* DOS (MW2.EXE 0x3c000): no sky or ground geometry - the window is filled at the horizon, sky above (with
              * its haze band), ground below; the terrain and objects draw over it */
@@ -1817,7 +2366,7 @@ void glr_draw_rect(glr *r, const glr_view *v, int x0, int y0, int w, int h)
                 if (rolled) { memcpy(dview, view, sizeof dview); dview[12] = dview[13] = dview[14] = 0.0f; }
                 perspective(dproj, v->vfov, (float)w / (float)(h > 0 ? h : 1), 100.0f, 2.0e8f);
                 mat_mul(dmvp, dproj, dview);
-                glr_bind_stream(glr_stream(dv, (size_t)r->dome_n * FLOATS_PER_VERTEX));
+                glr_bind_stream(r, glr_stream(dv, (size_t)r->dome_n * FLOATS_PER_VERTEX));
                 rb_depth_test(0); rb_depth_write(0);
                 rb_blend(RB_BLEND_ALPHA);
                 UV(r->F.u_mvp, dmvp, 16);
@@ -1838,7 +2387,7 @@ void glr_draw_rect(glr *r, const glr_view *v, int x0, int y0, int w, int h)
                 U4(r->F.u_tifog, v->ti_fog[0], v->ti_fog[1], v->dos_fog_g, v->ti_fog[2]);
                 rb_blend(RB_BLEND_OFF);
                 rb_depth_write(1); rb_depth_test(1);
-                glr_bind_stream(env_off);
+                glr_bind_stream(r, env_off);
             }
         }
         if (r->env_has[0] && !r->dos) {
@@ -1898,6 +2447,7 @@ void glr_draw_rect(glr *r, const glr_view *v, int x0, int y0, int w, int h)
             uint32_t hw = (uint32_t)w >> 1, zoom = (uint32_t)(proj[0] * 65536.0f + 0.5f), ms[2]; int sh2[2], k3, c3;
             uint64_t val[2];
             int64_t rows[3][3], R[3][3];
+            const uint32_t zoom_raw = zoom;   /* (the view's +0x18: the side planes' cull takes it unclamped) */
             if (zoom > 0x100000u) zoom = 0x100000u;
             if (zoom < 0x8000u) zoom = 0x8000u;
             if (hw < 1) hw = 1;
@@ -1941,6 +2491,14 @@ void glr_draw_rect(glr *r, const glr_view *v, int x0, int y0, int w, int h)
                 int rk[GLR_PIT_MAX];
                 dos_pit_ranks(r, (const int64_t (*)[3])R, eye, w, h, sh2, rk);
                 for (k3 = 0; k3 < r->pit_n; k3++) r->F.u_pit_rank4[k3 >> 2][k3 & 3] = rk[k3];
+            }
+            {   /* the draw list (glr_dos_list); MW2_DOS_LIST=0 (testing): each polygon at its own key's depth, as before */
+                static int dl = -1;
+                int l2;
+                if (dl < 0) dl = getenv("MW2_DOS_LIST") ? atoi(getenv("MW2_DOS_LIST")) != 0 : 1;
+                if (dl && r->F.u_dos_order && r->F.u_dos && v->ortho_w <= 0)
+                    glr_dos_list(r, (const int64_t (*)[3])R, (const int64_t (*)[3])rows, eye, w, h, sh2, zoom_raw, zoom, r->F.u_dos_near, v->far_cull, mvp, view);
+                else for (l2 = 0; l2 < GLR_LAYERS; l2++) r->layer[l2].drank_n = 0;
             }
         }
     }
@@ -2069,7 +2627,7 @@ void glr_draw_rect(glr *r, const glr_view *v, int x0, int y0, int w, int h)
                 f = env_vertex(f, cx, cy - sy, cz, 0, 0, 0, 0, 1);
             }
             nv = (int)((f - pb) / FLOATS_PER_VERTEX);
-            glr_bind_stream(glr_stream(pb, (size_t)nv * FLOATS_PER_VERTEX));
+            glr_bind_stream(r, glr_stream(pb, (size_t)nv * FLOATS_PER_VERTEX));
             UV(r->F.u_mvp, ident, 16);
             UV(r->F.u_view, ident, 16);
             r->F.u_far = 0;
@@ -2180,7 +2738,7 @@ void glr_draw_rect(glr *r, const glr_view *v, int x0, int y0, int w, int h)
             f = env_vertex(f, q[2][0], q[2][1], q[2][2], 0, 0, 0, tw, 0);
             f = env_vertex(f, q[3][0], q[3][1], q[3][2], 0, 0, 0, 0, 0);
         }
-        glr_bind_stream(glr_stream(buf, (size_t)(f - buf)));
+        glr_bind_stream(r, glr_stream(buf, (size_t)(f - buf)));
         r->D.u_unlit = 1;
         r->D.u_textured = 1;
         if (v->wire) { static const float dr[4] = {60.0f / 255.0f, 0, 0, 1}; UV(r->D.u_wire, dr, 4); }   /* the edges' colour codes decide */

@@ -14,6 +14,9 @@ What is still open in the Ghost Bear's Legacy port, in plain language.
   read the headset itself.
 - **TITANIUM lighting in JESSSCN1 is a guess.** The Titanium Edition has no lighting entry for that mission (it keeps
   whatever the previous mission set), so the port uses plain daylight.
+- **TITANIUM insignia:** as in the Titanium Edition itself, the player's star wears the Wolf crest and enemies wear the
+  base game's clan crests. Titanium's GBL missions use the base game's crest set; the port keeps that rather than
+  substituting GBL's own Ghost Bear crest (the DOS and ENHANCED looks show the Ghost Bear crest, from GBL's data).
 - **Small details traced from the code but not yet seen side by side with the original:** how the burning effect
   animates on a 'Mech, the hovercraft's exact hover height, the dropship parts in some scenes, and a few moving
   objects (dropships, lifts) other than those in HOFF, CLAI, JESS and BRAN.

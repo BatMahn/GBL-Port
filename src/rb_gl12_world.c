@@ -39,6 +39,8 @@ typedef struct {
 } wv;
 
 static const float *g_v0, *g_v1, *g_v2, *g_sb;   /* the bound buffers (vertex 0 at index 0), the storage buffer */
+static const float *g_sb2;                       /* the DOS program's second storage buffer: the draw list's depths */
+static size_t g_nsb2;
 static size_t g_n0, g_n1, g_n2, g_nsb;           /* their sizes in vertices (floats for the storage buffer) */
 static int g_dosprog;                            /* the DOS_LOOK program (RB_PROG_WORLD_DOS / _DOSDBG) */
 static int g_dosdbg;                             /* MW2_DOS_DEBUG's program (DOS_DEBUG 1) */
@@ -141,8 +143,13 @@ static void vertex_stage(int vid, int i, wv *o)
     e = (int)(a[12] + 0.5f); pit = e / 65536;
     e -= 65536 * pit;
     o->tinofog = 0;
-    if (pit >= 300) { int qq = pit - 300; o->tinofog = qq >= 4; qq -= 4 * o->tinofog; tiwind = qq == 1 ? 1 : qq == 0 ? -1 : 0; pit = 0; }
+    int tisky = 0, ptc = -1;
+    if (pit >= 400) { ptc = pit - 400; pit = 0; }   /* a point's pixel corner (world.vert) */
+    else if (pit >= 300) { int qq = pit - 300; tisky = qq >= 8; qq -= 8 * tisky; o->tinofog = qq >= 4; qq -= 4 * o->tinofog; tiwind = qq == 1 ? 1 : qq == 0 ? -1 : 0; pit = 0; }
     else if (pit >= 200) { kmode = pit - 200; pit = 0; }
+    /* the DOS draw list (world.vert): the polygon's depth along the painting order, or not listed */
+    const int dli = g_dosprog && F->u_dos != 0 && F->u_dos_order != 0 && G.D.u_dlist != 0 && pit == 0 && tc[3] < 0.5f ? (int)(tc[0] + 0.5f) - 1 : -1;
+    const float dld = dli >= 0 && g_sb2 && (size_t)dli < g_nsb2 ? g_sb2[dli] : 3.0f;
     o->dnib = e / 2048; e -= o->dnib * 2048;
     o->bb = e >= 1024 ? 1 : 0;
     o->tif = 0;
@@ -266,7 +273,7 @@ static void vertex_stage(int vid, int i, wv *o)
         if (rk < 0) cull(o->clip);
         else o->clip[2] = (-1.0f + 0.01f * (1.0f - (float)(rk + 1) / 256.0f)) * o->clip[3];
     }
-    if (F->u_far > 0.0f && sph[3] > 0.0f) {   /* the view distance */
+    if (dli < 0 && F->u_far > 0.0f && sph[3] > 0.0f) {   /* the view distance */
         float sc4[4] = {sph[0], sph[1], sph[2], 1.0f}, sc[4], rr = F->u_far + sph[3];
         mat4v(F->u_view, sc4, sc);
         if (sc[0] * sc[0] + sc[1] * sc[1] + sc[2] * sc[2] > rr * rr || -sc[2] - sph[3] > F->u_far) cull(o->clip);
@@ -345,7 +352,7 @@ static void vertex_stage(int vid, int i, wv *o)
             }
             o->dkey = pc_key.km;
             if (g_dosprog) o->dosf = pc_key.dosf;
-            if (pc_key.back && e < 1024) cull(o->clip);   /* (back: only with a normal) */
+            if (pc_key.back && e < 1024 && dli < 0) cull(o->clip);   /* (back: only with a normal) */
             {
                 const float nz = F->u_dos_near > 0 ? (float)F->u_dos_near : 4.0f;
                 key = (kmode & 2) ? floorf(pc_key.ks / (pc_key.kcl > 1.0f ? pc_key.kcl : 1.0f)) : (kmode & 4) ? (pc_key.kn > nz ? pc_key.kn : nz) : pc_key.km;
@@ -360,6 +367,10 @@ static void vertex_stage(int vid, int i, wv *o)
                 o->dord = nd;
             }
         }
+    }
+    if (dli >= 0) {
+        if (dld > 2.5f) cull(o->clip);
+        else o->dord = dld;
     }
     if (!g_dosprog && g_sb && tiwind != 0 && G.D.u_onlayer != 0 && F->u_dos_order != 0 && e < 1024
         && fabsf(dvtx(vid * FPV) - a[0]) + fabsf(dvtx(vid * FPV + 2) - a[2]) < 0.01f) {
@@ -395,6 +406,22 @@ static void vertex_stage(int vid, int i, wv *o)
             float fw[3] = {-v[2], -v[6], -v[10]}, ep[4] = {eyeg[0] + fw[0] * pc_ti.km, eyeg[1] + fw[1] * pc_ti.km, eyeg[2] + fw[2] * pc_ti.km, 1.0f}, qq[4];
             mat4v(F->u_mvp, ep, qq);
             o->dord = qq[3] > 0.0f ? (qq[2] / qq[3] < 1.0f - 4e-6f ? qq[2] / qq[3] : 1.0f - 4e-6f) : 1.0f - 4e-6f;
+        }
+    }
+    if (!g_dosprog && tisky && G.D.u_onlayer != 0 && F->u_dos_order != 0) {   /* the sky object (world.vert) */
+        float sd = 1.0f - 3e-6f + ((o->dord < 1.0f ? o->dord : 1.0f) - 1.0f) * 1e-3f;
+        o->dord = sd < 1.0f - 3.9e-6f ? 1.0f - 3.9e-6f : sd > 1.0f - 1e-6f ? 1.0f - 1e-6f : sd;
+    }
+    if (ptc >= 0) {   /* a point: its pixel at the DOS integer projection (world.vert) */
+        if (!g_dosprog || F->u_dos == 0 || dli < 0 || dld > 2.5f) cull(o->clip);
+        else {
+            int sp[2];
+            const float hx = 0.5f * F->u_vp[0], hy = 0.5f * F->u_vp[1];
+            float px, py;
+            dos_scr(a, sp);
+            px = (float)sp[0] + (ptc == 1 || ptc == 2 || ptc == 4 ? 1.0f : 0.0f);
+            py = F->u_vp[1] - (float)sp[1] - 1.0f + (ptc == 2 || ptc == 4 || ptc == 5 ? 1.0f : 0.0f);
+            o->clip[0] = (px - hx) / hx; o->clip[1] = (py - hy) / hy; o->clip[2] = 0.0f; o->clip[3] = 1.0f;
         }
     }
     mat4v(F->u_view, p, q);
@@ -1840,6 +1867,9 @@ void gl12_world_draw(int first, int count)
     b = G.sb && G.sb != RB_STREAM ? gl12_buf_ptr(G.sb, &bytes) : NULL;
     g_sb = b ? (const float *)b : NULL;
     g_nsb = b ? bytes / 4 : 0;
+    b = G.sb2 && G.sb2 != RB_STREAM ? gl12_buf_ptr(G.sb2, &bytes) : NULL;
+    g_sb2 = b ? (const float *)b : NULL;
+    g_nsb2 = b ? bytes / 4 : 0;
     g_dosprog = G.prog == RB_PROG_WORLD_DOS || G.prog == RB_PROG_WORLD_DOSDBG;
     g_dosdbg = G.prog == RB_PROG_WORLD_DOSDBG;
     g_dord = 2.0f;

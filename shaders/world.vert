@@ -14,6 +14,11 @@
 #define SSBO_SET 0
 #define SSBO_BINDING 0
 #include "world_common.glsl"
+#if DOS_LOOK
+// the DOS draw list's depths (glr.c glr_dos_list), per polygon of the layer (its index + 1 in a_tic.x): GL NDC z, 3 for a
+// polygon the original does not list - the vertex stage's second storage buffer
+layout(std430, set = SSBO_SET, binding = 1) readonly buffer DosRank { float u_dos_rank[]; };
+#endif
 
 layout(location = 0) in vec3 a_pos;
 layout(location = 1) in vec3 a_normal;
@@ -36,8 +41,19 @@ void main() {
   // unknown) and f 1 for a polygon the Titanium fog leaves alone
   int tiwind = 0;
   v_tinofog = 0;
-  if (pit >= 300) { int q = pit - 300; v_tinofog = q >= 4 ? 1 : 0; q -= 4 * v_tinofog; tiwind = q == 1 ? 1 : q == 0 ? -1 : 0; pit = 0; }
+  int tisky = 0, ptc = -1;
+  if (pit >= 400) { ptc = pit - 400; pit = 0; }   // a point's pixel corner (glr set_layer)
+  else if (pit >= 300) { int q = pit - 300; tisky = q >= 8 ? 1 : 0; q -= 8 * tisky; v_tinofog = q >= 4 ? 1 : 0; q -= 4 * v_tinofog; tiwind = q == 1 ? 1 : q == 0 ? -1 : 0; pit = 0; }
   else if (pit >= 200) { kmode = pit - 200; pit = 0; }
+  // the DOS draw list (glr_dos_list: the original's list built on the CPU, sorted by its own quicksort): this polygon's
+  // depth along the painting order, or not listed - it then decides, not the tests below (the one-sided test, the view
+  // distance)
+#if DOS_LOOK
+  int dli = u_dos != 0 && u_dos_order != 0 && u_dlist != 0 && pit == 0 && a_tic.w < 0.5 ? int(a_tic.x + 0.5) - 1 : -1;
+  float dld = dli >= 0 ? u_dos_rank[dli] : 0.0;
+#else
+  const int dli = -1;
+#endif
   v_dnib = e / 2048; e -= v_dnib * 2048;
   // a mech location's damage nibble (glr_set_damage_shade)
   v_bb = e >= 1024 ? 1 : 0;
@@ -163,7 +179,7 @@ void main() {
   }
   // the view distance (the planet's VIEW far; DOS MW2.EXE 0x3f500, 3Dfx 0x1002fba0): an object whose bounding sphere
   // lies wholly beyond it - centre distance > far + r, or depth - r > far - is not drawn (all its vertices off screen)
-  if (u_far > 0.0 && a_sphere.w > 0.0) {
+  if (dli < 0 && u_far > 0.0 && a_sphere.w > 0.0) {
     vec3 sc = (u_view * vec4(a_sphere.xyz, 1.0)).xyz;
     if (dot(sc, sc) > (u_far + a_sphere.w) * (u_far + a_sphere.w) || -sc.z - a_sphere.w > u_far) gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
   }
@@ -218,7 +234,7 @@ void main() {
         // one-sided, once a polygon (GBL 0x3ec8e): listed only when (its first vertex - the eye) . N < 0, both in whole
         // cm (the world vertex +0xc..+0x14, the camera DAT_00161824..28) - the plane's own test, not each pixel's (a
         // non-planar polygon's fan triangles each had their own: the Timber Wolf cockpit sill's seams showed the sky)
-        if (nl > 0.0 && e < 1024) {
+        if (nl > 0.0 && e < 1024 && dli < 0) {
           vec3 dv = vec3(dos_rnd(P0.x) - dos_rnd(u_dos_eye.x), dos_rnd(P0.y) - dos_rnd(u_dos_eye.y), dos_rnd(-P0.z) - dos_rnd(-u_dos_eye.z));
           vec3 Ng = -vec3(nn.x, nn.y, -nn.z) / nl;
           if (dot(dv, Ng) >= 0.0) gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
@@ -269,6 +285,10 @@ void main() {
       }
     }
   }
+  if (dli >= 0) {
+    if (dld > 2.5) gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+    else v_dord = dld;
+  }
 #endif
 #if !DOS_LOOK
   // the TITANIUM look's draw order (mercsw 0x100562ff -> 0x10055b90 -> 0x100570f6, sorted by 0x10056022 - comparator
@@ -303,6 +323,23 @@ void main() {
       }
     }
   }
+  // the sky object (+ 8): its own list, painted before the world (mercsw 0x1001c0xx: 0x10056589 over DAT_100a67ac, the far
+  // distance off, then the main lists) - behind every other polygon, its own polygons by their keys
+  if (tisky != 0 && u_onlayer != 0 && u_dos_order != 0) v_dord = clamp(1.0 - 3e-6 + (min(v_dord, 1.0) - 1.0) * 1e-3, 1.0 - 3.9e-6, 1.0 - 1e-6);
+#endif
+#if DOS_LOOK
+  // a point (one vertex, colour type 0): the pixel at its DOS integer projection, painted at its place in the draw list
+  // (corners 0..5: two triangles over the pixel's square); not drawn outside the list
+  if (ptc >= 0) {
+    if (u_dos == 0 || dli < 0 || dld > 2.5) gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+    else {
+      ivec2 sp = dos_scr(a_pos); vec2 h = 0.5 * u_vp;
+      float px = float(sp.x) + (ptc == 1 || ptc == 2 || ptc == 4 ? 1.0 : 0.0), py = u_vp.y - float(sp.y) - 1.0 + (ptc == 2 || ptc == 4 || ptc == 5 ? 1.0 : 0.0);
+      gl_Position = vec4((px - h.x) / h.x, (py - h.y) / h.y, 0.0, 1.0);
+    }
+  }
+#else
+  if (ptc >= 0) gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
 #endif
   v_viewpos = (u_view * vec4(p, 1.0)).xyz; v_world = p;
   v_normal = nrm; v_uv = a_uv; v_color = a_color; v_texsel = int(floor(a_texsel + 0.5)); v_sph = a_sphere;

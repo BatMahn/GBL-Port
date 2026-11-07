@@ -96,6 +96,16 @@
 - **No gap at the horizon when the view rolls.** With the torso twisted and tilted the view rolls; the sky (and in the
   DOS look the horizon line) now rolls with the ground instead of staying level and leaving a sliver of black between
   them. All looks, both renderers.
+- **BASS: the snow falls round you again.** The falling snow followed the map's origin instead of the player, so on most
+  of the map it was far away; it now moves with you as in the original, at the original's height.
+- **The sky object behind everything:** JESS's planets and the stars of BRAN and ZACK are painted before the world, as
+  in the original, in the DOS, ENHANCED and TITANIUM looks; the stars (single points) now show in the DOS and ENHANCED
+  looks as the original's one-pixel stars.
+- **DOS look: surfaces at the same distance overlap as in the original.** Where two surfaces meet at exactly the same
+  distance - a wall and the cliff behind it seen straight down the JESS hangar, a mountain's facets - the original's
+  sort decides which one is painted on top, and the port now builds the original's list each frame and sorts it the same
+  way, instead of always keeping the first one drawn. The mountains seen from the JESS plain now show every facet as the
+  original does; where 'Mechs are in view the result depends on where they stand, as in the original.
 - **DOS look: close walls no longer vanish at high resolutions.** Polygons nearer than the original's near plane are
   clipped there as the original does, and the fill's arithmetic no longer overflows in large windows - the JESS hangar
   walls stopped coming and going as you walk in.
