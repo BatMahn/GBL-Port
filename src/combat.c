@@ -90,10 +90,8 @@ int combat_init(combat_unit *u, prj_archive *a, const char *loadout)
         u->slot_count[l] = d.loc[l].slot_count <= MEK_SLOTS ? d.loc[l].slot_count : MEK_SLOTS;
         for (k = 0; k < MEK_SLOTS; k++) u->slots[l][k] = d.loc[l].slots[k];
     }
-    /* engine 0x10041410: heat sinking x 0.000763 per tick (AI mechs / normal difficulty) */
-    /* engine 0x10041410 (AI / normal difficulty): colder than -30 doubles it, hotter than 50 lowers it */
-    u->sink_per_tick = (float)d.heat_sinking *
-                       (g_planet.temperature < -30 ? 0.00152587890625f : g_planet.temperature > 50 ? 0.0006866455078125f : 0.000762939453125f);
+    /* heat sinking per tick (AI mechs / normal difficulty; the player's set again by combat_set_player_difficulty) */
+    u->sink_per_tick = (float)d.heat_sinking * (float)combat_sink_rate(0, 1, g_planet.temperature) / 65536.0f;
     u->rating = combat_mek_rating(&d);
     u->tons = (int)d.tonnage;   /* controller +0xe4 (MEK +0x00): the head-hit ratio in 0x1000c1f0 */
     u->jets = (int)d.jump_mp;
@@ -288,11 +286,14 @@ void combat_tick(combat_unit *u, float dt)
             u->seq_ticks = 0;
             u->auto_shutdown = 1;          /* message 0xd "Shutting down", nothing else that frame */
         } else if (h > 100 && u->override) {
-            /* a roll per frame: DOS rand(500 x dt) == 0 (FUN_0004af60), which depends on the frame rate (no fixed per-tick
-             * rate to port) - the 3Dfx rate 3 in 4000 a tick is kept (the player's invulnerability skips it) */
+            /* a roll per frame: GBL 0x25430..0x2545c rand(500 x the frame's whole ticks) == 0 -> BlowAmmo 0x251e0 (none at 0
+             * whole ticks; the player skips it when invulnerable, MW2DIF +1). The chance per frame is 1 / (500 t), so per second
+             * it falls with the square of the ticks a frame: DOSBox's 4-tick frames give ~2.3 % a second, 6-tick (30 fps)
+             * frames 1 %. The port takes it at the 30 fps reference its walking heat uses (6 ticks a frame: 1 / 18000 a tick).
+             * It had the 3Dfx DLL's 3 in 4000 a tick (13.6 % a second: an overridden mech blew up 14x sooner) */
             if (!u->invulnerable && ticks > 0) {
                 u->rng = u->rng * 1103515245u + 12345u;
-                if ((float)((u->rng >> 16) & 0x7FFF) / 32768.0f < 3.0f * ticks / 4000.0f) { cook_off(u); if (u->destroyed) u->down_in_update = 1; }
+                if ((float)(u->rng >> 8) / 16777216.0f < ticks / 18000.0f) { cook_off(u); if (u->destroyed) u->down_in_update = 1; }
             }
         } else if (h > 100 && u->shutdown) {
             /* shut down above 100 for more than 0x71c ticks since the shutdown: BlowAmmo (0x251e0) every frame */
@@ -903,14 +904,16 @@ float combat_jets_dy(const combat_unit *u, int jetting, float dt)
  * side's torso */
 static void collide(combat_unit *u, float speed, float ny, float rel_deg, int other_tons, int latch, unsigned *rng)
 {
-    float dmg = (speed - 3.0693676f) * 0.050123077f * 3.0f;
+    /* GBL 0x20ca0 / 0x20ae0: S over 200000 (16.16 cm/tick; S = the DOS length (4 max + mid + min) / 4 of the velocity, or of
+     * the difference of the two units' velocities): ((S - 200000) << 16) / 1300000 x 3 (the 3Dfx DLL 3.069 / 0.0501 x 3) */
+    float dmg = (speed - 200000.0f / 65536.0f) * (3.0f * 65536.0f / 1300000.0f);
     if (latch) u->blocked = 1;   /* terrain (0x10019d84 -> 0x1000c3c0) and a unit (0x10019d77 -> 0x1000c160) alike: every contact
                                   * frame - the impact cuts the velocity to a quarter (msim_world_impact), so pressing on stays
                                   * under the threshold; blocked = the contact (the player's impact-sound latch 0x1007c338) */
     if (dmg <= 0 || u->destroyed || u->invulnerable || u->no_collision_damage || getenv("MW2_NO_COLLISION_DAMAGE")) return;   /* Combat Variables */
-    if (ny < -0.8660254f) {                       /* from above: the head (0x1000c212) */
-        if (other_tons > 0) {
-            float k = 2.0f * (float)other_tons / (float)(u->tons > 0 ? u->tons : 1);
+    if (ny < -0.8660254f) {                       /* from above: the head (GBL 0x20b80: normal y < -0xddb4) */
+        if (other_tons > 0) {   /* a unit: x 4 x its tonnage / the unit's own, at least x 1 (GBL 0x20b9a; the 3Dfx DLL x 2) */
+            float k = 4.0f * (float)other_tons / (float)(u->tons > 0 ? u->tons : 1);
             if (k > 1.0f) dmg *= k;
         }
         apply_damage_at(u, dmg, 0, 1, rng);
@@ -923,8 +926,10 @@ static void collide(combat_unit *u, float speed, float ny, float rel_deg, int ot
     }
     while (rel_deg > 180.0f) rel_deg -= 360.0f;
     while (rel_deg < -180.0f) rel_deg += 360.0f;
-    if (rel_deg < 0) apply_damage_at(u, dmg, 0, (rel_deg > -135.0f && rel_deg < -45.0f) ? 6 : 4, rng);   /* left arm / left torso (groups 6 / 4) */
-    else apply_damage_at(u, dmg, 0, (rel_deg > 45.0f && rel_deg < 135.0f) ? 5 : 2, rng);                 /* right arm / right torso (groups 5 / 2) */
+    /* GBL 0x20b80: the bearing of the struck surface off the heading + twist; (0, 180]: 45-135 the right arm (5), else the
+     * right torso (2); else -135..-45 the left arm (6), else the left torso (4) - the band edges included */
+    if (rel_deg > 0) apply_damage_at(u, dmg, 0, (rel_deg >= 45.0f && rel_deg <= 135.0f) ? 5 : 2, rng);
+    else apply_damage_at(u, dmg, 0, (rel_deg >= -135.0f && rel_deg <= -45.0f) ? 6 : 4, rng);
 }
 
 void combat_collision(combat_unit *u, float speed, float ny, float rel_deg, unsigned *rng)
@@ -966,13 +971,23 @@ void combat_set_armor_mult(combat_unit *u, float mult)
     u->armor_mult *= mult;
 }
 
+/* GBL MW2.EXE 0x4dc98..0x4dd7b (in the loader 0x4d670): the dissipation per tick per heat sinking point (16.16), by the
+ * planet's temperature (PLNT, DAT_000a5bf8) - an AI unit, and the player at difficulty 1 (MW2DIF +5): 250 at -100 or
+ * colder, 100 below -30, 45 above 50, else 50; the player at difficulty 0: 350 / 140 / 70 (no hot tier); difficulty 2:
+ * 225 / 67 / 36 / 45; another difficulty value 50 whatever the temperature. The port had the 3Dfx DLL's tiers (no -100
+ * tier: BRAN, CLAI, PETE, ZACK sank 2.5x slower than GBL; difficulty 2 cold 67.5) */
+int combat_sink_rate(int player, int difficulty, int temperature)
+{
+    int cold2 = temperature <= -100, cold = temperature < -30, hot = temperature > 50;
+    if (!player || difficulty == 1) return cold2 ? 250 : cold ? 100 : hot ? 45 : 50;
+    if (difficulty == 0) return cold2 ? 350 : cold ? 140 : 70;
+    if (difficulty == 2) return cold2 ? 225 : cold ? 67 : hot ? 36 : 45;
+    return 50;
+}
+
 void combat_set_player_difficulty(combat_unit *u, int difficulty)
 {
-    /* engine 0x10041410, the player's dissipation per tick x heat sinking, by difficulty: normal / colder than -30 /
-     * hotter than 50 */
-    static const float F[3][3] = {{0.0010681152f, 0.0021362305f, 0.0010681152f}, {0.000762939453f, 0.00152587891f, 0.000686645508f},
-                                  {0.000686645508f, 0.00102996826f, 0.000549316406f}};
-    int t = g_planet.temperature < -30 ? 1 : g_planet.temperature > 50 ? 2 : 0;
-    if (difficulty < 0 || difficulty > 2) difficulty = 1;
-    u->sink_per_tick = u->sink_per_tick / F[1][t] * F[difficulty][t];   /* the unit was set up at Medium */
+    /* the unit was set up at the AI / difficulty 1 rate (combat_init) */
+    float r1 = (float)combat_sink_rate(0, 1, g_planet.temperature), rp = (float)combat_sink_rate(1, difficulty, g_planet.temperature);
+    u->sink_per_tick = u->sink_per_tick / r1 * rp;
 }

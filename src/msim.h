@@ -140,6 +140,11 @@ typedef struct {
     int          fx_index;
     void       (*on_sound)(void *user, int sound, const float pos[3]);   /* a positional sound at pos (footsteps ...); -1 = the collision clang; pos NULL = a cockpit sound at volume 0x32 */
     void       (*on_radio)(void *user, const char *sound);   /* a mission radio message (SNDS name), voice channel */
+    /* the same with its text (GBL 0x164f0 / 0x165e0 -> the radio queue 0x42ed0 -> 0x42630): "<objective> successful" /
+     * "... failed" for a shown node of the player's table ("" when not shown or the text starts with a space), "Mission
+     * successful" / "Mission failed" / "Mission time exceeded" for the outcome. The queue (0x42950) plays the voice; the
+     * text shows only when voices cannot play. When set, it is called instead of on_radio. */
+    void       (*on_radio_msg)(void *user, const char *sound, const char *text);
     /* the player's death sequence starts (controller case 4's first run, 0x1001a180: 0x1001be40 the death explosion), just
      * before its explosion: the front end moves the camera then, as the engine's player input 0x1001adf0 (state 4:
      * 0x1002df20, camera mode 1) runs before the unit updates in each frame (0x1000908e / 0x10009093) - unless the
@@ -227,7 +232,8 @@ typedef struct {
     int          last_cmd[8];    /* per point (0 = all): the last command's menu index (0x10264468; 7 = "No Cmd") */
     void       (*on_message)(void *user, const char *text, int voice);   /* order acknowledgements (0x10031810) */
     unsigned char *msg_seen;     /* per actor: bit 0 its death announced (0x10016280 runs once a unit), bit 1 it was shut
-                                  * down / powered down (object +0x14 bit 0x10, set in state 3: 0x1001accc) */
+                                  * down / powered down (object +0x14 bit 0x10, set in state 3: 0x1001accc), bit 2 its death
+                                  * counted in MW2CAR.CFG (GBL 0x25680) */
     /* destructible world objects: GT chunks {i16 intact node, i16 destroyed node, .., +16 i16 hit points, +18 type,
      * +20 flags, +24 name[22], +46 sub-name[22]} (engine OBJ/GT handler 0x1003eb5c -> thing table 0x101e0280:
      * +0 flags, +8 hit points; damage 0x10046c20; destroyed: explosion 0x10045c30, swap 0x10046a90) */
@@ -446,6 +452,12 @@ int  msim_aim_target(const msim *s, float aim_yaw, float cone, float *distance);
  * 36.2). top = full-throttle speed, cm/s */
 /* (the DOS integer throttle servo, MW2.EXE 0x49b80: truncating, stalls 5 / 1024 of full short at 30 fps; servo taus
  * 36 / 91) */
+/* the integer servos' rule (GBL 0x4a9d0) in floats: cur += ticks x (tgt - cur) / T, the target once reached or passed */
+float msim_servo(float cur, float tgt, float T, float ticks);
+float msim_dos_len(float x, float y, float z);   /* the DOS length (4 max + mid + min) / 4 */
+float msim_twist_round(float cur, float demand, float T, float ticks);   /* a turret's whole-turn twist step (GBL 0x2f1a9) */
+/* the leg turn demand walking, deg/s (GBL 0x28054, msim.c) */
+float msim_leg_demand(float input, float spd, int player, float gain, int airborne, int autopilot, float prev);
 void msim_drive_step(float *thr, float *spd, float *vel, float thr_target, float rev, float top, int drive, int slow, float ticks);
 /* a mech's full-throttle speed c[0x22] / 64 (cm/s) on a planet of gravity_g, in DOS MW2.EXE's integer steps */
 float msim_top_speed(int walk_mp, float gravity_g);

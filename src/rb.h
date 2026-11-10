@@ -80,6 +80,9 @@ void rb_present(void);                   /* run the frame and show the window's 
 /* state, as OpenGL's */
 void rb_viewport(int x, int y, int w, int h);
 void rb_scissor(int on, int x, int y, int w, int h);
+/* TEST ONLY (MW2_TEST_SPARSE): when set, every clear and draw is cut to a 1 x 1 scissor - the frame's CPU work and
+ * vertex stage run as always, the pixels are skipped (headless test runs render only the frames they write) */
+extern int rb_test_tiny;
 void rb_clear(const float rgba[4], int color, int depth);   /* inside the scissor when it is on (glClear) */
 void rb_blend(int mode);
 void rb_depth_test(int on);

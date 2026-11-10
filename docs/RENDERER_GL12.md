@@ -57,6 +57,9 @@ change in `src/rb_gl12_world.c`**, or the two builds drift apart.
     other textured types with GL's perspective texels;
   - cockpit polygons clipped at their own near plane in the camera's integers (0x3e8fe) as the shader does;
   - near-clipped polygons as the shader has them: GL's coverage, each pixel taking the span's end (no discards).
+  - the paint's 2D clip (0x3de30) as the shader's dos_clip2d: corners beyond -0x3fff..0x3ffe cut to -0x4000..0x3fff
+    before the spans; the haze band from the line's integer rows u_hz_L, its rows and pairs as world.frag paints them.
+  - lines (two-corner polygons, world.frag kind 5): 0x54fa9's pixels within the box's triangles (dos_line_tri).
 - **ENHANCED** (`u_dos_tc`): the same coverage; the shade level unrounded - a flat ramp's two palette colours as vertex
   colours on quads at the triangle's own w (GL's perspective interpolation keeps them linear in the view depth), cut
   where the level crosses a whole number; textures through a "true colour" variant (each texel's two LUMA rows' colours

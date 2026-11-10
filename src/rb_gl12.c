@@ -860,6 +860,7 @@ void rb_uniforms(int slot, const void *data, size_t bytes)
     else if (slot == 1 && bytes == sizeof G.D) memcpy(&G.D, data, bytes);
 }
 
+int rb_test_tiny;   /* (TEST ONLY: not applied by this backend) */
 void rb_clear(const float rgba[4], int color, int depth)
 {
     gl12_tex *t;

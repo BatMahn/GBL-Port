@@ -89,6 +89,9 @@ typedef struct {
     float self_x, self_z, enemy_x, enemy_z, enemy_heading;
     int  *flank_slots;       /* attackers per 45-degree slot around the enemy (engine target +0x1a2) */
     int   can_jump;          /* has jump jets and fuel (engine 0x10020a30) */
+    int   target_not_unit;   /* the target is a nav point or a thing (+0x14a & 0x200 clear): manoeuvre 0 (GBL 0x2cb80) */
+    int   jump_blocked;      /* the jump pre-check's line probes failed (GBL 0x2dd50 / 0x2e450; msim fills it) */
+    int   los_blocked_low;   /* GBL 0x2dd50: the line to a target 8 m above blocked from the unit's own height (msim) */
     float height;            /* current height above ground, cm */
     float jet_fuel;          /* jet fuel, ticks (controller +0xc0; manoeuvre 5 ends under 1, 0x1001ea40) */
     float enemy_height;      /* target's height, cm (for "target above me", 0x10020090) */
@@ -105,6 +108,7 @@ typedef struct {
     float leader_dist;
     float enemy_elev;        /* elevation from my origin to the target's origin, degrees (up +) */
     int   contact;           /* touching another mech (controller +0xa4, 0x10020e00) */
+    int   contact_unit;      /* the contact is a unit (object +0x7c != -1; GBL 0x2cfd3) */
     int   out_of_weapons;    /* 0x10020880: no weapon with ammunition / working */
     int   moving;            /* controller +0x88 != 0 (0x1001ea40's out-of-weapons test) */
 } ai_view;
@@ -149,6 +153,7 @@ typedef struct {
     float speed;             /* actual ground speed, cm/s (signed; the velocity c[0x3d..0x3f], see msim_drive_step) */
     float thr_servo;         /* current throttle c[0x13] as a fraction of full (servo +0x44, T 36.2 ticks) */
     float spd_servo;         /* servoed drive speed c[0xb], cm/s (servo +0x24 toward c[10]) */
+    float leg_srv;           /* the leg turn servo's value c[0xf], deg/s (GBL +0x34, T 0.3 s = 54 ticks, toward the demand c[0xe]) */
     int   drive_slow;        /* servo +0x24's T: 0 = 36.2 ticks (0x100190d0) until a walk key flagged 0x10 runs, then 90.5 */
     int   targets_player;    /* this step's enemy is the player (+0x14e == player | 0x200): the MISLTRCK check (0x10031e30) */
     int   lock;              /* missile lock flags (0x10044560): 0x8000 on target, 0x40 acquiring, 0x80 locked */
@@ -184,12 +189,15 @@ typedef struct {
      * engage range (+0x1a8); NULL / 0 = the engine's mech table and the base manoeuvre 0 rule */
     const short (*man_table)[9];
     int   man_rows;
+    int   man_first;         /* the record's first-pick range: the first manoeuvre is rand(rows - this) (GBL 0x2cb80; 7 for the 13-row tables) */
+    int   mech_rules;        /* unit class 1: the contact / jump pre-checks of the chooser (GBL 0x2cb80: *unit == 1) */
     float engage_range;
 } ai_mind;
 
 /* GBL GPS skill 100-103 (GBL 0x217b0, table 0xa62dc: the GUI1-4 trial bosses): the profile's manoeuvre
  * table and engage range go into the mind; *skill / *level get the profile's (1 / 1) and *group_fire its flag (+0x14).
  * Returns 1 when the skill named a profile, else 0 (nothing changed) */
+void ai_set_class(ai_mind *m, int unit_class, int tons);   /* GBL 0x2c970: the manoeuvre record by class / tonnage */
 int  ai_gbl_profile(ai_mind *m, int gps_skill, int *skill, int *level, int *group_fire);
 
 void ai_init(ai_mind *m, int order_prog);

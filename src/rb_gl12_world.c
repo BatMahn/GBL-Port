@@ -91,22 +91,53 @@ static void dos_camscr(const int c[3], int o[2])
 }
 static void dos_scr(const float w[3], int o[2]) { int c[3]; dos_cam(w, c); dos_camscr(c, o); }
 #define DOS_PIT_NEAR 32
+/* (GBL 0x3e8fe: imul / idiv, a 64-bit product) */
+static int64_t dos_ldiv(int64_t n, int64_t d) { int64_t q = (n < 0 ? -n : n) / (d < 0 ? -d : d); return (n < 0) != (d < 0) ? -q : q; }
 static void dos_nclip(const int A[3], const int B[3], int nr, int o[3], float *t)
 {
     if (B[2] <= A[2]) {
         int dz = A[2] - B[2], e2 = nr - B[2];
         *t = 1.0f - (float)e2 / (float)(dz > 1 ? dz : 1);
-        o[0] = dos_idiv((A[0] - B[0]) * e2, dz) + B[0]; o[1] = dos_idiv((A[1] - B[1]) * e2, dz) + B[1];
+        o[0] = (int)(dos_ldiv((int64_t)(A[0] - B[0]) * e2, dz) + B[0]); o[1] = (int)(dos_ldiv((int64_t)(A[1] - B[1]) * e2, dz) + B[1]);
     } else {
         int dz = B[2] - A[2], e2 = nr - A[2];
         *t = (float)e2 / (float)(dz > 1 ? dz : 1);
-        o[0] = dos_idiv((B[0] - A[0]) * e2, dz) + A[0]; o[1] = dos_idiv((B[1] - A[1]) * e2, dz) + A[1];
+        o[0] = (int)(dos_ldiv((int64_t)(B[0] - A[0]) * e2, dz) + A[0]); o[1] = (int)(dos_ldiv((int64_t)(B[1] - A[1]) * e2, dz) + A[1]);
     }
     o[2] = nr;
 }
 static int dos_ispit(int vtx) { int e = (int)(dvtx(vtx * FPV + 12) + 0.5f) / 65536; return e >= 1 && e < 200; }
 /* world_common.glsl dos_nearof: the cockpit set's near plane, or the view's (with the DOS order on), else 0 */
 static int dos_nearof(int vtx) { return dos_ispit(vtx) ? DOS_PIT_NEAR : G.F.u_dos_order != 0 ? G.F.u_dos_near : 0; }
+/* world_common.glsl dos_line_ends / dos_line_on: a line's DOS points (the near plane's point for a corner behind it) and
+ * GBL 0x54fa9's pixels - from corner 0 along the longer axis, ends included, the other coordinate by the carry of
+ * (minor << 32) / major (0xffffffff when equal) started at 0x80000000 */
+static int dos_line_ends(const float A[3], const float B[3], int p0[2], int p1[2])
+{
+    const int nr = G.F.u_dos_order != 0 && G.F.u_dos_near > 1 ? G.F.u_dos_near : 1;
+    int a[3], b[3], q[3];
+    float t;
+    dos_cam(A, a); dos_cam(B, b);
+    if (a[2] < nr && b[2] < nr) return 0;
+    if (a[2] < nr) { dos_nclip(a, b, nr, q, &t); memcpy(a, q, sizeof a); }
+    else if (b[2] < nr) { dos_nclip(a, b, nr, q, &t); memcpy(b, q, sizeof b); }
+    dos_camscr(a, p0); dos_camscr(b, p1);
+    return 1;
+}
+static int dos_line_on(int x, int y, const int a[2], const int b[2])
+{
+    const int dx = b[0] - a[0], dy = b[1] - a[1], ax = abs(dx), ay = abs(dy), sx = dx >= 0 ? 1 : -1, sy = dy >= 0 ? 1 : -1;
+    int xm, mj, k;
+    uint32_t s, st;
+    if (dx == 0) return x == a[0] && y >= (a[1] < b[1] ? a[1] : b[1]) && y <= (a[1] > b[1] ? a[1] : b[1]);
+    if (dy == 0) return y == a[1] && x >= (a[0] < b[0] ? a[0] : b[0]) && x <= (a[0] > b[0] ? a[0] : b[0]);
+    xm = ax > ay; mj = xm ? ax : ay;
+    s = ax == ay ? 0xffffffffu : (uint32_t)(((uint64_t)(uint32_t)(xm ? ay : ax) << 32) / (uint32_t)mj);
+    k = xm ? (x - a[0]) * sx : (y - a[1]) * sy;
+    if (k < 0 || k > mj) return 0;
+    st = (uint32_t)(((uint64_t)(uint32_t)k * s + 0x80000000u) >> 32);
+    return xm ? y == a[1] + sy * (int)st : x == a[0] + sx * (int)st;
+}
 /* a polygon's corners in the layer (its fan from first vertex s: corner 0, each triangle's next, the closing one's last) */
 static int poly_corners(int s, int *I, int cap)
 {
@@ -144,7 +175,7 @@ static void vertex_stage(int vid, int i, wv *o)
     e -= 65536 * pit;
     o->tinofog = 0;
     int tisky = 0, ptc = -1;
-    if (pit >= 400) { ptc = pit - 400; pit = 0; }   /* a point's pixel corner (world.vert) */
+    if (pit >= 400) { ptc = pit - 400; pit = 0; }   /* a point's pixel corner, 10 + a line's box corner (world.vert) */
     else if (pit >= 300) { int qq = pit - 300; tisky = qq >= 8; qq -= 8 * tisky; o->tinofog = qq >= 4; qq -= 4 * o->tinofog; tiwind = qq == 1 ? 1 : qq == 0 ? -1 : 0; pit = 0; }
     else if (pit >= 200) { kmode = pit - 200; pit = 0; }
     /* the DOS draw list (world.vert): the polygon's depth along the painting order, or not listed */
@@ -412,7 +443,25 @@ static void vertex_stage(int vid, int i, wv *o)
         float sd = 1.0f - 3e-6f + ((o->dord < 1.0f ? o->dord : 1.0f) - 1.0f) * 1e-3f;
         o->dord = sd < 1.0f - 3.9e-6f ? 1.0f - 3.9e-6f : sd > 1.0f - 1e-6f ? 1.0f - 1e-6f : sd;
     }
-    if (ptc >= 0) {   /* a point: its pixel at the DOS integer projection (world.vert) */
+    if (ptc >= 10) {   /* a line: the box of its DOS points' pixels (world.vert); world_tri keeps 0x54fa9's */
+        int la[2], lb[2];
+        if (!g_dosprog || F->u_dos == 0 || dli < 0 || dld > 2.5f || !dos_line_ends(a, a + 3, la, lb)) cull(o->clip);
+        else {
+            const float hx = 0.5f * F->u_vp[0], hy = 0.5f * F->u_vp[1];
+            const int lc = ptc - 10, vw = (int)F->u_vp[0], vh = (int)F->u_vp[1];
+            int lo[2], hi[2], c;
+            for (c = 0; c < 2; c++) {
+                const int lim = c ? vh : vw;
+                lo[c] = la[c] < lb[c] ? la[c] : lb[c]; hi[c] = la[c] > lb[c] ? la[c] : lb[c];
+                lo[c] = lo[c] < -1 ? -1 : lo[c] > lim ? lim : lo[c]; hi[c] = hi[c] < -1 ? -1 : hi[c] > lim ? lim : hi[c];
+            }
+            {
+                const float px = (float)(lc == 1 || lc == 2 || lc == 4 ? hi[0] + 1 : lo[0]), py = F->u_vp[1] - (float)(lc == 2 || lc == 4 || lc == 5 ? lo[1] : hi[1] + 1);
+                o->clip[0] = (px - hx) / hx; o->clip[1] = (py - hy) / hy; o->clip[2] = 0.0f; o->clip[3] = 1.0f;
+            }
+        }
+    }
+    else if (ptc >= 0) {   /* a point: its pixel at the DOS integer projection (world.vert) */
         if (!g_dosprog || F->u_dos == 0 || dli < 0 || dld > 2.5f) cull(o->clip);
         else {
             int sp[2];
@@ -828,7 +877,30 @@ static void horizon(void)
     ns = clip_s(q, 4, s, 0.0f, 1);   /* the sky (0xE0) and its band */
     if (ns < 3) return;
     g_post = tfog; g_post_g = F->u_tifog[2];
-    if (F->u_hz_band > 0.0f && fabsf(F->u_hz_u[1]) > 1e-6f) {
+    if (F->u_hz_band > 0.0f && fabsf(F->u_hz_u[1]) > 1e-6f && !F->u_hz_smooth && !tc) {
+        /* the DOS band as world.frag paints it: the sky, then over the whole window the rows r = band - floor(d + 0.5) in
+         * 0 .. band (d: pixels above the line), colour 224 + r x step (the 0x8000 start less the pair's half: the checker
+         * of floor(c + 1) / floor(c + 0.5)), the brighter where (row + col) is even, row from the quad's top (the higher
+         * line end's row less band): the window rows' parity plus a constant */
+        const float band = F->u_hz_band, stepf = floorf(917504.0f / band) / 65536.0f;
+        const float Lmax = F->u_hz_L[0] > F->u_hz_L[1] ? F->u_hz_L[0] : F->u_hz_L[1], wd = F->u_hz_x[1] - 1.0f - F->u_hz_x[0];
+        sv d[24], b[24], o[24];
+        int nd, nb, B;
+        dos_colour(224.0f, col);
+        emit_poly(&k, s, ns, col, 0);
+        for (i = 0; i < 4; i++) {
+            float sx = (q[i].x + 1.0f) * 0.5f * vw + vx, sy = (q[i].y + 1.0f) * 0.5f * vh + vy;
+            const float G = F->u_hz_L[0] + (F->u_hz_L[1] - F->u_hz_L[0]) * (sx - 0.5f - F->u_hz_x[0]) / (wd > 1.0f ? wd : 1.0f);
+            d[i] = q[i]; d[i].s = sy - (G - 0.5f);   /* (the line's rows u_hz_L, world.frag) */
+        }
+        nd = clip_s(d, 4, o, -0.5f, 1);
+        nb = clip_s(o, nd, b, band + 0.5f, 0);
+        if (nb >= 3) {
+            for (i = 0; i < nb; i++) b[i].s = 224.0f + (band - b[i].s - 0.5f) * stepf;
+            B = (int)band - 1 + (int)Lmax - (int)F->u_hz_x[0];
+            dither_fill(&k, b, nb, 1, (B & 1) == 0, 239);
+        }
+    } else if (F->u_hz_band > 0.0f && fabsf(F->u_hz_u[1]) > 1e-6f) {
         float shl = F->u_hz_c[1] - F->u_hz_c[3] * ((F->u_hz_x[0] - F->u_hz_c[0]) * F->u_hz_r[1] / F->u_hz_c[2] + F->u_hz_f[1]) / F->u_hz_u[1];
         float shr = F->u_hz_c[1] - F->u_hz_c[3] * ((F->u_hz_x[1] - F->u_hz_c[0]) * F->u_hz_r[1] / F->u_hz_c[2] + F->u_hz_f[1]) / F->u_hz_u[1];
         float K = (shl > shr ? shl : shr) + F->u_hz_band;
@@ -886,12 +958,83 @@ static void dos_gvtx(const float q[4], int o[2])   /* 0x3dfb7 from GL's point: q
     o[1] = (int)G.F.u_vp[1] / 2 - (((int)truncf(py * 4.0f) + 2) >> 2);
 }
 
+/* world.frag dos_clip2d: the paint's 2D clip (GBL MW2.EXE 0x3dd70 -> 0x3de30), when a corner is beyond -0x3fff..0x3ffe:
+ * Sutherland-Hodgman on the corner records (camera x, y, z, screen x, y, two attributes) against x <= 0x3fff, x >= -0x4000,
+ * y >= -0x4000, y <= 0x3fff in that order. A cut point (0x3e3d0 / 0x3e5f0): its camera z where the camera edge meets the
+ * limit's screen line (0x3e330, from the corner of the smaller z), the other screen coordinate linear in this one (from
+ * the corner of the larger), its camera x, y back from the screen point and z, the attributes linear along the camera
+ * axis the edge runs farther in (0x3e3d0 ties: y; 0x3e5f0 ties: x; no run: the mean) - imul / idiv throughout, 32-bit
+ * wrap kept (emulated under unicorn against 0x3de30: identical on 2854 random polygons) */
+static int32_t c2_w(int64_t v) { return (int32_t)(uint32_t)(uint64_t)v; }
+static int32_t c2_lin(int32_t o, int32_t a0, int32_t b0, int32_t a1, int32_t b1)
+{
+    if (b0 <= a0) return c2_w(dos_ldiv((int64_t)c2_w((int64_t)o - a0) * c2_w((int64_t)b1 - a1), c2_w((int64_t)b0 - a0)) + a1);
+    return c2_w(dos_ldiv((int64_t)c2_w((int64_t)o - b0) * c2_w((int64_t)a1 - b1), c2_w((int64_t)a0 - b0)) + b1);
+}
+static int32_t c2_zcut(int32_t a, int32_t b, int32_t L, int isx, int32_t za, int32_t zb)
+{
+    int32_t bx = a, dx = c2_w((int64_t)b - a), bz = za, dz = c2_w((int64_t)zb - za), k, t;
+    const int sh = isx ? G.F.u_dos_ps[0] : G.F.u_dos_ps[1];
+    if (dz < 0) { dz = c2_w(-(int64_t)dz); bx = b; dx = c2_w(-(int64_t)dx); bz = zb; }
+    k = isx ? c2_w((int64_t)L - (int)G.F.u_vp[0] / 2) : c2_w((int64_t)((int)G.F.u_vp[1] / 2) - L);
+    t = c2_w((int64_t)c2_w(((int64_t)(int32_t)((uint32_t)k << 2) * dz) >> sh) - dx);
+    if (t == 0) return bz;
+    return c2_w(((int64_t)bx * dz - (int64_t)bz * dx) / t);
+}
+static void c2_cut(const int32_t *A, const int32_t *B, int32_t L, int isx, int32_t *o)
+{
+    const int32_t z = c2_zcut(isx ? A[0] : A[1], isx ? B[0] : B[1], L, isx, A[2], B[2]);
+    const int32_t adx = abs(c2_w((int64_t)A[0] - B[0])), ady = abs(c2_w((int64_t)A[1] - B[1]));
+    int j, by;   /* 0 x, 1 y, 2 the mean */
+    o[2] = z;
+    if (isx) { o[3] = L; o[4] = c2_lin(L, A[3], B[3], A[4], B[4]); }
+    else { o[4] = L; o[3] = c2_lin(L, A[4], B[4], A[3], B[3]); }
+    o[0] = c2_w(((int64_t)(int32_t)((uint32_t)c2_w((int64_t)o[3] - (int)G.F.u_vp[0] / 2) << 2) * z) >> G.F.u_dos_ps[0]);
+    o[1] = c2_w(((int64_t)(int32_t)((uint32_t)c2_w((int64_t)((int)G.F.u_vp[1] / 2) - o[4]) << 2) * z) >> G.F.u_dos_ps[1]);
+    by = isx ? (adx > ady ? 0 : ady != 0 ? 1 : 2) : (ady > adx ? 1 : adx != 0 ? 0 : 2);
+    for (j = 5; j < 7; j++)
+        o[j] = by == 2 ? (int32_t)(((int64_t)A[j] + B[j]) >> 1) : by == 0 ? c2_lin(o[0], A[0], B[0], A[j], B[j]) : c2_lin(o[1], A[1], B[1], A[j], B[j]);
+}
+static int c2_out(const int32_t *r, int e) { return e == 0 ? r[3] > 0x3fff : e == 1 ? r[3] < -0x4000 : e == 2 ? r[4] < -0x4000 : r[4] > 0x3fff; }
+/* R: m records {camera x, y, z, screen x, y, attribute 0, 1}; returns the corners left */
+static int dos_clip2d(int32_t R[20][7], int m)
+{
+    int i, e, big = 0;
+    for (i = 0; i < m; i++) big |= R[i][3] < -16383 || R[i][3] > 16382 || R[i][4] < -16383 || R[i][4] > 16382;
+    if (!big) return m;
+    for (e = 0; e < 4 && m >= 1; e++) {
+        int32_t W[20][7];
+        int n = 0;
+        const int32_t L = e == 0 || e == 3 ? 0x3fff : -0x4000;
+        for (i = 0; i < m && i < 20; i++) {
+            const int pi = (i + m - 1) % m, po = c2_out(R[pi], e), qo = c2_out(R[i], e);
+            if (po != qo && n < 20) c2_cut(R[pi], R[i], L, e < 2, W[n++]);
+            if (!qo && n < 20) memcpy(W[n++], R[i], sizeof W[0]);
+        }
+        m = n;
+        memcpy(R, W, sizeof W);
+    }
+    return m;
+}
+/* 0x3e8fe's attributes at the near plane: as x and y, from the corner of the smaller z (imul / idiv) */
+static void dos_nclip_a(const int A[3], const int B[3], const int32_t *Aa, const int32_t *Ba, int nr, int32_t *o)
+{
+    int j;
+    for (j = 0; j < 2; j++) {
+        if (B[2] <= A[2]) o[j] = A[2] == B[2] ? Aa[j] : c2_w(dos_ldiv((int64_t)c2_w((int64_t)Aa[j] - Ba[j]) * (nr - B[2]), A[2] - B[2]) + Ba[j]);
+        else o[j] = c2_w(dos_ldiv((int64_t)c2_w((int64_t)Ba[j] - Aa[j]) * (nr - A[2]), B[2] - A[2]) + Aa[j]);
+    }
+}
+/* 0x3c610 type 4: a corner's baked index a (16.16) as the fill takes it - ramp + i (L + 1) / 16 when a >= 48, else a */
+static int32_t dos_gsc(int32_t a16, int L1) { return a16 < 0x300000 ? a16 : (int32_t)((a16 & (int32_t)0xfff00000) + (((a16 >> 16) & 15) * L1 << 12)); }
+
 static void dpoly_make(int s, float lev, dpoly *P)
 {
     const float g = (lev + 1.0f) / 16.0f;
     float Pc[18][4], C[18];
-    int I[18], n = 0, m = 0, t, i, pitclip = 0;
-    const int trust = G.F.u_dos_exact != 0;
+    int I[18], n = 0, m = 0, t, i, pitclip = 0, cam = 0;
+    int32_t RA[18], R[20][7];   /* each corner's baked index a << 16 (the record's +0x14, 0x3e80c); the records */
+    const int trust = G.F.u_dos_exact != 0, L1 = (int)floorf(lev) + 1;
     memset(P, 0, sizeof *P);
     P->s = s; P->lev = lev;
     for (t = 0; t < 16 && n < 17; t++) {
@@ -902,6 +1045,7 @@ static void dpoly_make(int s, float lev, dpoly *P)
             dpos(b + k, w4); w4[3] = 1.0f;
             mat4v(G.F.u_mvp, w4, Pc[n]);
             C[n] = dvtx((b + k) * FPV + 7) + dvtx((b + k) * FPV + 6) * g;
+            RA[n] = (int32_t)((uint32_t)(int32_t)floorf(dvtx((b + k) * FPV + 7) + dvtx((b + k) * FPV + 6) + 0.5f) << 16);
             I[n] = b + k;
             n++;
         }
@@ -919,18 +1063,19 @@ static void dpoly_make(int s, float lev, dpoly *P)
             if (C[i] > P->cmax) P->cmax = C[i];
         }
         if (isnear) {
-            pitclip = 1;
+            pitclip = 1; cam = 1;
             for (k = 0; k <= n; k++) {
                 const int cur = k % n, prv = (k + n - 1) % n, bc = Cc[cur][2] < nr, bp = Cc[prv][2] < nr;
                 float tt;
-                if (k > 0 && bc != bp && m < 20) {
+                if (k > 0 && bc != bp && m < 20) {   /* (0x3e8fe: x, y and the attributes from the corner of the smaller z) */
                     int qc[3];
+                    int32_t a2[2], pa[2] = {RA[prv], 0}, ca[2] = {RA[cur], 0};
                     dos_nclip(Cc[prv], Cc[cur], nr, qc, &tt);
-                    dos_camscr(qc, P->V[m]);
-                    P->CF[m] = (int)floorf((C[prv] + (C[cur] - C[prv]) * tt) * 65536.0f + 0.5f);
+                    dos_nclip_a(Cc[prv], Cc[cur], pa, ca, nr, a2);
+                    R[m][0] = qc[0]; R[m][1] = qc[1]; R[m][2] = qc[2]; dos_camscr(qc, &R[m][3]); R[m][5] = a2[0]; R[m][6] = 0;
                     m++;
                 }
-                if (k < n && !bc && m < 20) { dos_camscr(Cc[cur], P->V[m]); P->CF[m] = (int)floorf(C[cur] * 65536.0f + 0.5f); m++; }
+                if (k < n && !bc && m < 20) { R[m][0] = Cc[cur][0]; R[m][1] = Cc[cur][1]; R[m][2] = Cc[cur][2]; dos_camscr(Cc[cur], &R[m][3]); R[m][5] = RA[cur]; R[m][6] = 0; m++; }
             }
         }
     }
@@ -941,9 +1086,10 @@ static void dpoly_make(int s, float lev, dpoly *P)
         if (C[i] > P->cmax) P->cmax = C[i];
         if (da >= 0.0f && m < 20) {
             float w3[3];
+            int ds[2];
             dpos(I[i], w3);
             if (m == 0 && trust) {
-                int ds[2], dg[2];
+                int dg[2];
                 dos_scr(w3, ds); dos_gvtx(a, dg);
                 if (g_dosdbg) {   /* (DOS_DEBUG: the offsets as the colour, no discards) */
                     float fx = 0.5f + (float)(ds[0] - dg[0]) / 64.0f, fy = 0.5f + (float)(ds[1] - dg[1]) / 64.0f;
@@ -953,21 +1099,29 @@ static void dpoly_make(int s, float lev, dpoly *P)
                     P->ok = 0;
                     return;
                 }
-                P->V[m][0] = ds[0]; P->V[m][1] = ds[1];
-            } else if (trust) dos_scr(w3, P->V[m]);
-            else dos_gvtx(a, P->V[m]);
-            P->CF[m] = (int)floorf(C[i] * 65536.0f + 0.5f);
+            } else if (trust) dos_scr(w3, ds);
+            else dos_gvtx(a, ds);
+            if (trust) { int cc[3]; dos_cam(w3, cc); R[m][0] = cc[0]; R[m][1] = cc[1]; R[m][2] = cc[2]; }
+            R[m][3] = ds[0]; R[m][4] = ds[1];
+            R[m][5] = (int32_t)floorf(C[i] * 65536.0f + 0.5f); R[m][6] = 0;
             m++;
         }
         if ((da >= 0.0f) != (db >= 0.0f) && m < 20) {
             float tt = da / (da - db), q[4];
             int c;
             for (c = 0; c < 4; c++) q[c] = fmad(tt, b[c] - a[c], a[c]);   /* (mix, fused as the reference's) */
-            dos_gvtx(q, P->V[m]);
-            P->CF[m] = (int)floorf((C[i] + (C[(i + 1) % n] - C[i]) * tt) * 65536.0f + 0.5f);
+            dos_gvtx(q, &R[m][3]);
+            R[m][0] = R[m][1] = 0; R[m][2] = 1;   /* (GL's cut: no camera integers - left out of the 2D clip) */
+            R[m][5] = (int32_t)floorf((C[i] + (C[(i + 1) % n] - C[i]) * tt) * 65536.0f + 0.5f); R[m][6] = 0;
             m++;
         }
     }
+    if (trust && m >= 3 && cam) m = dos_clip2d(R, m);
+    if (trust && m >= 3 && !cam && m == n) {   /* (not near-clipped: the records' attribute the baked index) */
+        for (i = 0; i < m; i++) R[i][5] = RA[i];
+        m = dos_clip2d(R, m); cam = 1;
+    }
+    for (i = 0; i < m; i++) { P->V[i][0] = R[i][3]; P->V[i][1] = R[i][4]; P->CF[i] = cam ? dos_gsc(R[i][5], L1) : R[i][5]; }
     P->m = m;
     if (m >= 3) {
         P->ok = 1;
@@ -1018,7 +1172,7 @@ static void tpoly_make(int s, int persp, tpoly *T)
 {
     int t, n = 0, i, nc = 0, nr = dos_nearof(s), isnear = 0, k;
     int Cc[18][3];
-    float Uc[18][2];
+    int32_t Uc[18][2], R[20][7];   /* the corners' texel u, v << 16 (the records' +0x14 / +0x18, 0x3e80c); the records */
     memset(T, 0, sizeof *T);
     T->s = s; T->persp = persp;
     for (t = 0; t < 16; t++) {
@@ -1030,26 +1184,32 @@ static void tpoly_make(int s, int persp, tpoly *T)
             mat4v(G.F.u_mvp, w4, q);
             if (nc >= 18 || (nr == 0 && q[2] + q[3] < 0.0f)) return;
             dos_cam(w4, Cc[nc]);
-            Uc[nc][0] = dvtx((b + c) * FPV + 6) * 65536.0f; Uc[nc][1] = dvtx((b + c) * FPV + 7) * 65536.0f;
+            Uc[nc][0] = (int32_t)((uint32_t)(int32_t)floorf(dvtx((b + c) * FPV + 6) + 0.5f) << 16);
+            Uc[nc][1] = (int32_t)((uint32_t)(int32_t)floorf(dvtx((b + c) * FPV + 7) + 0.5f) << 16);
             if (Cc[nc][2] < (nr > 1 ? nr : 1)) isnear = 1;
             nc++;
         }
         if (ebits(b) & 2) break;
     }
     if (isnear && nr == 0) return;
-    /* the corners in front, and on the near plane where an edge crosses it (0x3e8fe: x, y, u, v by the same share) */
+    /* the corners in front, and on the near plane where an edge crosses it (0x3e8fe: x, y, u, v, imul / idiv) */
     for (k = 0; k <= nc && nc >= 3; k++) {
         const int cur = k % nc, prv = (k + nc - 1) % nc, n1 = nr > 1 ? nr : 1, bc = Cc[cur][2] < n1, bp = Cc[prv][2] < n1;
         int cc[3], pass;
-        float uu[2], tt;
+        int32_t uu[2];
+        float tt;
         for (pass = 0; pass < 2; pass++) {
-            if (pass == 0) { if (!(k > 0 && bc != bp) || n >= 18) continue; dos_nclip(Cc[prv], Cc[cur], n1, cc, &tt); uu[0] = Uc[prv][0] + (Uc[cur][0] - Uc[prv][0]) * tt; uu[1] = Uc[prv][1] + (Uc[cur][1] - Uc[prv][1]) * tt; }
+            if (pass == 0) { if (!(k > 0 && bc != bp) || n >= 18) continue; dos_nclip(Cc[prv], Cc[cur], n1, cc, &tt); dos_nclip_a(Cc[prv], Cc[cur], Uc[prv], Uc[cur], n1, uu); }
             else { if (!(k < nc && !bc) || n >= 18) continue; memcpy(cc, Cc[cur], sizeof cc); memcpy(uu, Uc[cur], sizeof uu); }
-            dos_camscr(cc, T->V[n]);
-            if (persp) { float qq = 1.0f / (float)cc[2]; T->A[n][0] = uu[0] * qq; T->A[n][1] = uu[1] * qq; T->A[n][2] = qq; }
-            else { T->A[n][0] = uu[0]; T->A[n][1] = uu[1]; T->A[n][2] = 0; }
+            R[n][0] = cc[0]; R[n][1] = cc[1]; R[n][2] = cc[2]; dos_camscr(cc, &R[n][3]); R[n][5] = uu[0]; R[n][6] = uu[1];
             n++;
         }
+    }
+    if (n >= 3) n = dos_clip2d(R, n);   /* the 2D clip: the cut's z and u, v as the original's records */
+    for (i = 0; i < n; i++) {
+        T->V[i][0] = R[i][3]; T->V[i][1] = R[i][4];
+        if (persp) { const float qq = 1.0f / (float)(R[i][2] > 1 ? R[i][2] : 1); T->A[i][0] = (float)R[i][5] * qq; T->A[i][1] = (float)R[i][6] * qq; T->A[i][2] = qq; }
+        else { T->A[i][0] = R[i][5]; T->A[i][1] = R[i][6]; T->A[i][2] = 0; }
     }
     if (n < 3) return;
     T->n = n; T->ok = 1;
@@ -1591,6 +1751,39 @@ static void dos_flat(const wv *v[3], int idx)
     }
 }
 
+/* a line's box triangle (world.frag kind 5): within its GL coverage, 0x54fa9's pixels (dos_line_on) in the flat colour */
+static void dos_line_tri(const wv *v[3], const dmode *M, int s)
+{
+    tcov T;
+    const int vx = G.vp[0], vy = G.vp[1], vw = G.vp[2], vh = G.vp[3];
+    const int vph = (int)G.F.u_vp[1], vpo_x = (int)G.F.u_vpo[0], vpo_y = (int)G.F.u_vpo[1];
+    float A[3], B[3];
+    int la[2], lb[2], ylo, yhi, py, cx0 = vx, cx1 = vx + vw - 1;
+    dpos(s, A); B[0] = dvtx(s * FPV + 3); B[1] = dvtx(s * FPV + 4); B[2] = dvtx(s * FPV + 5);
+    if (s < 0 || !dos_line_ends(A, B, la, lb) || !tcov_make(v, &T)) return;
+    ylo = (int)ceil(T.ymin - 0.5); yhi = (int)ceil(T.ymax - 0.5) - 1;
+    if (ylo < vy) ylo = vy;
+    if (yhi > vy + vh - 1) yhi = vy + vh - 1;
+    if (G.sc_on) {
+        if (ylo < G.sc[1]) ylo = G.sc[1];
+        if (yhi > G.sc[1] + G.sc[3] - 1) yhi = G.sc[1] + G.sc[3] - 1;
+        if (cx0 < G.sc[0]) cx0 = G.sc[0];
+        if (cx1 > G.sc[0] + G.sc[2] - 1) cx1 = G.sc[0] + G.sc[2] - 1;
+    }
+    for (py = ylo; py <= yhi; py++) {
+        int gx0, gx1, x, run = -1;
+        const int y = vph - 1 - (py - vpo_y);
+        if (!tcov_row(&T, py, &gx0, &gx1)) continue;
+        if (gx0 < cx0) gx0 = cx0;
+        if (gx1 > cx1) gx1 = cx1;
+        for (x = gx0; x <= gx1 + 1; x++) {
+            const int on = x <= gx1 && dos_line_on(x - vpo_x, y, la, lb);
+            if (on && run < 0) run = x;
+            if (!on && run >= 0) { seg_out(&T, M, NULL, NULL, run, x - 1, py, 0, -1); run = -1; }
+        }
+    }
+}
+
 static void world_tri(const wv *v0, const wv *v1, const wv *v2)
 {
     const rb_world_frame *F = &G.F;
@@ -1657,6 +1850,12 @@ static void world_tri(const wv *v0, const wv *v1, const wv *v2)
         const dpoly *P = NULL;
         memset(&M, 0, sizeof M);
         M.fog = tfog;
+        if (kind == 5) {   /* a line (world.frag) */
+            if (!g_sb || (!tc && !g_pal_ok)) return;
+            M.mode = tc ? DM_TC_FLAT : DM_FLAT; M.idx = (int)base;
+            dos_line_tri(v, &M, fl->texsel - 1);
+            return;
+        }
         if (exactcov) {
             P = dpoly_get(fl->texsel - 1, 0.0f);
             if (P->dbg) P = NULL;   /* (DOS_DEBUG: dos_gouraud's early return - no discards) */

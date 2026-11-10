@@ -15,6 +15,8 @@
  *   gbl_debriefing                                  state 3 (scoring FUN_00024750 0x24750..0x25280)
  */
 
+#include "gbl_score.h"   /* the difficulty multiplier (0x25567) */
+
 /* ======================================================================================================================
  * campaign tables (C_campaign.md 2.3) */
 typedef struct { const char *scn, *title; unsigned char trial; } gbl_mission;     /* 0x800ac, 9-byte records */
@@ -408,6 +410,12 @@ static void gc_val(char *out, size_t n, const char *label, int v)
     snprintf(line, sizeof line, "%s\\g%03d\\b%03d%s\\n", label, 350, gtext_w(GF_DEFAULT, val), val);
     gc_cat(out, n, line);
 }
+static const uint8_t *gc_sort_msn;
+static int gc_objective_cmp(const void *a, const void *b)   /* MW2SHELL 0x22db0 */
+{
+    int ta = gc_i32(gc_sort_msn, 0x14 + *(const int *)a * 52 + 0xc), tb = gc_i32(gc_sort_msn, 0x14 + *(const int *)b * 52 + 0xc);
+    return ta < 0 ? 1 : tb < 0 ? -1 : ta > tb ? 1 : ta < tb ? -1 : 0;
+}
 /* the STATISTICS text and the honor (0x24750 .. 0x25780); updates the pilot's kills / hits / shots / honor */
 static void gc_score(const uint8_t *msn, const uint8_t *car, const uint8_t *dif, int status, gbl_pilot *p, char *out, size_t on)
 {
@@ -417,26 +425,22 @@ static void gc_score(const uint8_t *msn, const uint8_t *car, const uint8_t *dif,
     if (no > 48) no = 48;
     out[0] = 0;
     gc_cat(out, on, "Time\\g040Type\\g110Objective\\g400Status\\n");
-    /* sorted by time, DNF (-1) last (comparator 0x22db0); insertion order as Watcom's qsort leaves all-DNF lists
-     * (MEASURED C_34: Tertiary, Secondary, Primary - reversed); INFERRED for mixed lists */
-    for (k = 0; k < no; k++) {
-        int j = n;
-        while (j > 0) {
-            int ta = gc_i32(msn, 0x14 + ord[j - 1] * 52 + 0xc), tb = gc_i32(msn, 0x14 + k * 52 + 0xc), c;
-            c = ta < 0 ? 1 : tb < 0 ? -1 : ta > tb ? 1 : ta < tb ? -1 : 0;
-            if (c <= 0) break;
-            ord[j] = ord[j - 1];
-            j--;
-        }
-        ord[j] = k;
-        n++;
-    }
+    /* sorted by time (MW2SHELL 0x24b15, as 0x23862: the library qsort 0x4b7aa over pointers to the entries, comparator 0x22db0: the
+     * first one's time negative (DNF) -> 1, else the second's -> -1, else ascending) - Watcom's qsort exactly (wc_qsort,
+     * tools/audit/qsort_diff.py), so equal times and DNFs come in the original's order (MEASURED C_34: three DNFs,
+     * Tertiary, Secondary, Primary - reversed) */
+    for (k = 0; k < no; k++) ord[k] = k;
+    n = no;
+    gc_sort_msn = msn;
+    wc_qsort(ord, (size_t)n, sizeof ord[0], gc_objective_cmp);
     for (k = 0; k < n; k++) {
         const uint8_t *o = msn + 0x14 + ord[k] * 52;
         int st = gc_i32(o, 0), ty = gc_i32(o, 4), t = gc_i32(o, 0xc), q, w = 0, sp = 0;
         const char *tn = ty == 0 ? "Default" : ty == 1 ? "Primary" : ty == 2 ? "Secondary" : ty == 4 ? "Tertiary" : ty == 8 ? "Return" : "Unknown";
-        char tm[16], txt[40], line[200];
-        for (q = 0; q < 32 && o[0x14 + q]; q++) {   /* runs of control characters / spaces -> one space */
+        char tm[16], txt[96], line[240];
+        for (q = 0; 0x14 + ord[k] * 52 + 0x14 + q < 0x9d4 && o[0x14 + q] && w + 1 < (int)sizeof txt; q++) {   /* to its NUL (a text
+                                         * of 32+ characters runs on into the next entry's fields, as the sim wrote it); runs
+                                         * of control characters / spaces -> one space */
             if (o[0x14 + q] < 0x21) { if (!sp) { txt[w++] = ' '; sp = 1; } }
             else { txt[w++] = (char)o[0x14 + q]; sp = 0; }
         }
@@ -490,7 +494,7 @@ static void gc_score(const uint8_t *msn, const uint8_t *car, const uint8_t *dif,
         if (dif[4] == 0) { gc_cat(out, on, "\\cThe Keshik deems it Dishonorable to Alter Heat Tracking\\n"); honor = 0; }
         else if (status == 2) {
             gc_val(out, on, "Mission Honor:", honor);
-            honor = (int)lrint((double)honor * dm);
+            honor = gbl_honor_mult(honor, dif[5] <= 2 ? dif[5] : 1);   /* 0x25567: honor + trunc(honor x m - honor) */
             snprintf(label, sizeof label, "Difficulty Multiplier:\\t(%s = %1.1f)", dn, dm);
             gc_val(out, on, label, honor);
         }

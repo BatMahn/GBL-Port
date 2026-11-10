@@ -20,5 +20,12 @@ What is still open in the Ghost Bear's Legacy port, in plain language.
 - **Small details traced from the code but not yet seen side by side with the original:** how the burning effect
   animates on a 'Mech, the hovercraft's exact hover height, the dropship parts in some scenes, and a few moving
   objects (dropships, lifts) other than those in HOFF, CLAI, JESS and BRAN.
+- **In-mission menu pages from the 3D-card edition:** the COMMAND COMPUTER, SYSTEMS STATUS and in-mission MAIN MENU
+  pages (and items such as "Attack My Target") are not in the DOS game's executable; they came over from the 3D-card
+  edition and are still there.
+- **Distant sounds may fade too early.** The port fades positional sounds out by about 500 m (the 3D-card edition's
+  rule); the DOS game's own fade looks much gentler under emulation but hasn't been checked against a recording.
+- **Shield and hex-glass surfaces** are drawn filled rather than as the original's outlines (none appears in the GBL
+  missions as they start).
 - **Randomness:** fights depend on random rolls, so no two runs match the original exactly; comparisons are made over
   several runs.

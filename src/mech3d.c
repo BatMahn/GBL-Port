@@ -56,7 +56,7 @@ void mech3d_use_skeleton(mech3d *dst, const mech3d *src)
     dst->bind_count = src->bind_count;
     memcpy(dst->bind_node, src->bind_node, sizeof src->bind_node);
     memcpy(dst->bind_track, src->bind_track, sizeof src->bind_track);
-    dst->eye_node = src->eye_node; dst->twist_node = src->twist_node;
+    dst->eye_node = src->eye_node; dst->twist_node = src->twist_node; dst->pitch_node = src->pitch_node;
     dst->centre_h = src->centre_h;
     memcpy(dst->pofo_node, src->pofo_node, sizeof src->pofo_node);
 }
@@ -197,6 +197,21 @@ static int mech3d_load_repr(prj_archive *a, const char *record, int repr, mech3d
     for (i = 0; i < out->part_count; i++) {
         size_t nl = strlen(out->parts[i].model_name);
         if (nl >= 5 && strcasecmp(out->parts[i].model_name + nl - 5, "_HEAD") == 0) { out->twist_node = out->parts[i].node; break; }
+    }
+    /* THNG { i16 node, .. }: the loader lists them (GBL 0x4fd31 -> 0x1654a0) and a unit's controller takes them in order
+     * (0x4f4a0): the first is the node turned by the twist (mechs 0x26a63 / 0x27a96: the *_HEAD part's node), the second
+     * the gun node a turret pitches (0x2eee2 / 0x2f08b: 0x1e350(+0x64, pitch, 0, 0)). TURRETB has no *_HEAD part: its
+     * body and guns never turned, so its eye (the aim ray) and mounts stayed on the base's heading */
+    out->pitch_node = -1;
+    {
+        int q, c2 = 0;
+        for (q = 0; q < n; q++)
+            if (strcmp(chunks[q].tag, "THNG") == 0 && chunks[q].size >= 2) {
+                int nd = (int16_t)(chunks[q].data[0] | (chunks[q].data[1] << 8));
+                if (c2 == 0 && out->twist_node < 0) out->twist_node = nd;
+                if (c2 == 1) out->pitch_node = nd;
+                c2++;
+            }
     }
     /* animation id and the TSK bindings "node;70,flags,track" */
     for (k = 0; k < n; k++) {
@@ -875,6 +890,11 @@ static void solve_nodes(const mech3d *m, const anim_set *anim, float t,
                 mat3_axis(tmp, 1, m->twist);
                 mat3_mul(lrot, lrot, tmp);
             }
+            if (m->pitch_node >= 0 && m->skel_index[i] == m->pitch_node && m->gun_pitch != 0) {
+                /* a turret's gun node (GBL 0x2f08b: 0x1e350(node, pitch servo +0x1c, 0, 0)), the sign as the torso tilt's */
+                mat3_axis(tmp, 0, -m->gun_pitch);
+                mat3_mul(lrot, lrot, tmp);
+            }
             if (anim)
                 for (k = 0; k < m->bind_count; k++) {
                     int tr = m->bind_track[k];
@@ -922,7 +942,7 @@ static void mounts_local(mech3d *m)
     float wrot[MECH3D_MAX_NODES][9], wpos[MECH3D_MAX_NODES][3];
     int done[MECH3D_MAX_NODES], k, q;
     tmp.origin[0] = tmp.origin[1] = tmp.origin[2] = 0;
-    tmp.heading = 0; tmp.twist = 0; tmp.tilt = 0;
+    tmp.heading = 0; tmp.twist = 0; tmp.tilt = 0; tmp.gun_pitch = 0;
     solve_nodes(&tmp, NULL, 0, wrot, wpos, done);
     m->mount_local_ok = 0;
     for (k = 0; k < m->skel_count; k++)
@@ -1256,7 +1276,8 @@ int mech3d_hull_hit(mech3d *m, const float o[3], const float d[3], unsigned gone
 /* ---- path tasks (TSK type 5 over PTBL paths): see mech3d.h -------------------------------------------------- */
 
 #define WP_NODES (MAX_NODES * 4)
-#define WP_TAU (0.3f * 181.0f)   /* the filters' time constant: 0.3 x 181.0 (0x10248490) ticks */
+#define WP_TAU 54.0f   /* the filters' time constant: GBL 0x1bbc2 sets its servos up for 0.3 s (0x4a990: chop(0.3 x 182) =
+                              * 54 ticks; the 3D-card edition's 0.3 x 181.0, 0x10248490) */
 typedef struct { float R[9], t[3]; } wp_xf;
 typedef struct { float last, target, cur; } wp_filt;
 typedef struct {
@@ -1500,14 +1521,14 @@ static int wp_run_other(world3d_paths *P, mech3d *world, wp_task *t, float now)
 {
     wp_rec *r = &P->recs[t->rec];
     wp_xf *x = &r->local[t->node];
-    if (t->type == 0) {   /* spin (0x1000e880): each angle turns by its rate x elapsed / (seconds x 181) */
+    if (t->type == 0) {   /* spin (0x1000e880, GBL 0x1b652): each angle turns by its rate x elapsed / (seconds x 182) */
         float q = (now - t->last) / t->k[3];
         t->last = now;
         wp_turn(x, t->k[0] * q, t->k[1] * q, t->k[2] * q);
         return 1;
     }
     if (t->type == 2) {   /* circling (0x1000ea50): a step along the heading + 90, then a yaw turn */
-        float dts = (now - t->last) * (1.0f / 181.0f), d, a = t->k[2] * 0.017453292f, dy;   /* 0x102471e4: 1 / 181 */
+        float dts = (now - t->last) * (1.0f / 182.0f), d, a = t->k[2] * 0.017453292f, dy;   /* GBL 0x1b9a0: / 0xb6 (3D-card 1 / 181) */
         if (t->k[3] == 0) return 0;
         t->last = now;
         d = t->k[1] * dts;
@@ -1607,10 +1628,10 @@ world3d_paths *world3d_paths_load(prj_archive *a, const char *scene, mech3d *wor
             t->type = tk.type; t->rec = ri; t->node = tk.node; t->path = pi; t->period = tk.period;
             if (tk.type != 5) {   /* created at load (0x10008280 mode 0): the start time 0 */
                 int ok = 1;
-                if (tk.type == 0) {        /* "%f,%f,%f,%f": pitch, yaw, roll degrees per <4th> seconds (x 181 ticks) */
+                if (tk.type == 0) {        /* "%f,%f,%f,%f": pitch, yaw, roll degrees per <4th> seconds (x 182 ticks) */
                     ok = sscanf(tk.params, "%f,%f,%f,%f", &t->k[0], &t->k[1], &t->k[2], &t->k[3]) == 4;
-                    t->k[3] *= 181.0f;     /* 0x102471c4 */
-                    if (fabsf(t->k[3]) < 1e-7f) t->k[3] = 181.0f;
+                    t->k[3] *= 182.0f;     /* GBL 0x1b729: x 182.0f (0xa02fc; the 3D-card edition 181, 0x102471c4) */
+                    if (fabsf(t->k[3]) < 1e-7f) t->k[3] = 182.0f;   /* 0x1b748: 0xb6 */
                     if (ok) P->recs[ri].anim[tk.node] = 1;
                 } else if (tk.type == 2) { /* "%f,%f,%d,%d": radius, seconds per turn, on (the 4th unused) */
                     float rad = 0, secs = 0;

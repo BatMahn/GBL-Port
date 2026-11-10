@@ -579,15 +579,21 @@ void hud_sprite_smooth(hud_sprite *s, int on)
 void hud_draw_window_v(hud *h, const hud_sprite *s, float v0, float height, float x, float y)
 {
     static const float one[4] = {1, 1, 1, 1};
+    float top = 0;
     if (!s->tex || s->h <= 0) return;
-    if (v0 < 0) v0 = 0;
-    if (v0 + height > (float)s->h) v0 = (float)s->h - height;
+    /* the sprite clipped to the window (DOS 0x29f90 blits the tape at its own position, the window clipping it): a
+     * tape whose top lies below the window's top starts lower, one ending inside the window stops there - and one
+     * wholly outside (DOSBox FOSTSCN1 / BRANSCN1 above 201 m: only ">200" at the reference) is not drawn. The port had
+     * clamped the tape into the window, showing its 200 m end at any height above it */
+    if (v0 < 0) { top = -v0; height += v0; v0 = 0; }
+    if (v0 + height > (float)s->h) height = (float)s->h - v0;
+    if (height <= 0) return;
     bind_sprite(h, s, 1.0f);
     h->U.u_textured = 1;
     h->U.u_smooth = s->smooth;
     memcpy(h->U.u_tint, one, sizeof h->U.u_tint);
     {
-        float X = sx_(h, x), Y = sy_(h, y);
+        float X = sx_(h, x), Y = sy_(h, y) + top * (float)h->n;
         quad_px(h, X, Y, X + (float)s->w * h->n, Y + height * (float)h->n, 0, v0 / (float)s->h, 1, (v0 + height) / (float)s->h);
     }
 }

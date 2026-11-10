@@ -2,6 +2,88 @@
 
 ## Unreleased (work in progress)
 
+- **Enemy turrets and AI, checked further against the original:**
+  - **Turrets now turn and aim their guns:** the big carrier and base turrets never visibly rotated, and their shots
+    left along the turret's base direction - on Branson's carrier deck they landed 40 m away from you. Their body now
+    turns and their guns tilt as in the original, and they hit what they aim at (tanks' turrets turn too).
+  - **Resting enemies wake up when you come near:** units parked "at rest" by their mission (powered down) now notice
+    an enemy within their sighting range and come online to attack, as in the original; before they slept until
+    their mission script woke them (Branson's deck turrets let you stand under them for 14 s). A unit sent at a
+    target keeps that target when its script moves on.
+  - **Branson's carrier deck is as deadly as in the original:** the invisible defence points on the deck no longer
+    distract the enemy turrets - the turrets fire on you as you ride the lift up (first hits about 8-9 s in, as in
+    the original), including the turret far ahead that the defence points wake.
+  - **Moving scenery keeps the original's pace:** spinning and circling objects (radar dishes, fans, patrolling
+    aircraft) and lifts ran on the 3D-card edition's clock, about half a percent slow; they now use the DOS timing.
+  - **MASC as in the original:** the speed boost (and its malfunction risk) works only while your 'Mech is striding
+    on the ground - not standing still or with the jump jets firing - instead of whenever MASC was switched on.
+  - Tanks and other vehicles on patrol no longer sweep their turrets from side to side (only 'Mechs scan with their
+    torso in the original); a unit turning on an attacker or sent at a target by its lance leader takes its first
+    shot after the original's short random delay.
+  - Enemy 'Mechs jump up to a target above them only when the original would - when they can't see it from where
+    they stand but could from its height - keep the jets on for a second as they clear the edge, and use their
+    plain attack pattern against buildings and nav points.
+- **HUD, missions and menus, third pass against the original's code:**
+  - **Sound on Branson and Zack:** these two missions limit what you can hear to things within 10 m of you, as the original
+    does - distant weapon fire, explosions and footsteps are silent there; your own weapons in the
+    cockpit, radio and cockpit sounds are unaffected.
+  - **Mech Lab masses:** every stock design's mass panel now matches the original's own calculation (checked by running
+    the original's code on all 99 stock designs): the Rifleman IIC's second configuration shows 24 single heat sinks and
+    64.75 T used (it showed 12 double sinks), and the Elemental's engine rating and heat sinks read as in the original.
+  - **Hall of Honor and debriefing order:** pilots with equal rank, honor and missions, and objectives finished at the
+    same time (or not at all), are listed in the original's order - the port now sorts exactly as the original's library
+    routine does (checked against it on thousands of lists). With many fresh pilots this decides who appears in the Hall.
+  - **Heat bar label:** always reads "Heat", as in the original - the red "Shutdown..." / "Overridden" labels came from
+    the 3D-card edition and do not exist in this game. Jettisoning ammunition says "Ammo for current weapon
+    jettisonned." exactly as the original spells it.
+- **HUD, mission messages and menus checked against the original's code** (second pass):
+  - **"Enemy power-up detected"** now comes the moment a sleeping or shut-down enemy starts powering up, with its
+    start-up sound, as in the original - not 6-8 seconds later when it is already up and moving.
+  - **Starting up:** the radar's ring and view lines are drawn thin and in the radar's own colours while the cockpit
+    powers up, as in the original (they were thicker and paler until the HUD came on).
+  - **Altitude tape:** flying or standing more than 200 m up now shows only the ">200" marker, as in the original,
+    instead of the tape's top end.
+  - **MASC:** the HUD shows "MASC" next to the speed while MASC is engaged, as the original does.
+  - **Nav points in the target display:** a nav point you have already reached shows its "reached" emblem (the
+    diamond), as in the original.
+  - **Message lines:** when both lines are busy, a new message replaces the one that would stay up longer (the
+    original's rule) - e.g. toggling the autopilot no longer wipes "MASC engaged."; short messages stay up for the
+    original's 2 seconds.
+  - **Mission objectives (F12)** sit where the original puts them (a few pixels lower, more at 1024x768) and use the
+    original's blues.
+- **Simulation checked against the original game's code** (an automated comparison that runs the original program's
+  own routines on thousands of inputs, tools/audit): fixes where the port still followed the 3D-card edition or its own
+  guesses -
+  - **Heat:** on frozen worlds (-100 degrees and colder: Branson, Claimant, Pete, Zack) heat sinks now dissipate 2.5x
+    the normal rate, as in the original (the port gave 2x); overriding a shutdown at full heat now risks an ammunition
+    explosion about once in 1.5 minutes, not every few seconds.
+  - **Turning:** a 'Mech's legs now take a moment to start and stop turning (it runs on a few degrees after you let go),
+    as in the original; computer-run units no longer spin on the spot, a 'Mech with a leg shot off can't pivot standing
+    still, and nothing steers its legs in mid-air without jump jets.
+  - **Enemy behaviour:** tanks, hovercraft and aircraft use the original's single straight-at-you attack instead of the
+    'Mechs' flanking and dodging; Elementals use their own jumping table; skilled pilots' turning jumps last until they
+    land; manoeuvre timings as the original's; turrets aim at the original's slower rate and turn the short way round
+    when you circle behind them.
+  - **Collisions:** ramming and landing on another 'Mech do the original's damage (landing on a heavier 'Mech's head
+    twice what it was).
+- **DOS look, checked against the original frame by frame** (a new automated comparison of every GBL mission against
+  DOSBox, tools/audit/render_audit.py):
+  - **Mountains no longer spill over the ground at their foot:** standing close to a mountain, one of its faces could
+    cover the ground in front of you in a big dark wedge. The original cuts such polygons to the screen's range before
+    filling them; the port now does the same.
+  - **Water and ground faces passing under you no longer paint over cliffs:** looking up in a canyon (SACH), a
+    stream's surface running back under the 'Mech could be painted across the canyon wall in blue. Cutting such a
+    face where it passes the eye overflowed a sum the original works out in 64 bits; the port now does the same.
+  - **No more shading stripes at a mountain's foot:** where a face reaching past the screen's edge is cut, its shade
+    and texture at the cut are now worked out from the 3D position as the original does, not along the screen.
+  - **Autocannon and machine-gun tracers are visible:** the bullet's two dark tracer streaks were not drawn at all; they
+    are now drawn pixel for pixel as the original's line routine draws them.
+  - **The haze above the horizon** is drawn row for row as the original draws it (its height, its stepped colours and
+    their checkerboard - at 640x480 the checkerboard was the wrong way round), and missions without a haze setting
+    (ASAH, FOST, JEEH, NEWC, TIM_) have the original's default haze instead of none.
+  - **'Mechs keep their detail farther away at 1024x768 and above:** the distances where a 'Mech switches to a simpler
+    model now grow with the screen width as in the original (115 / 272 / 720 m at 1024 wide, not 640's 72 / 170 / 450 m).
+
 - **Legacy Windows build for XP-era PCs:** a second Windows zip (`windows-x86-legacy`): 32-bit, Windows XP SP3 and
   newer, a Pentium 4 / Athlon 64 (SSE2) and an OpenGL 1.2 card (GeForce 2, Radeon 7000, GMA 900, Voodoo 3 and newer).
   The same game and all three looks, drawn by a new OpenGL 1.2 fixed-function renderer (docs/RENDERER_GL12.md) on SDL2.

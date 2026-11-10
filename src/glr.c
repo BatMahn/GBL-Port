@@ -536,7 +536,7 @@ static int set_layer(glr *r, int li, const mech3d *m, const uint8_t palette[256]
         o = &pm->objects[0];
         for (k = 0; k < o->poly_count; k++)
             if (o->polys[k].n >= 3) cap += (size_t)(o->polys[k].n - 2) * 3 + (((o->polys[k].color >> 12) & 7) == 3 ? 6 : 0);
-            else if (o->polys[k].n == 1) cap += 6;   /* (a point: the DOS look's one pixel) */
+            else if (o->polys[k].n <= 2) cap += 6;   /* (a point: the DOS look's one pixel; a line: its box) */
     }
     buf = malloc((cap ? cap : 1) * FLOATS_PER_VERTEX * sizeof *buf);
     sph = malloc((cap ? cap : 1) * 4 * sizeof *sph);
@@ -610,6 +610,39 @@ static int set_layer(glr *r, int li, const mech3d *m, const uint8_t palette[256]
                         f[0] = wv[0]; f[1] = wv[1]; f[2] = -wv[2];
                         f[9] = (float)((q->color >> 4) & 0xff);
                         f[12] = (float)(65536 * (400 + a));
+                        if (dlp >= 0) tic[pos[GLR_SLOTS] * 4] = (float)(dlp + k + 1);
+                        for (c0 = 0; c0 < 3; c0++) { if (f[c0] < mn[c0]) mn[c0] = f[c0]; if (f[c0] > mx[c0]) mx[c0] = f[c0]; }
+                        pos[GLR_SLOTS]++;
+                        n++;
+                    }
+                    continue;
+                }
+                if (q->n == 2 && r->dos && !model->extended && !part->dos_pit && !part->shadow && ((q->color >> 12) & 7) == 0) {
+                    /* a line (two vertices, colour type 0: the BULLET pool object's two tracer streaks): GBL 0x3d780 sends a
+                     * listed two-corner polygon to 0x54fa9 (DAT_000a7974 = 1 in the data), its pixels in the paint word's low
+                     * byte - (c >> 4) & 0xff for type 0 (0x39570) - unshaded. Six vertices over its DOS points' pixel box
+                     * (65536 x (410 + corner)), corner 0 at pos, corner 1 in the normal's place; world.frag keeps 0x54fa9's
+                     * pixels; drawn only from the draw list (glr_dos_list). Other colour types' lines: not drawn (none in the
+                     * data) */
+                    float wv[2][3];
+                    int e2;
+                    if (pass == 0) { count[GLR_SLOTS] += 6; continue; }
+                    for (e2 = 0; e2 < 2; e2++) {
+                        const wtb_vertex *pv = &o->verts[q->idx[e2]];
+                        if (part->has_rot) { const float *R = part->rot; int c3; for (c3 = 0; c3 < 3; c3++) wv[e2][c3] = R[c3 * 3] * (float)pv->x + R[c3 * 3 + 1] * (float)pv->y + R[c3 * 3 + 2] * (float)pv->z + (float)part->pos[c3]; }
+                        else { float cy = cosf(part->yaw * 3.14159265f / 180.0f), sy = sinf(part->yaw * 3.14159265f / 180.0f);
+                               wv[e2][0] = cy * (float)pv->x + sy * (float)pv->z + (float)part->pos[0]; wv[e2][1] = (float)(pv->y + part->pos[1]); wv[e2][2] = -sy * (float)pv->x + cy * (float)pv->z + (float)part->pos[2]; }
+                    }
+                    pfirst = pos[GLR_SLOTS];
+                    for (a = 0; a < 6; a++) {
+                        float *f = buf + pos[GLR_SLOTS] * FLOATS_PER_VERTEX;
+                        memset(f, 0, FLOATS_PER_VERTEX * sizeof *f);
+                        memcpy(sph + pos[GLR_SLOTS] * 4, psph, sizeof psph);
+                        f[0] = wv[0][0]; f[1] = wv[0][1]; f[2] = -wv[0][2];
+                        f[3] = wv[1][0]; f[4] = wv[1][1]; f[5] = -wv[1][2];
+                        f[8] = 5.0f; f[9] = (float)((q->color >> 4) & 0xff);
+                        f[11] = (float)(pfirst + 1);
+                        f[12] = (float)(65536 * (410 + a));
                         if (dlp >= 0) tic[pos[GLR_SLOTS] * 4] = (float)(dlp + k + 1);
                         for (c0 = 0; c0 < 3; c0++) { if (f[c0] < mn[c0]) mn[c0] = f[c0]; if (f[c0] > mx[c0]) mx[c0] = f[c0]; }
                         pos[GLR_SLOTS]++;
@@ -2310,8 +2343,42 @@ void glr_draw_rect(glr *r, const glr_view *v, int x0, int y0, int w, int h)
             UV(r->F.u_view, ident, 16);
             UV(r->F.u_hz_r, Rv, 3); UV(r->F.u_hz_u, Uv, 3); UV(r->F.u_hz_f, Fv, 3);
             U4(r->F.u_hz_c, (float)x0 + (float)w * 0.5f, (float)y0 + (float)h * 0.5f, fy, fy);
-            r->F.u_hz_band = v->dos_band * (float)w / 320.0f;   /* 0x14950: the height in 320-wide pixels */
+            {   /* the band's rows: HRZM +4 in 320-wide pixels, scaled once at the screen's set-up as every 320 x 200 length
+                 * (GBL MW2.EXE 0x13470(0x136e0(b)): ((b << 16) / 319) x (width - 1), >> 16 rounded by bit 15) - 180 rows at 1024
+                 * for BASS's 56, not 179.2 */
+                const int64_t b16 = ((int64_t)lrintf(v->dos_band) << 16) / 319, bw = b16 * (int64_t)(w - 1);
+                r->F.u_hz_band = (float)((bw >> 16) + ((bw >> 15) & 1));
+            }
             U2(r->F.u_hz_x, (float)x0, (float)(x0 + w));
+            {   /* the line's rows at the window's left and right columns as the original computes them (GBL MW2.EXE 0x3ab4d:
+                 * cy - (-((x - cx) R.y / (zoom hw) + (F.y >> 16)) (zoom_y hw) / U.y), C divisions truncating toward zero;
+                 * the camera's 2.29 rows, zoom x half width as 0x3f9e0 / 0x3ef30 make them); other cameras: the GL line */
+                float Lg[2];
+                int c4;
+                for (c4 = 0; c4 < 2; c4++) {
+                    const float sxe = (float)(c4 ? x0 + w - 1 : x0) + 0.5f;
+                    Lg[c4] = ceilf((float)y0 + (float)h * 0.5f - fy * ((sxe - ((float)x0 + (float)w * 0.5f)) * Rv[1] / fy + Fv[1]) / (fabsf(Uv[1]) > 1e-6f ? Uv[1] : 1e-6f));
+                }
+                if (v->free_cam && w > 1 && h > 1) {
+                    int64_t rw[3][3];
+                    const uint32_t hw = (uint32_t)w >> 1;
+                    uint32_t zm = (uint32_t)(proj[0] * 65536.0f + 0.5f);
+                    int64_t v94, v98;
+                    if (zm > 0x100000u) zm = 0x100000u;
+                    if (zm < 0x8000u) zm = 0x8000u;
+                    v94 = (int64_t)(uint32_t)((uint64_t)zm * hw);
+                    v98 = (int64_t)(uint32_t)((((((uint64_t)zm * 0xffffu) >> 16) + ((((uint64_t)zm * 0xffffu) >> 15) & 1))) * hw);
+                    dos_cam_rows(v->look_yaw, v->look_pitch, v->look_roll, rw);
+                    if (rw[1][1] != 0 && v94 > 0) {
+                        for (c4 = 0; c4 < 2; c4++) {
+                            const int64_t xx = c4 ? w - 1 : 0, cxw = w >> 1, cyw = h >> 1;
+                            const int32_t t = (int32_t)(((xx - cxw) * rw[0][1]) / v94), q = (int32_t)(((int64_t)(-(t + (int32_t)(rw[2][1] >> 16))) * v98) / rw[1][1]);
+                            Lg[c4] = (float)(y0 + h) - (float)(cyw - q);
+                        }
+                    }
+                }
+                U2(r->F.u_hz_L, Lg[0], Lg[1]);
+            }
             r->F.u_hz_smooth = v->dos_sky_smooth;
             r->F.u_dos_tc = v->dos_tc && !v->wire;   /* gbl ENHANCED */
             r->F.u_hz_eye = eye[1] > 1.0f ? eye[1] : 1.0f;

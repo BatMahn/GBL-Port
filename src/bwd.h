@@ -184,6 +184,8 @@ typedef struct {
     int          music_track;     /* CD track, 0 if none */
     bwd_navpoint *navs;
     int          nav_count;
+    int          clim_m;   /* CLIM payload +4 (i16): GBL MW2.EXE 0x4f65c stores it in DAT_000a5be0; the positional
+                              sounds (0x41690) are heard only nearer than that many metres - 0 = no limit (BRAN / ZACK: 10) */
 } bwd_mission;
 
 /* Load a mission by scene name (e.g. "CYANSCN1"). External includes are read

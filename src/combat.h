@@ -9,7 +9,8 @@
  *     on a net gain (latched); at 80-100 a shutdown sequence starts and shuts the mech down 1086
  *     ticks later unless overridden, whatever the heat by then; restart at 65 or below 724 ticks after
  *     the shutdown; above 100 not overridden: destroyed 4525 ticks after the sequence began;
- *     overridden: each tick a 3-in-4000 chance of a cook-off - the DOS rule (0x24ec0): the first
+ *     overridden: GBL 0x252b0 rolls rand(500 x frame ticks) == 0 each frame (taken at 30 fps: 1 in 18000 a
+ *     tick, combat.c) for a cook-off - the DOS rule (0x24ec0): the first
  *     slot holding the first ammo bin's item takes a critical, destroyed if there is none (so
  *     within a roll or two); an invulnerable player skips all that
  *   - clock: 182 ticks per second
@@ -203,10 +204,11 @@ int  combat_auto_eject(void);
 int  combat_init(combat_unit *u, prj_archive *a, const char *loadout);
 /* The engine's loadout rating of a MEK (0x10041c80, stored at object +0x150 by 0x10041410). */
 uint16_t combat_mek_rating(const mek_def *d);
-/* the player's heat dissipation by difficulty (MW2DIF +5; engine 0x10041410): per tick x heat sinking, normal /
- * colder than -30 / hotter than 50: Easy 0.001068 / 0.002136 / 0.001068, Medium 0.000763 / 0.001526 / 0.000687,
- * Hard 0.000687 / 0.001030 / 0.000549 (AI 'Mechs: Medium's) */
+/* the player's heat dissipation by difficulty (MW2DIF +5; GBL 0x4dc98, combat_sink_rate): per tick x heat sinking,
+ * normal / -100 or colder / colder than -30 / hotter than 50 (x 1/65536): Easy 70 / 350 / 140 / 70, Medium 50 / 250 / 100 / 45,
+ * Hard 45 / 225 / 67 / 36 (AI 'Mechs: Medium's) */
 void combat_set_player_difficulty(combat_unit *u, int difficulty);
+int combat_sink_rate(int player, int difficulty, int temperature);   /* GBL 0x4dc98: per tick per sinking point, 16.16 */
 /* the loader's armour factor (engine 0x10041410 / DOS 0x4c760, by MW2DIF +5 difficulty 0 / 1 / 2): front and rear
  * armour (not structure) x 4 for the player; x 3 / 3 / 4 for a unit of alliance 0 (the player's side); x 1 / 3 / 4
  * for any other (enemy, neutral). combat_armor_mult gives the factor, combat_set_armor_mult applies it once */

@@ -130,6 +130,80 @@ uint dos_xstep(int dx, int cnt) {
   int sf = abs(rd) < 32768 ? dos_idiv(rd * 65536, cnt) : int(trunc(float(rd) * 65536.0 / float(cnt)));
   return uint(qd) * 65536u + uint(sf);
 }
+// The paint's 2D clip (GBL MW2.EXE 0x3dd70 -> 0x3de30): a listed polygon with a corner beyond -0x3fff..0x3ffe in x or y
+// is first cut to x <= 0x3fff, x >= -0x4000, y >= -0x4000, y <= 0x3fff (Sutherland-Hodgman, in that order) on its corner
+// records - camera x, y, z (Rc), screen x, y (Rs), two attributes (Ra: a Gouraud corner's baked index << 16, a texture's
+// u, v << 16). A cut point (0x3e3d0 / 0x3e5f0): its camera z where the camera edge meets the limit's screen line (0x3e330,
+// from the corner of the smaller z), the other screen coordinate linear in this one (from the corner of the larger), its
+// camera x, y back from the screen point and z, the attributes linear along the camera axis the edge runs farther in
+// (0x3e3d0 ties: y, 0x3e5f0 ties: x; no run: the mean) - imul / idiv throughout (64-bit products: the i64 helpers, 32-bit
+// parts only). Without it the chains of a near-clipped polygon whose corners project tens of thousands of pixels off the
+// window wrapped (JESS: a mountain's foot covered the ground in front); with the cut's shade linear in the screen
+// coordinate a near-clipped Gouraud face showed stripes (JESS mountain foot). gl12's copy (rb_gl12_world.c) was run
+// against 0x3de30 under unicorn: identical on 3000 random polygons
+uvec2 i64_neg(uvec2 a) { uint lo = ~a.y + 1u; return uvec2(~a.x + (lo == 0u ? 1u : 0u), lo); }
+uvec2 i64_mul(int a, int b) { uvec2 p = dos_mul64(uint(abs(a)), uint(abs(b))); return (a < 0) != (b < 0) ? i64_neg(p) : p; }
+uvec2 i64_sub(uvec2 a, uvec2 b) { return uvec2(a.x - b.x - (a.y < b.y ? 1u : 0u), a.y - b.y); }
+int i64_sar(uvec2 a, int s) { return s <= 0 ? int(a.y) : int((a.y >> uint(s)) | (a.x << uint(32 - s))); }   // the low 32 bits (shrd)
+int i64_div(uvec2 n, int d) {   // idiv: trunc(n / d)
+  if (d == 0) return 0;
+  bool ng = (n.x >> 31) != 0u; uvec2 P = ng ? i64_neg(n) : n; uint uc = uint(abs(d));
+  uint q = uint(clamp((float(P.x) * 4294967296.0 + float(P.y)) / float(uc), 0.0, 4294967040.0));
+  for (int it = 0; it < 8; it++) {
+    uvec2 Q = dos_mul64(q, uc);
+    if (!dos_le64(Q, P)) { q--; continue; }
+    uvec2 Q1 = dos_mul64(q + 1u, uc);
+    if (dos_le64(Q1, P)) { q++; continue; }
+    break;
+  }
+  return ng != (d < 0) ? -int(q) : int(q);
+}
+int dos_c2lin(int o, int a0, int b0, int a1, int b1) { return b0 <= a0 ? dos_muldiv(o - a0, b1 - a1, b0 - a0) + a1 : dos_muldiv(o - b0, a1 - b1, a0 - b0) + b1; }
+int dos_c2z(int a, int b, int L, bool isx, int za, int zb) {   // 0x3e330
+  int bx = a, dx = b - a, bz = za, dz = zb - za;
+  if (dz < 0) { dz = -dz; bx = b; dx = -dx; bz = zb; }
+  ivec2 c = ivec2(u_vp) / 2;
+  int k = isx ? L - c.x : c.y - L, t = i64_sar(i64_mul(k << 2, dz), isx ? u_dos_ps.x : u_dos_ps.y) - dx;
+  return t == 0 ? bz : i64_div(i64_sub(i64_mul(bx, dz), i64_mul(bz, dx)), t);
+}
+bool dos_c2out(ivec2 p, int e) { return e == 0 ? p.x > 16383 : e == 1 ? p.x < -16384 : e == 2 ? p.y < -16384 : p.y > 16383; }
+int dos_clip2d(inout ivec3 Rc[20], inout ivec2 Rs[20], inout ivec2 Ra[20], int m) {
+  bool big = false;
+  for (int i = 0; i < m; i++) big = big || Rs[i].x < -16383 || Rs[i].x > 16382 || Rs[i].y < -16383 || Rs[i].y > 16382;
+  if (!big) return m;
+  ivec2 c = ivec2(u_vp) / 2;
+  for (int e = 0; e < 4; e++) {
+    ivec3 Wc[20]; ivec2 Ws[20], Wa[20]; int n = 0;
+    int L = e == 0 || e == 3 ? 16383 : -16384; bool isx = e < 2;
+    for (int i = 0; i < m && i < 20; i++) {
+      int pi = (i + m - 1) % m;
+      bool po = dos_c2out(Rs[pi], e), qo = dos_c2out(Rs[i], e);
+      if (po != qo && n < 20) {   // the cut point: A the previous corner, B this one
+        ivec3 A = Rc[pi], B = Rc[i];
+        int z = dos_c2z(isx ? A.x : A.y, isx ? B.x : B.y, L, isx, A.z, B.z);
+        ivec2 sp = isx ? ivec2(L, dos_c2lin(L, Rs[pi].x, Rs[i].x, Rs[pi].y, Rs[i].y)) : ivec2(dos_c2lin(L, Rs[pi].y, Rs[i].y, Rs[pi].x, Rs[i].x), L);
+        ivec3 oc = ivec3(i64_sar(i64_mul((sp.x - c.x) << 2, z), u_dos_ps.x), i64_sar(i64_mul((c.y - sp.y) << 2, z), u_dos_ps.y), z);
+        int adx = abs(A.x - B.x), ady = abs(A.y - B.y);
+        int by = isx ? (adx > ady ? 0 : ady != 0 ? 1 : 2) : (ady > adx ? 1 : adx != 0 ? 0 : 2);
+        ivec2 oa;
+        for (int j = 0; j < 2; j++)
+          oa[j] = by == 2 ? (Ra[pi][j] + Ra[i][j]) >> 1 : by == 0 ? dos_c2lin(oc.x, A.x, B.x, Ra[pi][j], Ra[i][j]) : dos_c2lin(oc.y, A.y, B.y, Ra[pi][j], Ra[i][j]);
+        Wc[n] = oc; Ws[n] = sp; Wa[n] = oa; n++;
+      }
+      if (!qo && n < 20) { Wc[n] = Rc[i]; Ws[n] = Rs[i]; Wa[n] = Ra[i]; n++; }
+    }
+    m = n;
+    for (int i = 0; i < 20; i++) { Rc[i] = Wc[i]; Rs[i] = Ws[i]; Ra[i] = Wa[i]; }
+  }
+  return m;
+}
+// 0x3c610 type 4: a corner's baked index a (16.16) as the fill takes it - ramp + i (L + 1) / 16 when a >= 48, else a
+int dos_gsc(int a16, int L1) { return a16 < 0x300000 ? a16 : (a16 & int(0xfff00000u)) + ((((a16 >> 16) & 15) * L1) << 12); }
+// 0x3e8fe's attributes at the near plane: as x and y, from the corner of the smaller z (imul / idiv)
+ivec2 dos_nclip_a(ivec3 A, ivec3 B, ivec2 Aa, ivec2 Ba, int nr) {
+  if (B.z <= A.z) return A.z == B.z ? Aa : ivec2(dos_muldiv(Aa.x - Ba.x, nr - B.z, A.z - B.z) + Ba.x, dos_muldiv(Aa.y - Ba.y, nr - B.z, A.z - B.z) + Ba.y);
+  return ivec2(dos_muldiv(Ba.x - Aa.x, nr - A.z, B.z - A.z) + Aa.x, dos_muldiv(Ba.y - Aa.y, nr - A.z, B.z - A.z) + Aa.y);
+}
 ivec2 dos_gchain(ivec2 V[20], int C[20], int m, int top, int dir, int y, int ybot) {
   int a = top, b = (a + dir + m) % m, r0 = V[top].y;
   for (int g = 0; g < 20 && V[b].y == V[a].y && b != top; g++) { a = b; b = (a + dir + m) % m; }
@@ -162,7 +236,8 @@ ivec4 dos_gedge(ivec2 V[20], int m, int top, int dir, int y, int ybot) {
 ivec2 dos_ttex(bool persp) {
   int s = v_texsel - 1, n = 0, top = 0, ybot, nc = 0, nr = dos_nearof(s);
   ivec2 V[20]; vec3 A[20];   // (u or u q, v or v q, q)
-  ivec3 Cc[18]; vec2 Uc[18]; bool near = false;
+  ivec3 Cc[18]; ivec2 Uc[18]; bool near = false;
+  ivec3 Rc[20]; ivec2 Ra[20];   // the records' camera integers and u, v << 16 (0x3e80c: the vertex's texel << 16)
   for (int t = 0; t < 16; t++) {
     int b = s + 3 * t;
     for (int c = (t == 0 ? 0 : 1); c < 3; c++) {
@@ -171,24 +246,23 @@ ivec2 dos_ttex(bool persp) {
       vec3 w = vec3(dvtx(b2), dvtx(b2 + 1), dvtx(b2 + 2));
       vec4 q = u_mvp * vec4(w, 1.0);
       if (nc >= 18 || (nr == 0 && q.z + q.w < 0.0)) return ivec2(-1);
-      Cc[nc] = dos_cam(w); Uc[nc] = vec2(dvtx(b2 + 6), dvtx(b2 + 7)) * 65536.0;
+      Cc[nc] = dos_cam(w); Uc[nc] = ivec2(int(floor(dvtx(b2 + 6) + 0.5)) << 16, int(floor(dvtx(b2 + 7) + 0.5)) << 16);
       if (Cc[nc].z < max(nr, 1)) near = true;
       nc++;
     }
     if (((int(dvtx(b * 13 + 12) + 0.5) % 32 / 3) & 2) != 0) break;
   }
   if (near && nr == 0) return ivec2(-1);
-  // the corners in front, and on the near plane where an edge crosses it (0x3e8fe: x, y, u, v by the same share)
+  // the corners in front, and on the near plane where an edge crosses it (0x3e8fe: x, y, u, v, imul / idiv)
   for (int k = 0; k <= nc && nc >= 3; k++) {
     int cur = k % nc, prv = (k + nc - 1) % nc; float tt;
     bool bc = Cc[cur].z < max(nr, 1), bp = Cc[prv].z < max(nr, 1);
-    ivec3 cc; vec2 uu;
-    if (k > 0 && bc != bp && n < 18) { cc = dos_nclip(Cc[prv], Cc[cur], max(nr, 1), tt); uu = mix(Uc[prv], Uc[cur], tt);
-      V[n] = dos_camscr(cc); if (persp) { float qq = 1.0 / float(cc.z); A[n] = vec3(uu * qq, qq); } else A[n] = vec3(uu, 0.0); n++; }
-    if (k < nc && !bc && n < 18) { cc = Cc[cur]; uu = Uc[cur];
-      V[n] = dos_camscr(cc); if (persp) { float qq = 1.0 / float(cc.z); A[n] = vec3(uu * qq, qq); } else A[n] = vec3(uu, 0.0); n++; }
+    if (k > 0 && bc != bp && n < 18) { Rc[n] = dos_nclip(Cc[prv], Cc[cur], max(nr, 1), tt); Ra[n] = dos_nclip_a(Cc[prv], Cc[cur], Uc[prv], Uc[cur], max(nr, 1)); V[n] = dos_camscr(Rc[n]); n++; }
+    if (k < nc && !bc && n < 18) { Rc[n] = Cc[cur]; Ra[n] = Uc[cur]; V[n] = dos_camscr(Rc[n]); n++; }
   }
+  if (n >= 3) n = dos_clip2d(Rc, V, Ra, n);
   if (n < 3) return ivec2(-1);
+  for (int i = 0; i < n; i++) { if (persp) { float qq = 1.0 / float(max(Rc[i].z, 1)); A[i] = vec3(vec2(Ra[i]) * qq, qq); } else A[i] = vec3(vec2(Ra[i]), 0.0); }
   ybot = V[0].y;
   for (int i = 0; i < n; i++) { if (V[i].y <= V[top].y) top = i; ybot = max(ybot, V[i].y); }
   int y = clamp(int(u_vp.y) - 1 - (int(floor(glFragCoord.y)) - int(u_vpo.y)), V[top].y, ybot);
@@ -222,7 +296,8 @@ vec3 dos_gouraud(float lev) {
   int k = int(px), r = int(py);
   uint val = 0u; bool exact = false;
   if (v_texsel > 0) {
-    vec4 P[18]; float C[18]; int I[18]; ivec2 V[20]; int CF[20]; int n = 0, m = 0, s = v_texsel - 1, L1 = int(lev) + 1;
+    vec4 P[18]; float C[18]; int I[18], RA[18]; ivec2 V[20]; int CF[20]; int n = 0, m = 0, s = v_texsel - 1, L1 = int(lev) + 1;
+    ivec3 Rc[20]; ivec2 Ra[20]; bool cam = false;   // the records (dos_clip2d): camera integers, the baked index << 16
     bool trust = u_dos_exact != 0;   // (the vertex shader places the polygon at the DOS points: always the DOS spans)
     for (int t = 0; t < 16; t++) {
       int b = s + 3 * t;
@@ -230,20 +305,22 @@ vec3 dos_gouraud(float lev) {
       P[n] = dos_gclip(b + 1); C[n] = dos_gshade(b + 1, g); I[n] = b + 1; n++;
       if (((int(dvtx(b * 13 + 12) + 0.5) % 32 / 3) & 2) != 0) { P[n] = dos_gclip(b + 2); C[n] = dos_gshade(b + 2, g); I[n] = b + 2; n++; break; }
     }
+    // each corner's baked index a << 16 (the record's +0x14, 0x3e80c; dos_gshade's two parts again)
+    for (int i = 0; i < n; i++) RA[i] = int(floor(dvtx(I[i] * 13 + 7) + dvtx(I[i] * 13 + 6) + 0.5)) << 16;
     cmin = 1e9; cmax = -1e9;
     // a polygon reaching nearer than its near plane (the cockpit set's, or the view's): clipped in the camera's integers
-    // (world.vert)
+    // (world.vert); the cut's x, y and attributes as 0x3e8fe (imul / idiv from the corner of the smaller z)
     bool pitclip = false; int nr = dos_nearof(s);
     if (trust && nr > 0) {
       ivec3 Cc[18]; bool near = false;
       for (int i = 0; i < n; i++) { int b2 = I[i] * 13; Cc[i] = dos_cam(vec3(dvtx(b2), dvtx(b2 + 1), dvtx(b2 + 2))); if (Cc[i].z < nr) near = true; cmin = min(cmin, C[i]); cmax = max(cmax, C[i]); }
       if (near) {
-        pitclip = true; float tt;
+        pitclip = true; cam = true; float tt;
         for (int k = 0; k <= n; k++) {
           int cur = k % n, prv = (k + n - 1) % n;
           bool bc = Cc[cur].z < nr, bp = Cc[prv].z < nr;
-          if (k > 0 && bc != bp && m < 20) { ivec3 q = dos_nclip(Cc[prv], Cc[cur], nr, tt); V[m] = dos_camscr(q); CF[m] = int(floor(mix(C[prv], C[cur], tt) * 65536.0 + 0.5)); m++; }
-          if (k < n && !bc && m < 20) { V[m] = dos_camscr(Cc[cur]); CF[m] = int(floor(C[cur] * 65536.0 + 0.5)); m++; }
+          if (k > 0 && bc != bp && m < 20) { Rc[m] = dos_nclip(Cc[prv], Cc[cur], nr, tt); Ra[m] = dos_nclip_a(Cc[prv], Cc[cur], ivec2(RA[prv], 0), ivec2(RA[cur], 0), nr); V[m] = dos_camscr(Rc[m]); m++; }
+          if (k < n && !bc && m < 20) { Rc[m] = Cc[cur]; Ra[m] = ivec2(RA[cur], 0); V[m] = dos_camscr(Cc[cur]); m++; }
         }
       }
     }
@@ -260,9 +337,14 @@ vec3 dos_gouraud(float lev) {
 #endif
           V[m] = trust ? ds : dg; }
         else V[m] = trust ? dos_scr(vec3(dvtx(b2), dvtx(b2 + 1), dvtx(b2 + 2))) : dos_gvtx(a);
+        if (trust) Rc[m] = dos_cam(vec3(dvtx(b2), dvtx(b2 + 1), dvtx(b2 + 2)));
+        Ra[m] = ivec2(RA[i], 0);
         CF[m] = int(floor(C[i] * 65536.0 + 0.5)); m++; }
       if ((da >= 0.0) != (db >= 0.0)) { float t = da / (da - db); V[m] = dos_gvtx(mix(a, b, t)); CF[m] = int(floor(mix(C[i], C[(i + 1) % n], t) * 65536.0 + 0.5)); m++; }
     }
+    if (trust && m >= 3 && !pitclip && m == n) cam = true;   // (not near-clipped: every record from a corner)
+    if (cam && m >= 3) m = dos_clip2d(Rc, V, Ra, m);
+    if (cam) for (int i = 0; i < m; i++) CF[i] = dos_gsc(Ra[i].x, L1);
     if (m >= 3) {
       int top = 0, ybot = V[0].y;
       for (int i = 0; i < m; i++) { if (V[i].y <= V[top].y) top = i; ybot = max(ybot, V[i].y); }
@@ -315,6 +397,25 @@ void main() {
     float sx = glFragCoord.x, sy = glFragCoord.y;
 // GL y up: sy grows upward
     vec3 ray = u_hz_r * (sx - u_hz_c.x) / u_hz_c.z + u_hz_u * (sy - u_hz_c.y) / u_hz_c.w + u_hz_f;
+// the DOS band's own rows (GBL MW2.EXE 0x3ca90 -> 0x57978 / 0x59e77; DOSBox BASS / CATH 640 x 480 and 1024 x 768):
+// rows r = 0 (the quad's top) .. band (the line's own row L: 0x3ab4d's integer at the window's left and right columns,
+// u_hz_L, its offset from the centre row truncated toward zero - the band one row lower when the line is above the centre;
+// between the ends the rounded straight line, ASSUMED for a rolled view - the filler's chains not emulated),
+// colour C = (0xE0 << 16) + 0x8000 + r ((14 << 16) / band), each row's pixels in pairs (C + 0x8000) >> 16 / C >> 16 -
+// the first where (row + col) is even, row counted from the quad's top row (the higher line end's, minus band; the
+// filler's pair swaps every row, from the polygon's top), col from the window's left; at r = band C can reach 238.5: 0xEE / 0xEF
+// (the ground's colour), as DOS shows at 640 x 480. band = the integer rows (glr.c). dos_shading=smooth and the
+// ENHANCED look keep the blended band below
+    if (u_hz_band > 0.0 && abs(u_hz_u.y) > 1e-6 && u_hz_smooth == 0 && u_dos_tc == 0) {
+      float G = floor(mix(u_hz_L.x, u_hz_L.y, (sx - 0.5 - u_hz_x.x) / max(u_hz_x.y - 1.0 - u_hz_x.x, 1.0)) + 0.5);
+      int r = int(u_hz_band) - int(floor(sy - G + 1.0));
+      if (r >= 0 && r <= int(u_hz_band)) {
+        int C = (224 << 16) + 32768 + r * int(floor(917504.0 / u_hz_band)), col = int(floor(sx - u_hz_x.x));
+        int rowq = int(u_hz_band) + int(floor(max(u_hz_L.x, u_hz_L.y) - sy - 0.5));
+        o_color = vec4(dos_colour(float(((rowq + col) & 1) == 0 ? (C + 32768) >> 16 : C >> 16)), 1.0);
+        return;
+      }
+    }
     if (ray.y < 0.0) { vec3 gc = dos_colour(239.0);
 // ENHANCED: the ground fill fogged at the depth where its view ray meets the ground plane
       if (u_dos_tc != 0 && u_tifog.x > 0.5) { float gz = u_hz_eye / max(-ray.y, 1e-6);
@@ -361,6 +462,14 @@ void main() {
 // the flat colour types 0 / 1 (0x3c610 -> 0x5a900) and the affine textured type 7 (0x382f0 -> 0x5ccc9): the same
 // exact spans as the Gouraud fill (dos_gouraud's discards; its shade unused) - the rows from the top vertex's to the
 // bottom one's and each from the left chain's x >> 16 to the right one's, both inclusive, chains from x + 0.5
+// kind 5: a line (a two-corner polygon, colour type 0) - 0x54fa9's pixels in the palette colour (world.vert: its box)
+    if (kind == 5) {
+      int s = v_texsel - 1; ivec2 la, lb;
+      if (s < 0 || !dos_line_ends(vec3(dvtx(s * 13), dvtx(s * 13 + 1), dvtx(s * 13 + 2)), vec3(dvtx(s * 13 + 3), dvtx(s * 13 + 4), dvtx(s * 13 + 5)), la, lb)) discard;
+      ivec2 pp = ivec2(int(floor(glFragCoord.x)) - int(u_vpo.x), int(u_vp.y) - 1 - (int(floor(glFragCoord.y)) - int(u_vpo.y)));
+      if (!dos_line_on(pp, la, lb)) discard;
+      o_color = u_dos_tc != 0 ? dos_tc_out(dos_colour(base)) : vec4(dos_colour(base), 1.0); return;
+    }
     if (kind <= 2 && v_texsel > 0 && u_dos_exact != 0) dos_gouraud(0.0);
     if (kind == 0) { o_color = u_dos_tc != 0 ? dos_tc_out(dos_colour(base)) : vec4(dos_colour(base), 1.0); return; }
 // kind 4: a type 3 billboard - its texel indices as they are (0x38ae3 returns a 0x3000 word unshaded)

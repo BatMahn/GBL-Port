@@ -71,6 +71,7 @@ void ai_init(ai_mind *m, int order_prog)
     m->sweep_dir = 1;
     m->man = m->prev_man = m->forced_man = -1;
     m->flank_slot = -1;
+    m->mech_rules = 1;   /* a mech until ai_set_class says otherwise */
     m->tgt = m->event_who = m->post_who = -2;
 }
 
@@ -224,11 +225,25 @@ int ai_gbl_profile(ai_mind *m, int gps_skill, int *skill, int *level, int *group
     if (k < 0 || k > 3) return 0;
     m->man_table = GBL_MAN[k];
     m->man_rows = 13;
+    m->man_first = 7;
     m->engage_range = GBL_PROF[k][2] ? (float)GBL_PROF[k][2] : 15000.0f;   /* 0x2c970: 0 -> 15000 */
     if (skill) *skill = GBL_PROF[k][0];
     if (level) *level = GBL_PROF[k][1];
     if (group_fire) *group_fire = GBL_PROF[k][3];
     return 1;
+}
+
+/* GBL 0x2c970: a unit without a profile's record takes &0xa6e38[class - 1] - class 1 (mechs) the mech table 0xa6884 (the
+ * port's MAN_TABLE), every other class (vehicles, aircraft, hovercraft...) ONE row {0, 1, 0} (0xa696e): manoeuvre 0 only -
+ * and a unit (of any class) whose controller +0xe8 (the MEK tonnage) is 1, the Elementals (ELE00STD / ELE00SPC), the jumper table 0xa6e78
+ * -> 0xa69a4 (= profile 100's). The port had given every unit the mech table */
+static const short CLASS_MAN[1][9] = { {0, 1, 0, 0, 0, 0, 0, 0, 0} };
+void ai_set_class(ai_mind *m, int unit_class, int tons)
+{
+    m->mech_rules = unit_class == 1;
+    if (m->man_table) return;   /* a profile's record (0x217b0) first */
+    if (tons == 1) { m->man_table = GBL_MAN[0]; m->man_rows = 13; m->man_first = 7; }   /* any class (0x2cb3d) */
+    else if (unit_class != 1) { m->man_table = CLASS_MAN; m->man_rows = 1; m->man_first = 0; }
 }
 
 /* 0x10020a30(n): jets with fuel and heat below n */
@@ -239,9 +254,11 @@ static int choose_manoeuvre(ai_mind *m, const ai_view *v)
 {
     int tries, level_lt4 = v->pilot_level < 4;   /* +0x19e bit 2 (0x1001ee30) */
     if (m->forced_man != -1) { int f = m->forced_man; m->forced_man = -1; return f; }
-    if (v->contact) return 10;                                                    /* 0x10020e00 */
-    /* jump pre-check: heat < 20, level < 4, the target above (0x10020090: > 8 m), reachable (0x100207b0) */
-    if (jets_ok(v, 20.0f) && level_lt4 && v->enemy_height > v->height + 800.0f) {
+    if (m->mech_rules && v->contact) return 10;                                   /* 0x10020e00; GBL 0x2cb80: class 1 only */
+    if (m->mech_rules && v->target_not_unit) return 0;                            /* GBL 0x2cc41: +0x14a & 0x200 clear -> 0 */
+    /* jump pre-check (class 1 only): heat < 20, level < 4, the target above (0x10020090: > 8 m), reachable (0x100207b0; GBL
+     * 0x2dd50 / 0x2e450: the line to the target from the unit's own height blocked, from the target's height clear) */
+    if (m->mech_rules && jets_ok(v, 20.0f) && level_lt4 && v->enemy_height > v->height + 800.0f && !v->jump_blocked) {
         if (m->prev_man == 0) return 9;
         return ai_rand(m, 2) != 0 ? 8 : 0;
     }
@@ -249,7 +266,7 @@ static int choose_manoeuvre(ai_mind *m, const ai_view *v)
         int pick;
         if (m->man_table) {   /* GBL 0x2cb80: the unit's record (+0x1ac) - the first row matching wins (the base search took the last) */
             const short (*T)[9] = m->man_table;
-            if (m->prev_man < 0) pick = T[ai_rand(m, (unsigned)(m->man_rows - 7))][0];
+            if (m->prev_man < 0) pick = T[ai_rand(m, (unsigned)(m->man_rows - m->man_first))][0];
             else {
                 int row = -1, r;
                 for (r = 0; r < m->man_rows; r++) if (T[r][0] == m->prev_man) { row = r; break; }
@@ -286,12 +303,13 @@ static void start_manoeuvre(ai_mind *m, const ai_view *v, int man)
     m->reverse = 0;
     m->jet_side = 0;
     m->jet_back = 0;
-    m->man_limit = 9050.0f;                                                     /* 0x235a ticks (0x1001f290) */
+    m->man_limit = 9100.0f;   /* GBL 0x2ced0: now + 0x238c (the 3Dfx DLL's 0x235a at its 181 Hz clock); the tick constants below are
+                               * GBL's (182 Hz) where the DLL's were scaled to 181 */
     switch (man) {
-    case 0: m->man_limit = (float)(ai_rand(m, 5) * 181u + 1448u); break;      /* rand(5) x 181 + 1448 */
-    case 1: m->man_limit = 3620.0f; m->flank_face = 0; break;
+    case 0: m->man_limit = (float)((ai_rand(m, 5) + 8u) * 182u); break;       /* (rand(5) + 8) x 0xb6 */
+    case 1: m->man_limit = 3640.0f; m->flank_face = 0; break;                  /* 0xe38 */
     case 3: m->weave = ai_rand(m, 2) ? 1.0f : -1.0f; m->weave_ticks = 0; break;
-    case 4: m->man_limit = 905.0f; m->throttle = 0; m->turn = 0; break;      /* 0x389 */
+    case 4: m->man_limit = 910.0f; m->throttle = 0; m->turn = 0; break;      /* 0x38e */
     case 5: m->last_dist = v->enemy_dist; break;                                /* 0x1001f290 case 5 -> 0x100208f0: +0x19a = distance */
     case 9: m->turn = 0; break;                                                 /* input +0xc = 0 */
     case 7: {   /* 0x1001f290 case 7 -> 0x1001f630: a point 100 m from the target in a 16-way slot round its facing:
@@ -302,14 +320,33 @@ static void start_manoeuvre(ai_mind *m, const ai_view *v, int man)
         m->flank_z = v->enemy_z + cosf(a) * 10000.0f;
         break;
     }
-    case 8: m->reverse = 1; m->man_limit = (float)(ai_rand(m, 11) * 181u + 1810u); break;   /* rand(11) x 181 + 0x712 */
-    case 10: m->reverse = 1; m->man_limit = (m->prev_man == 10 && v->contact) ? 724.0f : 1448.0f; break;   /* 0x2d4 / 0x5a8 */
+    case 8: m->reverse = 1; m->man_limit = (float)((ai_rand(m, 11) + 10u) * 182u); break;   /* (rand(11) + 10) x 0xb6 */
+    case 10:   /* GBL 0x2cfd3: in contact (+0xa8) after a 10, the contact not a unit (object +0x7c == -1): 0x2d8 ticks and the
+                * reverse flag +0x2f NOT set (the last 10 cleared it, 0x2d1b0); else reverse for 0x5b0 */
+        if (m->prev_man == 10 && v->contact && !v->contact_unit) m->man_limit = 728.0f;
+        else { m->reverse = 1; m->man_limit = 1456.0f; }
+        break;
     case 11:   /* GBL 0x2ced0 case 0xb: 0x16c ticks; +0x17e 0 or 2 -> the left jet (+0x1e), else the forward jet (+0x20) */
         m->man_limit = 364.0f; m->turn = 0;
         if (m->dodge_fwd) { m->jet_side = 0; m->jet_forward = 1; } else m->jet_side = -1;
         break;
-    case 12: m->man_limit = 18100.0f; break;                                    /* 0x46b4 */
+    case 12: m->man_limit = 18200.0f; break;                                    /* 0x4718 */
     default: break;
+    }
+}
+
+/* GBL 0x24a30: every 0x40 ticks (0x20 with the throttle input non-zero) input +4 += 5 degrees the way +0x17e says (0: -5),
+ * which turns round once |+4| > 45; the due time +0x176 is first pulled in to now + the interval. sweep_ticks = the ticks
+ * still to wait (+0x176 - now) */
+static void patrol_sweep(ai_mind *m, float thr, float ticks)
+{
+    float iv = thr != 0.0f ? 32.0f : 64.0f;
+    m->sweep_ticks -= ticks;
+    if (m->sweep_ticks > iv) m->sweep_ticks = iv;
+    if (m->sweep_ticks <= 0.0f) {
+        m->torso += 5.0f * (float)m->sweep_dir;
+        if (fabsf(m->torso) > 45.0f) m->sweep_dir = -m->sweep_dir;
+        m->sweep_ticks = iv;
     }
 }
 
@@ -373,7 +410,7 @@ static void attack_manoeuvre(ai_mind *m, const ai_view *v, float ticks, float *R
                 if (v->flank_slots) v->flank_slots[slot]++;
                 m->flank_slot = slot;
             }
-            m->flank_retarget = 543.0f;
+            m->flank_retarget = 546.0f;   /* GBL 0x2c639: + 0x222 */
             {   /* the 16-way table 0x1024cd70 at slot x 2: (x, z) = 15000 / (f_x, f_z) in the target's frame (0 -> 0):
                  * the eight directions on a square - the diagonals 212 m out, the sides 150 m */
                 static const float FX[8] = {0, 1, 1, 1, 0, -1, -1, -1}, FZ[8] = {1, 1, 0, -1, -1, -1, 0, 1};
@@ -396,13 +433,13 @@ static void attack_manoeuvre(ai_mind *m, const ai_view *v, float ticks, float *R
         break;
     }
     case 2: case 3: {   /* 0x1001faf0: done within max(1, closing cm/tick x 0.12987) x 80 m (0x100208f0) */
-        float k = closing(m, d, ticks) * 0.12987013f;
+        float k = closing(m, d, ticks) * (65536.0f / 500000.0f);   /* GBL 0x2d6b0: (closing << 16) / 500000 (the DLL 1 / 7.7) */
         *R = 5500.0f;
         if (k < 1.0f) k = 1.0f;
         if (d <= k * 8000.0f) done = 1;
         if (m->man == 3) {
             m->weave_ticks += ticks;
-            if (m->weave_ticks >= 543.0f) { m->weave_ticks = 0; m->weave = -m->weave; }
+            if (m->weave_ticks >= 546.0f) { m->weave_ticks = 0; m->weave = -m->weave; }   /* GBL 0x2c727: + 0x222 */
         }
         break;
     }
@@ -414,12 +451,17 @@ static void attack_manoeuvre(ai_mind *m, const ai_view *v, float ticks, float *R
     case 9: {   /* 0x1001fcc0 */
         int above = v->enemy_height > v->height + 800.0f;
         *R = 10000.0f;
+        /* GBL 0x2d8c0: phase 0 jets while usable (heat < 40) and 0x2dd50 holds - the target 8 m above AND the line to it from
+         * the unit's own height blocked (the port: the height alone); phase 1 KEEPS the jets on for 0xb6 ticks (now <=
+         * +0x17a), steering at the target (0x22ce0) - the port had them off; phase 2 ends on the ground (0x2ddc0) */
         if (m->man_phase == 0) {
-            if (v->can_jump && v->heat < 40.0f && above) { m->jet = 1; break; }          /* 0x10020a30(40) */
+            if (v->can_jump && v->heat < 40.0f && above && v->los_blocked_low) { m->jet = 1; break; }   /* 0x10020a30(40) */
             m->man_phase = 1; m->man_ticks = 0;
             if (v->can_jump && v->heat < 20.0f && ai_rand(m, 4) == 0) m->forced_man = 5;  /* 0x10020a30(20) */
+            m->jet = 1;   /* (now <= +0x17a = now + 0xb6) */
         } else if (m->man_phase == 1) {
-            if (m->man_ticks >= 181.0f) m->man_phase = 2;
+            if (m->man_ticks > 182.0f) m->man_phase = 2;   /* + 0xb6 */
+            else m->jet = 1;
         } else if (v->height <= 0) {
             done = 1;
         }
@@ -598,16 +640,20 @@ void ai_step(const ai_library *lib, ai_mind *m, const ai_view *v, float dt)
             want = v->enemy_bearing; dist = v->enemy_dist;
             attack_manoeuvre(m, v, ticks, &R, &dist);
             if (m->state != AI_ATTACK) { moving = 0; break; }   /* fled (forced -2) */
-            /* 0x10020950: skilled pilots jump to turn when the target is outside the torso arc */
-            if (v->pilot_level < 4 && m->man != 10 && m->man != 4 && m->man != 5 && m->man != 9 && m->man != 11) {
-                /* every tick: the target outside the torso arc -> jets on if heat < 20 with fuel (0x10020a30(0x14));
-                 * back inside -> off (the jump manoeuvres excepted, +0x196). Fuel is not re-checked while on. */
+            /* GBL 0x2e600: skilled pilots (level <= 3, +0x19c bit 0) jump to turn when the target is outside the torso arc -
+             * called by the handlers of manoeuvres 0, 1, 2, 3, 7, 8 and 12 (0x2c550's table; 10 excluded inside). The jets
+             * input +0x1d is switched only with the unit standing (object +0x78): outside the arc, on with fuel >= 6 ticks,
+             * jets and heat < 20; back inside, off - so once in the air the jets stay on until it lands (or the manoeuvre
+             * ends, 0x2d1b0). The port had switched them on and off every tick wherever the unit was (short hops) and from
+             * manoeuvre 6 too */
+            if (v->pilot_level < 4 && m->man >= 0 && (m->man <= 3 || m->man == 7 || m->man == 8 || m->man == 12)) {
                 float off = fabsf(wrap180(v->enemy_bearing - v->heading));
                 float lim = v->twist_limit > 0 ? v->twist_limit : 90.0f;
-                if (lim < 360.0f && off >= lim) { if (!m->turn_jet && jets_ok(v, 20.0f)) m->turn_jet = 1; }
-                else m->turn_jet = 0;
-                if (m->turn_jet) m->jet = 1;
+                int standing = v->height <= 1.0f;
+                if (lim < 360.0f && off >= lim) { if (!m->turn_jet && jets_ok(v, 20.0f) && standing) m->turn_jet = 1; }
+                else if (standing) m->turn_jet = 0;
             }
+            if (m->turn_jet) m->jet = 1;
             if (dist < 0) {   /* manoeuvres 1 / 7: steer to the slot point */
                 float fx = m->flank_x - v->self_x, fz = m->flank_z - v->self_z;
                 dist = sqrtf(fx * fx + fz * fz);
@@ -628,6 +674,12 @@ void ai_step(const ai_library *lib, ai_mind *m, const ai_view *v, float dt)
         default:
             moving = 0;
         }
+        /* patrol / scouting torso sweep (GBL 0x24a30, called first by the state handler 0x22800 for states 5-8 - moving
+         * or not, with the throttle input of the last tick - sweeps only a class 1 unit's torso: unit +0 == 1, a tank's
+         * turret or a turret stays put). The port swept only while moving, on accumulated ticks (stepping at once when the
+         * interval shortened) */
+        if (m->state >= AI_FOLLOW && m->state <= AI_GODIRECT && m->mech_rules) patrol_sweep(m, m->throttle, ticks);
+        else m->torso = 0;
         /* the torso: aimed at the target while engaged (0x100231a0 writes input +4 = the bearing off the legs,
          * +0 = -elevation, 0x100135a0 / 0x100135d0: clamped to +-180 / +-60); patrol sweep otherwise (0x10014ff0) */
         engaged = (m->state == AI_TARGET || m->state == AI_ATTACK || (m->state == AI_GODIRECT && m->target)) && v->has_enemy;
@@ -645,7 +697,7 @@ void ai_step(const ai_library *lib, ai_mind *m, const ai_view *v, float dt)
                 if (fabsf(aim - m->twist) < 10.0f && (v->enemy_is_player || v->no_fire_roll || ai_rand(m, 3) == 0) && r == 0) m->wants_fire = 1;
             }
         } else {
-            m->twist_demand = (m->state >= AI_FOLLOW && m->state <= AI_GODIRECT) ? m->torso : 0;
+            m->twist_demand = (m->state >= AI_FOLLOW && m->state <= AI_GODIRECT && m->mech_rules) ? m->torso : 0;
             m->pitch_demand = 0;
         }
         if (!moving) { m->throttle = 0; m->turn = 0; m->reverse = 0; return; }
@@ -686,16 +738,5 @@ void ai_step(const ai_library *lib, ai_mind *m, const ai_view *v, float dt)
         if (m->state == AI_ATTACK && (m->man == 0 || m->man == 1) && thr <= 0 && fabsf(err) > 5.0f) thr = 102.0f / 1024.0f;
         if (m->state == AI_FLEE) thr = 1.0f;
         m->throttle = thr;
-        /* patrol / scouting torso sweep (0x10014ff0) */
-        if (m->state >= AI_FOLLOW && m->state <= AI_GODIRECT) {
-            m->sweep_ticks += ticks;
-            while (m->sweep_ticks >= (thr > 0 ? 32.0f : 64.0f)) {
-                m->sweep_ticks -= (thr > 0 ? 32.0f : 64.0f);
-                m->torso += 5.0f * (float)m->sweep_dir;
-                if (fabsf(m->torso) > 45.0f) m->sweep_dir = -m->sweep_dir;
-            }
-        } else {
-            m->torso = 0;
-        }
     }
 }

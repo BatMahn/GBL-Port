@@ -105,17 +105,21 @@ int mtbl_logic_init(mtbl_logic *ml, const uint8_t *scene, size_t len)
     }
     free(c);
     for (t = 0; t < ml->table_count; t++) {
-        ml->current[t] = -1;
+        ml->current[t] = 0;   /* GBL 0x4dff0: DAT_000e5940[table] = 0 at load (the first frame picks the real one) */
+        ml->result_time[t] = -1;
         for (i = 0; i < MTBL_MAX_NODES; i++) {
             ml->started[t][i] = -1;
             ml->ended[t][i] = -1;
             ml->shown[t][i] = ml->tables[t].nodes[i].visible;
         }
+        ml->started[t][0] = 0;   /* 0x16050 at the mission start: node 0 armed at the clock (0) */
     }
     return 0;
 }
 
-/* engine 0x1000a110 / 0x1000a080 */
+/* GBL 0x16740 (with 0x166a0 for each item): a finished node (5 / 6) is not ready; a start node always is; else its
+ * items in order until the first unused one - "any": ready at the first that holds, "all": not ready at the first that
+ * fails ('C' the node finished, 'S' succeeded, 'F' failed - a node in state 8 has not failed yet) */
 static int node_ready(const mtbl_logic *ml, int t, int i)
 {
     const mtbl_node *n = &ml->tables[t].nodes[i];
@@ -134,150 +138,144 @@ static int node_ready(const mtbl_logic *ml, int t, int i)
     return n->require_all;
 }
 
+/* a node's (or a forced node's) new state with its end time and its radio message (GBL 0x164f0 - the player's table
+ * only, once per node index: msim's finished callback); silent: the original sets the state without the message call */
 static void finish_s(mtbl_logic *ml, int t, int i, int ok, const mtbl_world *w, int silent)
 {
     ml->state[t][i] = ok ? MTBL_OK : MTBL_FAILED;
     ml->ended[t][i] = ml->now;
-    if (ml->current[t] == i) ml->current[t] = -1;   /* re-picked at the end of the step */
     ml->silent = silent;
     if (w && w->finished) w->finished(w->user, t, i, ok);
     ml->silent = 0;
 }
-static void finish(mtbl_logic *ml, int t, int i, int ok, const mtbl_world *w) { finish_s(ml, t, i, ok, w, 0); }
 
-static void pick_current(mtbl_logic *ml)
+static int table_ok(const mtbl_logic *ml, int t) { return t >= 0 && t < ml->table_count; }
+static int node_ok(const mtbl_logic *ml, int t, int i) { return table_ok(ml, t) && i >= 0 && i < MTBL_MAX_NODES && i <= ml->tables[t].node_count; }
+
+/* GBL 0x16810: one node, once a frame */
+static void run_node(mtbl_logic *ml, int t, int i, const mtbl_world *w)
 {
-    /* engine 0x1000a9b0: the first node (table order) that is ready and is not a table-control
-     * kind (kind & 0xffff0000 == 0) is the group's current order */
+    const mtbl_node *n = &ml->tables[t].nodes[i];
+    const char *tg = (n->target[0] && strcmp(n->target, "NULL") != 0) ? n->target : NULL;
+    int32_t now_s = ml->now / 1000;
+    int elapsed, test = 1, all_lost = 0, cnt = 0, nok = 0, st = MTBL_ACTIVE, msg = 0, j;
+    if (!node_ready(ml, t, i)) return;
+    if (ml->started[t][i] == -1) {   /* armed: the time it first ran (+0x4f; a RESET keeps it, a RE-ARM clears it) */
+        ml->started[t][i] = ml->now;
+        if (w && w->started) w->started(w->user, t, i);
+    }
+    /* the condition: every attached target passes its kind's test; NO target attached passes (the flag starts true) */
+    switch (n->kind) {
+    case MTBL_K_DESTROY1: case MTBL_K_DESTROY2: case MTBL_K_SCAN: case MTBL_K_ALLMAIN: case MTBL_K_REACH: case MTBL_K_LEAVE:
+    case MTBL_K_PROTECT:
+        cnt = w && w->targets ? w->targets(w->user, t, i, n->kind, tg, &nok) : 0;
+        test = n->kind == MTBL_K_LEAVE ? nok == 0 : n->kind == MTBL_K_PROTECT ? nok == 0 : nok >= cnt;
+        all_lost = n->kind == MTBL_K_PROTECT && nok >= cnt;   /* protect: test = none lost, all_lost = every one */
+        break;
+    default: break;
+    }
+    if (n->kind == MTBL_K_REACH && t != 0 && ml->current[t] != i) test = 0;   /* a group's reach: its current node only */
+    if (n->kind == MTBL_K_ALLMAIN)   /* and every OTHER main ('M', node +0x5d) node of the table succeeded */
+        for (j = 0; j < ml->tables[t].node_count && test; j++)
+            if (j != i && ml->tables[t].nodes[j].objective == 'M' && ml->state[t][j] != MTBL_OK) test = 0;
+    /* the timer: delay < now - armed, whole seconds (clock / 182); a negative delay never passes */
+    elapsed = (int32_t)n->delay >= 0 && ml->started[t][i] >= 0 && (int32_t)n->delay < now_s - ml->started[t][i] / 1000;
+    switch (n->kind) {
+    case MTBL_K_TIMER: case MTBL_K_ORDER: case MTBL_K_HOLD: case MTBL_K_TIMER2:
+        if (elapsed) { st = MTBL_OK; msg = 1; }
+        break;
+    case MTBL_K_PROTECT:
+        /* before the timer: a target lost fails it - on the player's table at once (6, with the failure message), on
+         * another table state 8 (unfinished, re-tested; the star's result counts it failed) until ALL are lost (6, no
+         * second message; none attached: 6 at once, silently). The timer passed: none lost -> 5 with the message, any
+         * lost -> 6 without */
+        if (elapsed) { if (test) { st = MTBL_OK; msg = 1; } else st = MTBL_FAILED; }
+        else {
+            if (!test) { st = t == 0 ? MTBL_FAILED : MTBL_PENDING; msg = 1; }
+            if (all_lost) st = MTBL_FAILED;
+        }
+        break;
+    case MTBL_K_STAR_WIN: case MTBL_K_STAR_LOSE:
+        /* the star's result outright (no "already set" test) with its outcome line (0x165e0); this node succeeds */
+        if (!table_ok(ml, n->other_table)) break;   /* out of range: stays pending */
+        ml->result[n->other_table] = n->kind == MTBL_K_STAR_WIN ? 2 : 3;
+        ml->result_time[n->other_table] = ml->now;
+        st = MTBL_OK; msg = 1;
+        break;
+    case MTBL_K_TOGGLE:   /* flips node (other_table, other_node)'s shown flag (+0x5c) */
+        if (!node_ok(ml, n->other_table, n->other_node)) break;
+        ml->shown[n->other_table][n->other_node] = !ml->shown[n->other_table][n->other_node];
+        st = MTBL_OK; msg = 1;
+        break;
+    case MTBL_K_FAIL: case MTBL_K_SUCCEED: {
+        /* out of range, or the target finished (5 / 6): this node stays pending; else the target's state and end time,
+         * its message (0x164f0 for ITS table), then this node succeeds with its own */
+        int ot = n->other_table, on = n->other_node;
+        if (!node_ok(ml, ot, on) || ml->state[ot][on] == MTBL_OK || ml->state[ot][on] == MTBL_FAILED) break;
+        finish_s(ml, ot, on, n->kind == MTBL_K_SUCCEED, w, 0);
+        st = MTBL_OK; msg = 1;
+        break;
+    }
+    case MTBL_K_RESET:
+        /* every node of the table back to unfinished (3) with no end time - their armed times kept, the announce flags
+         * kept - the star's result and its time cleared; this node succeeds */
+        if (!table_ok(ml, n->other_table)) break;
+        for (j = 0; j < ml->tables[n->other_table].node_count; j++) {
+            ml->state[n->other_table][j] = MTBL_ACTIVE;
+            ml->ended[n->other_table][j] = -1;
+        }
+        ml->result[n->other_table] = 0;
+        ml->result_time[n->other_table] = -1;
+        st = MTBL_OK; msg = 1;
+        break;
+    case MTBL_K_REARM:
+        /* node (other_table, other_node) back to unfinished (3) with no armed / end time (its announce flag kept) */
+        if (!node_ok(ml, n->other_table, n->other_node)) break;
+        ml->state[n->other_table][n->other_node] = MTBL_ACTIVE;
+        ml->started[n->other_table][n->other_node] = -1;
+        ml->ended[n->other_table][n->other_node] = -1;
+        st = MTBL_OK; msg = 1;
+        break;
+    default:
+        /* every other kind (destroy, visit, finish, reach, leave, start, instant, unknown): the condition -> 5, else the
+         * timer -> 6 (timed out) */
+        if (test) { st = MTBL_OK; msg = 1; }
+        else if (elapsed) { st = MTBL_FAILED; msg = 1; }
+        break;
+    }
+    if (st == MTBL_OK || st == MTBL_FAILED) { finish_s(ml, t, i, st == MTBL_OK, w, !msg); return; }
+    ml->state[t][i] = (uint8_t)st;   /* 3 (from 0 / 3), or 8 */
+    if (st != MTBL_ACTIVE) ml->ended[t][i] = ml->now;   /* 8: the end time, each frame */
+}
+
+/* GBL 0x170a0, once a frame: each table in order - its nodes in order (each once), then its star result, then its
+ * current order node */
+void mtbl_logic_step(mtbl_logic *ml, int32_t now, const mtbl_world *w)
+{
     int t, i;
+    ml->now = now;
     for (t = 0; t < ml->table_count; t++) {
+        for (i = 0; i < ml->tables[t].node_count; i++) run_node(ml, t, i, w);
+        if (!ml->result[t]) {
+            /* every main ('M') node succeeded (none: at once) -> 2; any failed (6, or 8 on another table) -> 3; the
+             * time limit (header +0x0c, seconds, > 0) reached -> 4: now - the table's start time (+0x04: the loader's
+             * -1, then 0x16050 at the mission start sets it, with node 0's armed time, to the clock - 0, as the clock
+             * only runs in the main loop (0x15820) and 0x15750 zeroed it before the load) */
+            int all = 1, failed = 0;
+            for (i = 0; i < ml->tables[t].node_count; i++) {
+                int st = ml->state[t][i];
+                if (ml->tables[t].nodes[i].objective != 'M') continue;
+                if (st == MTBL_FAILED || st == MTBL_PENDING) { all = 0; failed = 1; }
+                else if (st != MTBL_OK) all = 0;
+            }
+            if (all) ml->result[t] = 2;
+            else if (failed) ml->result[t] = 3;
+            else if ((int32_t)ml->tables[t].time_limit > 0 && (int64_t)(now / 1000) >= (int64_t)(int32_t)ml->tables[t].time_limit) ml->result[t] = 4;
+            if (ml->result[t]) ml->result_time[t] = now;
+        }
+        /* the current order: the first ready node whose kind has no bit above 0xffff, else -1 */
         ml->current[t] = -1;
         for (i = 0; i < ml->tables[t].node_count; i++)
             if (node_ready(ml, t, i) && (ml->tables[t].nodes[i].kind & 0xFFFF0000u) == 0) { ml->current[t] = i; break; }
     }
-}
-
-void mtbl_logic_step(mtbl_logic *ml, int32_t now, const mtbl_world *w)
-{
-    int t, i, changed = 1, guard = 0;
-    ml->now = now;
-    /* repeat while something finishes, so chains resolve within one step */
-    while (changed && guard++ < 16) {
-        changed = 0;
-        for (t = 0; t < ml->table_count; t++) {
-            for (i = 0; i < ml->tables[t].node_count; i++) {
-                const mtbl_node *n = &ml->tables[t].nodes[i];
-                const char *tg = (n->target[0] && strcmp(n->target, "NULL") != 0) ? n->target : NULL;
-                int elapsed;
-                if (!node_ready(ml, t, i)) continue;
-                if (ml->state[t][i] != MTBL_ACTIVE) {
-                    ml->state[t][i] = MTBL_ACTIVE;
-                    ml->started[t][i] = now;
-                    if (w && w->started) w->started(w->user, t, i);
-
-                }
-                /* the timer (engine 0x1000a1d0): delay < floor(now) - floor(armed), whole mission seconds (clock / 181);
-                 * a negative delay never passes */
-                elapsed = (int32_t)n->delay >= 0 && (int64_t)(int32_t)n->delay < (int64_t)(now / 1000) - (int64_t)(ml->started[t][i] / 1000);
-                switch (n->kind) {
-                case MTBL_K_START: case MTBL_K_INSTANT:
-                    finish(ml, t, i, 1, w); changed = 1; break;   /* no condition: LAB_1000a621 with the test true */
-                case MTBL_K_TIMER: case MTBL_K_TIMER2: case MTBL_K_ORDER: case MTBL_K_HOLD:
-                    if (elapsed) { finish(ml, t, i, 1, w); changed = 1; }
-                    break;
-                case MTBL_K_DESTROY1: case MTBL_K_DESTROY2: case MTBL_K_SCAN: case MTBL_K_ALLMAIN: case MTBL_K_REACH:
-                case MTBL_K_LEAVE: {
-                    /* 0x1000a1d0: every attached target must pass (destroyed / visited / reached); NO target attached
-                     * passes at once (the test flag starts true) - a node whose target has nothing of a matching class.
-                     * Leave: none of them within. Reach on a group's table (not the player's) only for its current node */
-                    int nok = 0, cnt = w && w->targets ? w->targets(w->user, t, i, n->kind, tg, &nok) : 0, ok, j;
-                    if (n->kind == MTBL_K_LEAVE) ok = nok == 0;
-                    else ok = nok >= cnt;
-                    if (n->kind == MTBL_K_REACH && t != 0 && ml->current[t] != i) ok = 0;
-                    if (n->kind == MTBL_K_ALLMAIN)   /* and every OTHER main ('M') node of the table succeeded (node +0x75) */
-                        for (j = 0; j < ml->tables[t].node_count && ok; j++)
-                            if (j != i && ml->tables[t].nodes[j].objective == 'M' && ml->state[t][j] != MTBL_OK) ok = 0;
-                    if (ok) { finish(ml, t, i, 1, w); changed = 1; }   /* LAB_1000a621 */
-                    else if (elapsed) { finish(ml, t, i, 0, w); changed = 1; }   /* timed out */
-                    break;
-                }
-                case MTBL_K_PROTECT: {
-                    /* 0x1000a1d0 kind 4: before the timer, a target lost fails it on the player's star (state 6, with the
-                     * failure message); on another star it goes to state 8 - not finished, re-tested - and fails (6) once
-                     * ALL are lost (no message unless one was lost just now: none attached fails at once, silently). When
-                     * the timer passes: any lost -> failed (no message), else succeeded */
-                    int nok = 0, cnt = w && w->targets ? w->targets(w->user, t, i, n->kind, tg, &nok) : 0;
-                    int any = nok > 0, all = nok >= cnt;
-                    if (!elapsed) {
-                        if ((any && t == 0) || all) { finish_s(ml, t, i, 0, w, !any); changed = 1; }
-                    } else { finish_s(ml, t, i, !any, w, any); changed = 1; }
-                    break;
-                }
-                case MTBL_K_STAR_WIN: case MTBL_K_STAR_LOSE:
-                    /* sets the star's result outright (no "already set" test in the engine); out of range: stays pending */
-                    if (n->other_table < 0 || n->other_table >= ml->table_count) break;
-                    ml->result[n->other_table] = n->kind == MTBL_K_STAR_WIN ? 2 : 3;
-                    ml->result_time[n->other_table] = now;
-                    finish(ml, t, i, 1, w); changed = 1; break;
-                case MTBL_K_TOGGLE:
-                    /* flips the shown flag of node (other_table, other_node) - another table's node too */
-                    if (n->other_table < 0 || n->other_table >= ml->table_count || n->other_node < 0 ||
-                        n->other_node >= MTBL_MAX_NODES || n->other_node > ml->tables[n->other_table].node_count) break;
-                    ml->shown[n->other_table][n->other_node] ^= 1;
-                    finish(ml, t, i, 1, w); changed = 1; break;
-                case MTBL_K_FAIL: case MTBL_K_SUCCEED: {
-                    /* out of range, or the target already finished: this node stays pending (state 3) */
-                    int ot = n->other_table, on = n->other_node;
-                    if (ot < 0 || ot >= ml->table_count || on < 0 || on >= MTBL_MAX_NODES || on > ml->tables[ot].node_count ||
-                        ml->state[ot][on] == MTBL_OK || ml->state[ot][on] == MTBL_FAILED) break;
-                    finish(ml, ot, on, n->kind == MTBL_K_SUCCEED, w);
-                    finish(ml, t, i, 1, w); changed = 1; break;
-                }
-                case MTBL_K_RESET:
-                    /* every node of the table back to unfinished with no times, the announce flags cleared (start nodes
-                     * excepted), the star's result and its time cleared; this node always succeeds */
-                    if (n->other_table < 0 || n->other_table >= ml->table_count) break;
-                    {
-                        int j, ot = n->other_table;
-                        for (j = 0; j < ml->tables[ot].node_count; j++) {
-                            ml->state[ot][j] = MTBL_WAITING; ml->started[ot][j] = -1; ml->ended[ot][j] = -1;
-                            if (ml->tables[ot].nodes[j].kind != MTBL_K_START) ml->announced[j] = 0;
-                        }
-                        ml->current[ot] = -1;
-                        ml->result[ot] = 0; ml->result_time[ot] = -1;
-                    }
-                    finish(ml, t, i, 1, w); changed = 1; break;
-                case MTBL_K_REARM:
-                    /* node (other_table, other_node) back to unfinished with no times; the engine clears the announce
-                     * flag of its OWN index (unless the target is a start node) - kept as the engine has it */
-                    if (n->other_table < 0 || n->other_table >= ml->table_count || n->other_node < 0 ||
-                        n->other_node >= MTBL_MAX_NODES || n->other_node > ml->tables[n->other_table].node_count) break;
-                    ml->state[n->other_table][n->other_node] = MTBL_WAITING;
-                    ml->started[n->other_table][n->other_node] = -1;
-                    ml->ended[n->other_table][n->other_node] = -1;
-                    if (ml->tables[n->other_table].nodes[n->other_node].kind != MTBL_K_START) ml->announced[i] = 0;
-                    finish(ml, t, i, 1, w); changed = 1; break;
-                default:
-                    /* anything else goes the generic way (LAB_1000a621): no condition -> succeeds */
-                    finish(ml, t, i, 1, w); changed = 1; break;
-                }
-            }
-        }
-    }
-    /* per-star mission result (engine 0x1000a9b0): every main ('M') node done -> success; any failed
-     * -> failure; else the table's time limit -> time exceeded */
-    for (t = 0; t < ml->table_count; t++) {
-        int all = 1, failed = 0;
-        if (ml->result[t]) continue;
-        for (i = 0; i < ml->tables[t].node_count; i++) {
-            if (ml->tables[t].nodes[i].objective != 'M' || ml->state[t][i] == MTBL_OK) continue;
-            all = 0;
-            if (ml->state[t][i] == MTBL_FAILED) failed = 1;
-        }
-        if (all) ml->result[t] = 2;
-        else if (failed) ml->result[t] = 3;
-        else if ((int32_t)ml->tables[t].time_limit > 0 && (int64_t)now >= (int64_t)(int32_t)ml->tables[t].time_limit * 1000) ml->result[t] = 4;   /* signed: -1 = none */
-        if (ml->result[t]) ml->result_time[t] = now;
-    }
-    pick_current(ml);
 }

@@ -231,8 +231,12 @@ static int tgt_within(msim *s, int table, int type, int idx)
         tx = (float)p->pos[0]; ty = (float)p->pos[1]; tz = (float)p->pos[2];
     }
     if ((ux - tx) * (ux - tx) + (uy - ty) * (uy - ty) + (uz - tz) * (uz - tz) > r * r) return 0;
-    if (type == 1 && table == 0 && s->navs[idx].shown) s->navs[idx].visited = 1;   /* 0x10009b80: the player's side has been there (0x20;
-                                                     * the player's unit, a nav with NAVP +16 set - DOS 0x16190 the same) */
+    /* GBL 0x16280: the player's side has been there (nav flag 0x20, with MECNAVPT 0xe7 the first time - glview) when the
+     * table's unit is the player, the player is up (unit +0x15 & 0x20: set at the first power-up, kept while shut down,
+     * cleared while starting and when destroyed) and the nav has NAVP +16 set; inside the radius during the start-up
+     * marks nothing (the port had marked it at once) */
+    if (type == 1 && table == 0 && s->navs[idx].shown && !s->player_unit.destroyed &&
+        !((float)s->now < s->player_online_at && !getenv("MW2_NO_STARTUP"))) s->navs[idx].visited = 1;
     return 1;
 }
 static int tgt_test(msim *s, int table, uint32_t kind, int type, int idx)
@@ -251,18 +255,21 @@ static int tgt_test(msim *s, int table, uint32_t kind, int type, int idx)
 }
 static int cb_targets(void *u, int table, int node, uint32_t kind, const char *t, int *n_ok)
 {
+    /* at most 16 targets a node (GBL 0x4e5a0: count +0xd6 < 0x10; the 3Dfx engine's 40 is not GBL's), in the order the
+     * objects are created (ASSUMED here: the player, units, nav points, things - no GBL node has more than 16) */
     msim *s = u;
-    int i, n = 0, ok = 0;
+    int i, n = 0, ok = 0, over = 0;
     (void)node;
     *n_ok = 0;
     if (!t) return 0;
     if (strcasecmp(t, "UserStar") == 0 && (class_widen(s->player_class) & kind)) { n++; ok += tgt_test(s, table, kind, 2, -1); }
-    for (i = 0; i < s->actor_count && n < 40; i++)
-        if (strcasecmp(s->actors[i].group, t) == 0 && (class_widen(s->actors[i].obj_class) & kind)) { n++; ok += tgt_test(s, table, kind, 2, i); }
-    for (i = 0; i < s->nav_count && n < 40; i++)
-        if (strcasecmp(s->navs[i].name, t) == 0 && (class_widen(s->navs[i].cls) & kind)) { n++; ok += tgt_test(s, table, kind, 1, i); }
-    for (i = 0; s->world && i < s->bld_count && n < 40; i++)
-        if (strcasecmp(s->world->parts[s->bld[i].intact].rec, t) == 0 && (class_widen((unsigned)s->bld[i].type) & kind)) { n++; ok += tgt_test(s, table, kind, 4, i); }
+    for (i = 0; i < s->actor_count; i++)
+        if (strcasecmp(s->actors[i].group, t) == 0 && (class_widen(s->actors[i].obj_class) & kind)) { if (n < 16) { n++; ok += tgt_test(s, table, kind, 2, i); } else over++; }
+    for (i = 0; i < s->nav_count; i++)
+        if (strcasecmp(s->navs[i].name, t) == 0 && (class_widen(s->navs[i].cls) & kind)) { if (n < 16) { n++; ok += tgt_test(s, table, kind, 1, i); } else over++; }
+    for (i = 0; s->world && i < s->bld_count; i++)
+        if (strcasecmp(s->world->parts[s->bld[i].intact].rec, t) == 0 && (class_widen((unsigned)s->bld[i].type) & kind)) { if (n < 16) { n++; ok += tgt_test(s, table, kind, 4, i); } else over++; }
+    if (over && getenv("MW2_TARGET_CAP_TRACE")) fprintf(stderr, "%s table %d node %d target %s: %d over the 16\n", s->scene, table, node, t, over);   /* TEST ONLY */
     *n_ok = ok;
     return n;
 }
@@ -280,11 +287,28 @@ static void cb_finished(void *u, int t, int i, int ok)
     char line[160];
     const mtbl_node *n = &s->logic.tables[t].nodes[i];
     const char *say = ok ? n->sound_start : n->sound_finish;
-    /* engine 0x10009d60: only the player's star (table 0), once per node index (announce flags 0x10208040). (Its
-     * "%s successful" / "%s failed" text goes to 0x100086d0, which appends it to a log file - not the screen.)
+    /* GBL 0x164f0: only the player's table (table 0), once per node index (announce flags DAT_000b6fe0), the node's
+     * "S" / "F" line with the text "%s successful" / "%s failed" (0xa00d0 / 0xa00e0) of its objective text - none when
+     * the node is not shown (+0x5c) or the text starts with a space - its runs of white space made one space (0x15ff0).
      * Nothing is queued once the end sequence has flushed the radio (0x10031640 sets DAT_1024f6c4) */
     if (t == 0 && !s->logic.announced[i] && !s->logic.silent && !(s->end_flush_at && s->now >= s->end_flush_at)) {
-        if (say[0] && strcmp(say, "NULL") != 0 && s->on_radio) { if (getenv("MW2_RADIO_TRACE")) fprintf(stderr, "radio node %d at %d ms\n", i, (int)s->now); s->on_radio(s->shot_user, say); }   /* TEST ONLY trace */
+        const char *snd = say[0] && strcmp(say, "NULL") != 0 ? say : "";
+        char text[96] = "";
+        if (s->logic.shown[0][i] && n->text[0] && n->text[0] != ' ') {
+            char raw[96];
+            int a, b, sp = 0;
+            snprintf(raw, sizeof raw, ok ? "%s successful" : "%s failed", n->text);
+            for (a = b = 0; raw[a] && b + 1 < (int)sizeof text; a++) {
+                int ws = raw[a] == ' ' || (raw[a] >= 9 && raw[a] <= 13);
+                if (ws && sp) continue;
+                text[b++] = ws ? ' ' : raw[a];
+                sp = ws;
+            }
+            text[b] = 0;
+        }
+        if (getenv("MW2_RADIO_TRACE")) fprintf(stderr, "radio node %d at %d ms\n", i, (int)s->now);   /* TEST ONLY trace */
+        if (s->on_radio_msg) { if (snd[0] || text[0]) s->on_radio_msg(s->shot_user, snd, text); }
+        else if (snd[0] && s->on_radio) s->on_radio(s->shot_user, snd);
         s->logic.announced[i] = 1;
     }
     if (!s->log) return;
@@ -578,6 +602,7 @@ int msim_init(msim *s, prj_archive *a, const char *scene, world_actor *actors, i
             actors[i].ai_level = lv;
             if (s->units) s->units[i].group_fire = gf;
         }
+        ai_set_class(&s->minds[i], actors[i].unit_class, s->units ? s->units[i].tons : 0);
     }
     if (getenv("MW2_AI_SEED")) for (i = 0; s->minds && i < count; i++) s->minds[i].rng ^= (unsigned)strtoul(getenv("MW2_AI_SEED"), NULL, 0) * 2654435761u;   /* TEST ONLY: sample the AI's random choices */
     s->air_speed = calloc((size_t)(count ? count : 1), sizeof *s->air_speed);
@@ -763,7 +788,13 @@ static void unit_startup_sound(msim *s, int i)
     int enemy = (s->actors[i].friendly ? 0 : s->actors[i].alliance) == 1;
     if (!s->on_sound) return;
     if (!enemy) s->on_sound(s->shot_user, 0xf7, p3);
-    else if (s->now >= s->player_online_at && !s->player_unit.destroyed) s->on_sound(s->shot_user, 0x104, p3);   /* +0x15 & 0x20: set at state 2, kept through a shutdown (state 3), cleared in states 0 / 4 */
+    else if (s->now >= s->player_online_at && !s->player_unit.destroyed) {   /* +0x15 & 0x20: set at state 2, kept through a shutdown (state 3), cleared in states 0 / 4 */
+        s->on_sound(s->shot_user, 0x104, p3);
+        /* GBL 0x27b05 case 0 (0x2851a..): with the sound, message 0x1a "Enemy power-up detected" (0x42e40(0x1a)) - at
+         * the restart's beginning, not when the start-up ends (the 3Dfx edition's 0x1001a180 state 2). DOSBox ANDYSCN1
+         * (table 5 "Sleeping", a hold of 20 s): the text up at ~25 s, the port's at 27.7 s after the 6-8 s start-up */
+        if (s->on_message) s->on_message(s->message_user, "Enemy power-up detected", 74);
+    }
 }
 static void ai_wake(msim *s, int i)
 {
@@ -779,6 +810,14 @@ void msim_test_power(msim *s, int i, int up)
     if (up) ai_wake(s, i); else ai_power_down(s, i);
 }
 static int task_pos(const msim *s, int code, float p[3], float *range);
+/* BRANSCN1's DUMBTURT units (BRANUST1-4, the player's side; every node the DUMMY model, mech3d.c: no parts): DOSBox with the
+ * scene's positions moved (MW2.PRJ NAVPs patched) - BRANUST3 put 12 m from BRANENT4 still leaves that turret firing on the
+ * player 54 m off (it is never picked, and nothing it does turns the turret on it); with the four moved away the hits from
+ * ahead stop (BRANENT3, 347 m ahead, never wakes: a DUMBTURT 201 m from it was the enemy within its GPS range a); with the
+ * enemy turrets moved away nothing hits the player (the DUMBTURTs fire on no one). The original's mechanism is not traced
+ * (0x2a590's object test -8 cannot be told apart from it: the DUMMY model is a 1-vertex WTB): ASSUMED - such a unit runs
+ * no AI and is no target, but counts as the enemy nearest a unit for condition 7's range test (0x226d0) */
+static int dummy_unit(const msim *s, int k) { return k >= 0 && k < s->actor_count && s->actors[k].mech.part_count == 0; }
 static int pick_enemy(const msim *s, int i, float *ex, float *ez, float *ey, float *eface, float *eh, int *who)
 {
     const world_actor *ac = &s->actors[i];
@@ -829,7 +868,7 @@ static int pick_enemy(const msim *s, int i, float *ex, float *ez, float *ey, flo
     for (k = 0; k < s->actor_count; k++) {
         float dx, dz, d;
         int al = s->actors[k].friendly ? 0 : s->actors[k].alliance;
-        if (k == i || !s->armed[k] || s->units[k].destroyed || al == self_al || al == 2 || self_al == 2) continue;
+        if (k == i || !s->armed[k] || s->units[k].destroyed || al == self_al || al == 2 || self_al == 2 || dummy_unit(s, k)) continue;
         dx = (float)s->actors[k].mech.origin[0] - x0; dz = (float)s->actors[k].mech.origin[2] - z0;
         d = dx * dx + dz * dz;
         if (d < best) {
@@ -852,6 +891,7 @@ static int c7_pick(const msim *s, int i, float *nearest)
     int self_al = ac->friendly ? 0 : ac->alliance, pick = -2, k, q;
     int cur = ac->table < s->logic.table_count ? s->logic.current[ac->table] : -1;
     int kind4 = cur >= 0 && s->logic.tables[ac->table].nodes[cur].kind == 4;
+    float near_any = 1e30f;   /* with the DUMBTURT units (dummy_unit: never picked) */
     *nearest = 1e30f;
     for (k = -1; k < s->actor_count; k++) {
         float dx, dz, d;
@@ -865,6 +905,8 @@ static int c7_pick(const msim *s, int i, float *nearest)
             dx = (float)s->actors[k].mech.origin[0] - x0; dz = (float)s->actors[k].mech.origin[2] - z0;
         }
         d = sqrtf(dx * dx + dz * dz);
+        if (d < near_any) near_any = d;
+        if (k >= 0 && dummy_unit(s, k)) continue;
         if (d >= best) continue;
         best = d;
         for (q = 0; q < s->actor_count && !kind4 && s->minds; q++) {
@@ -878,7 +920,7 @@ static int c7_pick(const msim *s, int i, float *nearest)
         }
         if (!claimed) pick = k;
     }
-    *nearest = best;
+    *nearest = near_any;
     return best < 1e30f ? pick : -2;
 }
 
@@ -912,8 +954,8 @@ static void group_assign(msim *s, int table, int leader, int who)
     if (pick < 0) return;
     {
         ai_mind *m = &s->minds[pick];
-        m->prev_state = m->state; m->state = AI_TARGET; m->target = 1; m->tgt = who;
-        m->next_fire = (float)(rnd_ms(&s->rng) % 10u * 22u);   /* entry 0x10013790 case 2 */
+        m->prev_state = m->state; m->counter = 1; m->state = AI_TARGET; m->target = 1; m->tgt = who;   /* 0x24310 -> 0x235e0(unit, 2, target, 1): pushed */
+        m->next_fire = (float)(rnd_ms(&s->rng) % 10u * 18u);   /* entry case 2 (GBL 0x22ef0: rand(10) x 0x12; the 3D-card 0x10013790 x 22) */
         ai_wake(s, pick);
     }
 }
@@ -1136,6 +1178,7 @@ static void combat_step(msim *s, float dt);
 static void terrain_release(void *t);
 static float wrap180(float a);
 static int los_blocked(const msim *s, float x0, float y0, float z0, float x1, float y1, float z1);
+static int jump_line_clear(const msim *s, int i, int who, float y, const float to[3]);
 static void avoid_obstacles(msim *s, int i, ai_mind *m, float goal_bearing, float dt);
 static unsigned rnd_ms(unsigned *x);
 static unsigned rnd_ms(unsigned *x) { *x = *x * 1103515245u + 12345u; return (*x >> 16) & 0x7FFF; }
@@ -1484,6 +1527,7 @@ static void debris_step(msim *s, float ticks)
 }
 
 static void car_inc(msim *s, int off);
+static int car_counted(const world_actor *ac);
 static void wrecks(msim *s, int32_t dt_ms)
 {
     int32_t now = (int32_t)((int64_t)s->now * 182 / 1000);
@@ -1576,11 +1620,13 @@ static void self_destruct(msim *s, int i)
     char line[128];
     if (u->destroyed) return;
     u->destroyed = 1;
-    {
-        static const int KILLED[3] = {0x1e, 0x20, 0x22};
+    {   /* GBL 0x25680: 'Mechs (class 1) +0x1e / +0x20 / +0x22, other units +0x4a / +0x4c / +0x4e; the player's star
+         * (unit +8 = the player's table) +0x34 */
+        static const int KILLED[3] = {0x1e, 0x20, 0x22}, KILLED_V[3] = {0x4a, 0x4c, 0x4e};
         int side = s->actors[i].friendly ? 2 : s->actors[i].alliance == 2 ? 1 : 0;
-        car_inc(s, KILLED[side]);
-        if (side == 2) car_inc(s, 0x34);
+        if (car_counted(&s->actors[i])) car_inc(s, s->actors[i].unit_class == 1 ? KILLED[side] : KILLED_V[side]);
+        if (s->actors[i].table == 0) car_inc(s, 0x34);
+        if (s->msg_seen) s->msg_seen[i] |= 4;
     }
     if (s->log) {
         snprintf(line, sizeof line, "%6.1fs %s (%s) self-destructs - DESTROYED", (double)s->now / 1000.0, s->actors[i].name, s->actors[i].group);
@@ -1595,18 +1641,27 @@ static void self_destruct(msim *s, int i)
  *    2 hovercraft / 4 tank -> 0x16 "Enemy vehicle destroyed" (71), 3 turret -> 0x19 "Enemy target destroyed" (73),
  *    5 aircraft / 8 dropship -> 0x17 "Enemy aircraft destroyed" (72), 6 / 7 (doors) nothing; and a starmate (its group
  *    led by the player, 0x10018f90) -> 0x10031810(6, its point): "Point n" "destroyed";
- *  - an enemy unit back up after a shutdown (0x1001a180 state 2 with object +0x14 bit 0x10, set in state 3), the
- *    player up (+0x15 & 0x20): 0x1a "Enemy power-up detected" (74) */
+ *  - (an enemy unit restarting, the player up: 0x1a "Enemy power-up detected" (74) - GBL posts it with the restart's
+ *    sound in 0x27b05 case 0, see unit_startup_sound) */
 static void unit_messages(msim *s)
 {
     int i;
-    int pl_up = !s->player_unit.destroyed && !((float)s->now < s->player_online_at && !getenv("MW2_NO_STARTUP"));   /* +0x15 & 0x20 (kept while shut down) */
     if (!s->msg_seen || !s->armed) return;
     for (i = 0; i < s->actor_count; i++) {
         const world_actor *ac = &s->actors[i];
         const combat_unit *u = &s->units[i];
         int enemy = (ac->friendly ? 0 : ac->alliance) == 1;
         if (!s->armed[i] || (s->msg_seen[i] & 1)) continue;
+        if (u->destroyed && !(s->msg_seen[i] & 4)) {
+            /* GBL 0x25680 counts EVERY death in MW2CAR.CFG (the player's kill only for a projectile of his: DAT_000afebc,
+             * set around a projectile's hit, 0x49838) - deaths by a fall, a collision, heat or an effect that the hit path
+             * did not count: destroyed 'Mechs +0x1e.., other units +0x4a.., the player's star +0x34 / +0x36 */
+            static const int KILLED[3] = {0x1e, 0x20, 0x22}, KILLED_V[3] = {0x4a, 0x4c, 0x4e};
+            int side = ac->friendly ? 2 : ac->alliance == 2 ? 1 : 0;
+            if (car_counted(ac)) car_inc(s, ac->unit_class == 1 ? KILLED[side] : KILLED_V[side]);
+            if (ac->table == 0) car_inc(s, u->ejected == 1 ? 0x36 : 0x34);
+            s->msg_seen[i] |= 4;
+        }
         if (u->destroyed) {
             static const char *const KILL[9] = {NULL, "Enemy mech destroyed", "Enemy vehicle destroyed", "Enemy target destroyed",
                                                 "Enemy vehicle destroyed", "Enemy aircraft destroyed", NULL, NULL, "Enemy aircraft destroyed"};
@@ -1617,15 +1672,12 @@ static void unit_messages(msim *s)
             if (ac->friendly && ac->table == 0) msim_order_message(s, star_point(s, i), 6);   /* "Point n destroyed" */
             continue;
         }
-        if (u->shutdown || (s->powered_down && s->powered_down[i])) s->msg_seen[i] |= 2;
-        else if ((s->msg_seen[i] & 2) && !(s->online_at && (float)s->now < s->online_at[i])) {   /* the start-up done */
-            s->msg_seen[i] &= ~2;
-            if (enemy && pl_up && s->on_message) s->on_message(s->message_user, "Enemy power-up detected", 74);
-        }
     }
 }
 
 static void collision_lods(msim *s);
+static float drive_servo(float cur, float tgt, float T, float ticks);
+static float oct_len(float x, float y, float z);
 void msim_step(msim *s, int32_t dt_ms)
 {
     if (dt_ms <= 0) return;   /* a sub-millisecond frame: its time is carried to the next one (glview sim_ms) */
@@ -1667,13 +1719,17 @@ void msim_step(msim *s, int32_t dt_ms)
         if (s->debug_invulnerable && s->player_unit.destroyed) s->player_unit.destroyed = 0;
         if (s->player_unit.destroyed && !s->player_counted) {   /* 0x10016280: the player's group, the player included */
             s->player_counted = 1;
+            car_inc(s, 0x22);   /* GBL 0x25680 on the player too: a friendly (0x2b5c0 == 0) 'Mech destroyed, +0x22 (USERSTAR's
+                                 * GPS flags 0x400 - the DOS shell's and the port's - pass car_counted) */
             car_inc(s, s->player_unit.ejected == 1 ? 0x36 : 0x34);
         }
         if (s->player_unit.intact_out && !s->eject_at) s->eject_at = s->now > 0 ? s->now : 1;
         /* engine 0x1000a9b0: the mission's end waits until the radio queue is empty (DAT_1024f6bc), so the last lines
          * play out first; a destroyed player ends at once (0x10019131); an ejected one (state 5) 0x389 ticks later
          * (0x1001adf0 - DOSBox: "Press CTRL-Q to exit..." 5-6 s after Ctrl+Alt+e) */
-        if (s->eject_at && s->now - s->eject_at < 0x389 * 1000 / 182) { /* the ejection camera runs */ }
+        if (s->eject_at && s->now - s->eject_at < 0x38e * 1000 / 182) { /* the ejection camera runs (GBL 0x28695: param +0x8c =
+                                                                       * the clock + 0x38e at state 5's first run, then
+                                                                       * the end flag DAT_000a669c; the 3Dfx DLL's 0x389) */ }
         else if ((s->logic.result[0] && !s->radio_busy) || s->player_unit.destroyed) {
             char line[96];
             /* DOS MW2.EXE 0x16e80 (the star results): with the end flag set (DAT_0009620c: the player destroyed, state 4,
@@ -1693,9 +1749,10 @@ void msim_step(msim *s, int32_t dt_ms)
             if (s->log) s->log(s->log_user, line);
             /* the star's outcome line (0x10009f50): MTBL header +0x12 on success, +0x1d on failure, BET68 for time
              * exceeded - queued at priority 0x50, so it survives the flush */
-            if (s->outcome && s->on_radio) {
+            if (s->outcome) {   /* 0x165e0: with the text "Mission successful" / "Mission failed" / "Mission time exceeded" */
                 const char *o = s->outcome == 2 ? s->logic.tables[0].win_sound : s->outcome == 3 ? s->logic.tables[0].lose_sound : "BET68";
-                if (o[0]) s->on_radio(s->shot_user, o);
+                if (s->on_radio_msg) s->on_radio_msg(s->shot_user, o, msim_outcome_text(s));
+                else if (o[0] && s->on_radio) s->on_radio(s->shot_user, o);
             }
             s->dos_resolved_s = (s->logic.result_time[0] > 0 ? s->logic.result_time[0] : s->now) / 1000;   /* star +8 */
         }
@@ -1750,7 +1807,7 @@ void msim_step(msim *s, int32_t dt_ms)
             if (s->units[i].y <= s->units[i].ground + 1.0f) { m->speed = 0; if (s->air_speed) s->air_speed[i] = 0; if (s->across) s->across[i] = 0; }
             ac->mech.origin[1] = (int32_t)msim_draw_y(s, i);
         }
-        if (!s->armed[i] || s->units[i].destroyed) continue;
+        if (!s->armed[i] || s->units[i].destroyed || dummy_unit(s, i)) continue;   /* (dummy_unit: no AI) */
         if (l == ac && m->event_cond == 7) {   /* the leader's tick: its posted sighting (0x10011c50 -> 0x10014ba0) */
             group_assign(s, ac->table, i, m->event_who);
             m->event_cond = 0;
@@ -1774,7 +1831,11 @@ void msim_step(msim *s, int32_t dt_ms)
             int lk = cur >= 0 ? s->logic.tables[ac->table].nodes[cur].lock : 0;
             s->seen_node[i] = cur;
             m->lock_bits = lk == 1 ? 2 : lk == 2 ? 1 : 0;   /* +0x152 = (+0x152 & ~3) | 0x100146e0(node +0xb7) | 0x40 */
-            if (kn & 0x400) { m->state = AI_REST; m->target = 0; ai_power_down(s, i); }
+            /* GBL 0x23dc0: with a state pushed (+0x13c, e.g. by the leader's assignment 0x24310 or the attacker
+             * reaction 0x21e40) the new (state, target) goes to slot +0x13c - one past the slot the pop reads - so the
+             * unit keeps what it is doing (a turret woken on the player stays on it when its hold node ends) */
+            if (m->counter) {}
+            else if (kn & 0x400) { m->state = AI_REST; m->target = 0; ai_power_down(s, i); }
             else if (kn & (0x800 | 0x10)) { m->state = AI_SHUTDOWN; m->target = 0; ai_power_down(s, i); }
             else {   /* the leader idles, the members follow; the node's targets come one a tick (node_assign) */
                 ai_wake(s, i);
@@ -1850,7 +1911,13 @@ void msim_step(msim *s, int32_t dt_ms)
                     break;
                 }
             }
-            if (att != -2 && s->ai_focus[i] != att) { s->ai_focus[i] = att; m->prev_state = m->state; m->state = AI_TARGET; m->target = 1; ai_wake(s, i); }
+            if (att != -2 && s->ai_focus[i] != att) {
+                /* 0x21e40 -> 0x235e0(me, 2, attacker, 1): pushed; the entry (0x22ef0 case 2) sets the next fire decision
+                 * rand(10) x 0x12 ticks on */
+                s->ai_focus[i] = att; m->prev_state = m->state; m->counter = 1; m->state = AI_TARGET; m->target = 1;
+                m->next_fire = (float)(rnd_ms(&s->rng) % 10u * 18u);
+                ai_wake(s, i);
+            }
         }
         if (s->ai_focus && s->ai_focus[i] >= 0 && (!s->armed[s->ai_focus[i]] || s->units[s->ai_focus[i]].destroyed)) s->ai_focus[i] = -2;
         if (s->ai_focus && s->ai_focus[i] == -1 && s->player_unit.destroyed) s->ai_focus[i] = -2;
@@ -1880,6 +1947,7 @@ void msim_step(msim *s, int32_t dt_ms)
                 v.leader_ok = 1; v.leader_dist = sqrtf(lx * lx + lz * lz);
             }
             v.contact = (s->bump_with && s->bump_with[i] > 0) || s->units[i].blocked;   /* controller +0xa4 (cleared on landing on a unit) */
+            v.contact_unit = s->bump_with && s->bump_with[i] > 0;
             v.out_of_weapons = combat_out_of_weapons(&s->units[i]);                  /* 0x10020880 */
             v.moving = ac->speed > 0 && !fixed_unit(ac);   /* controller +0x88: the top speed (0x10041410; 0 for turrets, 0x100219c9) */
         }
@@ -1887,6 +1955,14 @@ void msim_step(msim *s, int32_t dt_ms)
         v.jet_fuel = s->units[i].jet_fuel;
         v.height = s->units[i].y - s->units[i].ground;   /* above the terrain (ai.h): y is absolute - on raised ground the
                                                           * jump manoeuvres never saw a landing */
+        /* the jump pre-check's probes (GBL 0x2cb80 -> 0x2dd50 / 0x2e450), only when the rest of it holds: the target a unit,
+         * the line to it from the unit's own height blocked and from the target's height clear */
+        v.target_not_unit = v.has_enemy && enemy_who < -1;
+        if (!v.target_not_unit && v.has_enemy && m->state == AI_ATTACK && (v.can_jump || m->man == 9) && v.enemy_height > v.height + 800.0f) {
+            float to[3] = {v.enemy_x, unit_centre_y(s, enemy_who), v.enemy_z};
+            v.los_blocked_low = !jump_line_clear(s, i, enemy_who, unit_centre_y(s, i), to);   /* 0x2dd50 */
+            v.jump_blocked = v.los_blocked_low && jump_line_clear(s, i, enemy_who, to[1], to) ? 0 : 1;
+        }
         v.pilot_level = ac->ai_level >= 1 && ac->ai_level <= 4 ? ac->ai_level : 1;   /* 0x1001ee30: outside 1-4 -> 1 */
         v.weapon_range = combat_max_range(&s->units[i]);
         v.is_leader = ac->leader;
@@ -2017,9 +2093,20 @@ void msim_step(msim *s, int32_t dt_ms)
         }
     star_done:
         v.speed_kmh = fabsf(m->speed) * 0.036f;   /* actual speed */
-        if (s->powered_down && s->powered_down[i]) { m->throttle = 0; m->turn = 0; m->wants_fire = 0; }   /* shut down: no rules run */
-        else {
+        {
+            /* GBL MW2.EXE 0x21a80: the rule pass 0x21b60 runs for every computer-run unit (+0x10 == 2) in every AI state but
+             * 12 - resting (10) and shut down (11) included (DEFLT's state 10 rule: condition 7 within the GPS range a ->
+             * post the sighting to the leader, whose assignment 0x24310 sends the unit at it). Any state entered then goes
+             * through 0x22ef0, which restarts a powered-down unit's controller (+0x14 & 0x10 -> +0xa4 = 0: the start-up
+             * again) unless the state entered is 10 / 11 itself (+0xa4 |= 3). The port had run no rules while powered down:
+             * BRANSCN1's turrets, held at the start, never woke on the player standing under them until their hold ended
+             * (DOSBox: they fire from ~8 s and kill the start-up player within seconds; the port's first shot came at
+             * 14 s) */
+            int was_down = s->powered_down && s->powered_down[i];
             ai_step(&s->ai, m, &v, dt);
+            if (m->entered && was_down && m->state != AI_REST && m->state != AI_SHUTDOWN) ai_wake(s, i);
+            else if (m->entered && !was_down && (m->state == AI_REST || m->state == AI_SHUTDOWN)) ai_power_down(s, i);   /* a pop back to 10 / 11 */
+            if (s->powered_down && s->powered_down[i]) { m->throttle = 0; m->turn = 0; m->wants_fire = 0; }
             if (m->entered) {   /* 0x10013e00: the exit (0x10013680 cases 5 / 7 -> 0x10013e90) and the entry (0x10013790 case 7
                                  * -> 0x10013f00 round the target +0x14e: a node's guard target, a Defend order's mech) */
                 int c = s->cmd ? s->cmd[i] : 0, t = s->cmd_target ? s->cmd_target[i] : -1;
@@ -2096,17 +2183,22 @@ void msim_step(msim *s, int32_t dt_ms)
             float gb = m->state == AI_ATTACK || m->state == AI_TARGET ? v.enemy_bearing : (v.has_goal ? v.goal_bearing : ac->mech.heading);
             avoid_obstacles(s, i, m, gb, dt);
         }
-        {   /* aim servos (0x1003b7e0, see ai.h): twist T = 0.6 s x 181 = 108.6 ticks toward the demand clamped to the MGEO
-             * limit (0x1001a180), pitch T = 0.2 s = 36.2 ticks; value += dt x (target - value) / T, no overshoot */
+        {   /* aim servos (0x4a9d0): a computer-run mech's twist servo +0x04 T = chop(0.6 x 182) = 109 ticks, pitch +0x14 0.2 s =
+             * 36 (GBL 0x26a50: 0x26aa3 / 0x26ae2; the player's twist 0.2 s); a turret's (class 3, 0x2eed0) both 0.8 s = 145 -
+             * the port had the 3Dfx DLL's 108.6 / 36.2 for every unit, a turret's pitch 4x too quick. The twist demand is clamped
+             * to the MGEO limit; a turret with a whole turn (limit >= 360, 0x2f1a1) instead takes its servo's value round to
+             * within 180 degrees of the demand first (0x2f1a9..0x2f1d3), so it turns the short way - the port's turret swung
+             * the long way round when its target crossed behind it */
             float lim = s->twist_limit ? s->twist_limit[i] : 90.0f, tw = m->twist_demand, ticks = dt * 182.0f;
-            float kt = ticks / 108.6f, kp = ticks / 36.2f;
-            if (lim < 360.0f) { if (tw > lim) tw = lim; if (tw < -lim) tw = -lim; }
-            m->twist += (tw - m->twist) * (kt < 1.0f ? kt : 1.0f);
-            m->pitch += (m->pitch_demand - m->pitch) * (kp < 1.0f ? kp : 1.0f);
+            float Tt = ac->unit_class == 3 ? 145.0f : 109.0f, Tp = ac->unit_class == 3 ? 145.0f : 36.0f;
+            if (lim < 360.0f) { if (tw > lim) tw = lim; if (tw < -lim) tw = -lim; m->twist = drive_servo(m->twist, tw, Tt, ticks); }
+            else m->twist = msim_twist_round(m->twist, tw, Tt, ticks);
+            m->pitch = drive_servo(m->pitch, m->pitch_demand, Tp, ticks);
             ac->mech.twist = m->twist;   /* drawn, and the weapon mounts follow it */
+            ac->mech.gun_pitch = ac->unit_class == 3 ? m->pitch : 0.0f;   /* a turret's guns (0x2f08b), drawn; the eye on them */
         }
         {
-            float kmh, rate, h, spd, top = ac->speed * s->units[i].speed_gain;
+            float rate, h, spd, top = ac->speed * s->units[i].speed_gain;
             /* the throttle -> speed chain (msim_drive_step: servos +0x44 / +0x24 and the velocity approach, 0x1001a180 /
              * 0x100190d0), the player's rule; reverse (input +0x2f, manoeuvres 8 / 10) only asks the gait code for the
              * reverse sequence (+0x88 = 2, 0x1000b3a0) and the drive turns x -0.5 once that sequence PLAYS (+0x84 == 2,
@@ -2164,12 +2256,21 @@ void msim_step(msim *s, int32_t dt_ms)
                 msim_drive_step(&m->thr_servo, &m->spd_servo, &m->speed, m->throttle, revp ? -0.5f : 1.0f, top,
                                 !(s->units[i].shutdown || s->units[i].immobile), m->drive_slow, sdt * 182.0f);
                 if (freev) m->speed = v0;
-                kmh = fabsf(m->spd_servo) * 0.036f;
-                rate = m->turn / 1024.0f * 90.0f * cosf((kmh < 80.0f ? kmh : 80.0f) * 3.14159265f / 180.0f);   /* by c[0xb] x 6.516 (0x1001a180) */
+                /* the leg turn demand c[0xe] (GBL 0x27b05, 0x280a2..0x2810a): walking, input +0xc / 1024 x 90 x cos(min(80, kv))
+                 * deg/s with kv = c[0xb] (16.16 cm/tick) / 10000, whole (~km/h) - and 0 for a computer-run unit while kv is 0
+                 * (under ~1 km/h: no turning on the spot; the player turns there unless immobile); 0 when airborne (object +0x80
+                 * bit 4, set by the move 0x276fb with the feet more than the centre height +0xd0 over the ground) unless the
+                 * jets are held (input +0x1d, a tank): then input / 1024 x 90 x 2 while fuel is left after the burn, else 0 */
+                rate = msim_leg_demand(m->turn, m->spd_servo, 0, s->units[i].speed_gain,
+                                       s->units[i].y - s->units[i].ground > (s->centre_h ? s->centre_h[i] : 550.0f), 0, 0);
                 if (m->jet && s->units[i].jets > 0 && !s->units[i].no_jump && !s->units[i].shutdown && s->units[i].jet_fuel >= 0)
                     rate = s->units[i].jet_fuel - sdt * 182.0f > 0 ? m->turn / 1024.0f * 90.0f * 2.0f : 0.0f;   /* the jets held (a
                                    * tank, state 2): x2 (0x102473d4) while fuel is left after the burn, else no turn (0x1001a180) */
-                ac->mech.heading = wrap180(ac->mech.heading + rate * sdt);
+                /* the heading turns by the leg turn SERVO's value (0x278e1: object +0x60 += c[0xf] x ticks / 182), servo +0x34 easing
+                 * c[0xf] toward the demand with T = chop(0.3 x 182) = 54 ticks (0x26ad1 -> 0x4a990; stepped by 0x4a9d0 at the top
+                 * of the move): a turn builds up and runs out over ~0.3 s. The port had turned at the demand at once */
+                m->leg_srv = drive_servo(m->leg_srv, rate, 54.0f, sdt * 182.0f);
+                ac->mech.heading = wrap180(ac->mech.heading + m->leg_srv * sdt);
                 if (freev && s->across && ac->mech.heading != hd0) {   /* held: the world vector stays as the heading turns */
                     float d = (ac->mech.heading - hd0) * 3.14159265f / 180.0f, cd = cosf(d), sd = sinf(d);
                     m->speed = v0 * cd + a0 * sd; s->across[i] = a0 * cd - v0 * sd;
@@ -2246,7 +2347,7 @@ void msim_step(msim *s, int32_t dt_ms)
                             /* the engine's speeds (0x1000ba20): it copies the other's z velocity over its own (+0x108) before
                              * 0x1000c160 takes the difference, so the damage speed is |(dvx, dvy)|; the bounce is half of
                              * |(dvx, dvy, the other's vz)|, at least 1 cm/tick */
-                            float dvx = sv[0] - ov[0], dvy = sv[1] - ov[1], dv = sqrtf(dvx * dvx + dvy * dvy);
+                            float dvx = sv[0] - ov[0], dvy = sv[1] - ov[1], dv = oct_len(dvx, dvy, 0.0f);   /* GBL 0x20ae0: the DOS length */
                             float bs = 0.5f * sqrtf(dvx * dvx + dvy * dvy + ov[2] * ov[2]);
                             float py = c[1] + n[1] * rr - ch, hl = sqrtf(n[0] * n[0] + n[2] * n[2]);   /* projected onto its sphere */
                             float gnd = msim_ground(s, c[0] + n[0] * rr, c[2] + n[2] * rr, py + ch);   /* 0x10010080 at the centre */
@@ -2311,7 +2412,10 @@ void msim_step(msim *s, int32_t dt_ms)
                                 * speed stays under the damage threshold; unless harmless (a climbable face, the feet in the
                                 * ground window: 0x10019c4e), collision damage at the attempted speed on every contact frame
                                 * (0x10019d84 -> 0x1000c3c0 / 0x1000c1f0) and the object walked into takes its share */
-                        float wn[3], bx = nx, bz = nz, sp3 = sqrtf(spd * spd + acr * acr) / 182.0f;
+                        float hh3 = ac->mech.heading * 3.14159265f / 180.0f;
+                        /* the impact speed: GBL 0x20ca0 takes the DOS length of the velocity (+0x104..+0x10c, world x / y / z) */
+                        float wn[3], bx = nx, bz = nz, sp3 = oct_len((sinf(hh3) * spd + cosf(hh3) * acr) / 182.0f, s->units[i].vy,
+                                                                     (cosf(hh3) * spd - sinf(hh3) * acr) / 182.0f);
                         float sacr = s->across ? s->across[i] : 0.0f;
                         /* the attempted velocity is the frame's end one (0x10019310: v + a t before the move) */
                         float dyi = dy_sub, vyi = dy_sub == 0.0f ? 0.0f : imp3 ? vy3 : dt > 0.0f ? 2.0f * dy_frame / (dt * 182.0f) - s->units[i].vy : s->units[i].vy;
@@ -2330,7 +2434,7 @@ void msim_step(msim *s, int32_t dt_ms)
                         s->units[i].blocked = !(imp & 2);
                         if (!(imp & 2)) {
                             if (s->collision_damage)   /* Combat Variables: a global switch in the engine */
-                                combat_collision(&s->units[i], sp3, wn[1], atan2f(-wn[0], -wn[2]) * 57.29578f - ac->mech.heading, &s->rng);
+                                combat_collision(&s->units[i], sp3, wn[1], atan2f(-wn[0], -wn[2]) * 57.29578f - (ac->mech.heading + m->twist), &s->rng);   /* off heading + twist (GBL 0x20bc7: object +0x60 + +0x6c) */
                             msim_impact_damage(s, i, sp3);
                         }
                     touched = 1;
@@ -2683,7 +2787,7 @@ static void collision_lods(msim *s)
         if (r > 0) {
             mech3d *m = &s->col_lod[k][r - 1];
             memcpy(m->origin, ac->mech.origin, sizeof m->origin);
-            m->heading = ac->mech.heading; m->twist = ac->mech.twist; m->pose_off = ac->mech.pose_off;
+            m->heading = ac->mech.heading; m->twist = ac->mech.twist; m->gun_pitch = ac->mech.gun_pitch; m->pose_off = ac->mech.pose_off;
             mech3d_pose(m, (const anim_set *)ac->mech.pose_anim, ac->mech.pose_t);
         }
     }
@@ -2713,7 +2817,7 @@ static float aim_range_step(msim *s, msim_aim *a, int hit, float dist)
     if (!a->ok) {
         a->range.t = a->conv.t = 0;   /* set up with the unit at the mission's start (0x10018a20) */
         a->range.target = a->range.value = a->conv.target = a->conv.value = 50000;
-        a->range.tau = 3620; a->conv.tau = 36;
+        a->range.tau = 3640; a->conv.tau = 36;   /* GBL 0x24eef / 0x24f15: 0.2 s and 20 s -> 0x4a990 chop(x 182) (the DLL 3620) */
         a->ok = 1;
     }
     iservo_step(&a->range, now);
@@ -2961,6 +3065,12 @@ static int gbl_narc_lock(const msim *s, int wid, int target)
     return s->armed[target] && s->units[target].narc && !s->units[target].destroyed;
 }
 
+/* GBL 0x25680 counts a death in the destroyed / killed-by-the-player counters only for a unit whose object flag word
+ * +0x14 has 0x1400 (the test (+0x15 & 0x14), 0x256f6 / 0x25763): that word is the GPS chunk's +0x1a (0x509c9), never
+ * changed in those bits at run time. Every GBL scene's unit has 0x400 (147) or 0xc00 (25); in the PRJ's missions 0x400
+ * (590), 0xc00 (5), 0x1400 (11: RUST, WHIT) and 0 (2: CYAN's doors - not counted). The wingman counters +0x34 / +0x36
+ * have no such test */
+static int car_counted(const world_actor *ac) { return (ac->unit_flags & 0x1400u) != 0; }
 static void car_inc(msim *s, int off)
 {
     unsigned v = (unsigned)(s->career[off] | s->career[off + 1] << 8) + 1;
@@ -2972,8 +3082,11 @@ int msim_write_career(const msim *s, const char *path)
     uint8_t b[80];
     if (!f) return -1;
     memcpy(b, s->career, sizeof b);
-    /* end status DAT_102441dd (0x10016280): 1 normal, 2 ejected, 4 automatic ejection aborted (hostile atmosphere) */
-    b[0x1d] = s->player_unit.ejected == 1 ? 2 : s->player_unit.ejected == 2 ? 4 : 1;
+    /* the player's end state +0x1d (DAT_000b6f9d): 1 from the start (0x15b14); GBL 0x25680 at the player's death: 2 ejected
+     * (state 5, a breathable atmosphere), 4 destroyed - outright, or an ejection a hostile atmosphere aborted. The
+     * debriefing plays "deathmov" on a failure with 4 and not 2 (MW2SHELL 0x25a0b). The port had written 1 for a
+     * destroyed player (the 3Dfx DLL's meaning of 4 was only the aborted ejection) */
+    b[0x1d] = s->player_unit.ejected == 1 ? 2 : (s->player_unit.ejected == 2 || s->player_unit.destroyed) ? 4 : 1;
     fwrite(b, 1, sizeof b, f);
     fclose(f);
     return 0;
@@ -3385,7 +3498,7 @@ static void combat_step(msim *s, float dt)
         /* the AI's trigger (+0x25): cleared by the state's movement (0x100130f0 case 2, 0x10013290), which does not
          * run when a rule fired (0x10011c50) - then it holds */
         if (m && !m->rule_fired) s->units[i].ai_trigger = 0;
-        if (!s->armed[i] || s->units[i].destroyed || !pick_enemy(s, i, &ex, &ez, &ey, &ef, &eh, &who)) continue;
+        if (!s->armed[i] || s->units[i].destroyed || dummy_unit(s, i) || !pick_enemy(s, i, &ex, &ez, &ey, &ef, &eh, &who)) continue;
         (void)ef;
         aim_h = who == -1 ? s->player_unit.y + pl_h * 0.55f : ey + eh * 0.55f;   /* (a task's nav point / thing: its point) */
         dx = ex - (float)s->actors[i].mech.origin[0];
@@ -3849,9 +3962,21 @@ static void combat_step(msim *s, float dt)
                     }
                 }
                 if (!was && tu->destroyed) {
-                    if (sh->owner == -1) car_inc(s, KILLED_BY_PLAYER[side]);
-                    car_inc(s, KILLED[side]);
-                    if (side == 2) car_inc(s, tu->ejected == 1 ? 0x36 : 0x34);   /* a wingman lost (0x10016280: +0x36 if it ejected) */
+                    /* GBL 0x25680: a 'Mech (class 1) counts in +0x07 / +0x09 / +0x0b (the player's kill) and +0x1e / +0x20 /
+                     * +0x22 (destroyed), any other unit in +0x44 / +0x46 / +0x48 and +0x4a / +0x4c / +0x4e - the
+                     * debriefing's "Enemy Vehicles Destroyed" (125 each) and "Enemy Mechs Destroyed" (250; a trial is
+                     * won by a 'Mech kill). A unit of the player's star (unit +8 = the player's table +8) lost: +0x34,
+                     * +0x36 if it ejected - the debriefing's "Friendly Unit Deaths" (-4000 each); allies of other
+                     * tables (JESS's Phantom / Executioner) are not wingmen. The port had counted every unit as a 'Mech
+                     * and every friendly as a wingman */
+                    static const int KILLED_BY_PLAYER_V[3] = {0x44, 0x46, 0x48}, KILLED_V[3] = {0x4a, 0x4c, 0x4e};
+                    int mech = s->actors[hit_unit].unit_class == 1;
+                    if (car_counted(&s->actors[hit_unit])) {
+                        if (sh->owner == -1) car_inc(s, mech ? KILLED_BY_PLAYER[side] : KILLED_BY_PLAYER_V[side]);
+                        car_inc(s, mech ? KILLED[side] : KILLED_V[side]);
+                    }
+                    if (s->actors[hit_unit].table == 0) car_inc(s, tu->ejected == 1 ? 0x36 : 0x34);
+                    if (s->msg_seen) s->msg_seen[hit_unit] |= 4;   /* counted (unit_messages counts the other deaths) */
                 }
             }
             if (s->on_effect) {   /* impact effect at the hit point; the death explosion when it kills */
@@ -4650,6 +4775,27 @@ static float dos_thr_servo(float cur, float tgt, float ticks)
     if (labs(st) >= labs(d)) return (float)t / 1024.0f;
     return (float)(v + st) / 1024.0f;
 }
+/* the leg turn demand c[0xe] walking (GBL 0x28054..0x280ed): input = +0xc on the 1024 scale, spd = c[0xb] in cm/s; kv =
+ * c[0xb] (16.16 cm/tick) / 10000 (idiv, toward zero; ~km/h): 0 when kv is 0 for a computer-run unit, or for the player
+ * with the throttle gain c[0x2d] at 0 (immobile); else (input / 1024, toward zero in 16.16) x 90 x cos(min(80, kv) deg)
+ * (the 2.29 table, 0x3b338). Airborne (object +0x80 bit 4): the autopilot on (c[0x30]) keeps the last demand, else 0 */
+float msim_leg_demand(float input, float spd, int player, float gain, int airborne, int autopilot, float prev)
+{
+    int kv = (int)(spd * (65536.0f / 182.0f)) / 10000;
+    if (airborne) return autopilot ? prev : 0.0f;
+    if (kv == 0 && (!player || gain <= 0.0f)) return 0.0f;
+    if (kv > 80) kv = 80;
+    return input / 1024.0f * 90.0f * cosf((float)kv * 3.14159265f / 180.0f);
+}
+/* a whole-turn twist (a turret, GBL 0x2f1a9..0x2f1d3 then the servo 0x4a9d0): the value taken round to within 180 degrees
+ * of the demand, then stepped toward it; returned within +-180 */
+float msim_twist_round(float cur, float demand, float T, float ticks)
+{
+    cur = demand - wrap180(demand - cur);
+    return wrap180(drive_servo(cur, demand, T, ticks));
+}
+float msim_dos_len(float x, float y, float z) { return oct_len(x, y, z); }
+float msim_servo(float cur, float tgt, float T, float ticks) { return drive_servo(cur, tgt, T, ticks); }
 void msim_drive_step(float *thr, float *spd, float *vel, float thr_target, float rev, float top, int drive, int slow, float ticks)
 {
     float c10;
@@ -5014,8 +5160,8 @@ void msim_impact_damage(msim *s, int owner, float speed)
 {
     const terrain_t *t = (const terrain_t *)s->terrain;
     int pi = g_impact_part;
-    if (!(speed > 3.0693676f) || !t || !t->thing_of || pi < 0 || pi >= t->nparts || t->thing_of[pi] < 0) return;
-    building_damage(s, t->thing_of[pi], (speed - 3.0693676f) * 0.050123077f * 3.0f, owner, g_impact_at);
+    if (!(speed > 200000.0f / 65536.0f) || !t || !t->thing_of || pi < 0 || pi >= t->nparts || t->thing_of[pi] < 0) return;
+    building_damage(s, t->thing_of[pi], (float)(int)((speed - 200000.0f / 65536.0f) * (3.0f * 65536.0f / 1300000.0f)), owner, g_impact_at);   /* GBL 0x20d0c: 0x52cd0(thing, damage >> 16) */
 }
 /* the object of the last impact is destructible (its thing; the impact sound 0xc8 MECBLDC1, else 0xe5 MECMTNHD:
  * 0x10019cf8 tests the object's +3 bit 1) */
@@ -5358,12 +5504,14 @@ static int probe_engine(const msim *s, int self, const float p0[3], const float 
 }
 
 /* dos: the DOS broad phase (dos_broad_reject) for the world entries and the units' pieces */
+static int probe_unit_hit;   /* the unit the last probe_engine_ex stopped at (hit 2): -1 the player, an actor; -2 none */
 static int probe_engine_ex(const msim *s, int self, const float p0[3], const float p1[3], int dos, int *climb, float *ox, float *oz)
 {
     const terrain_t *t = (const terrain_t *)s->terrain;
     float tt = 3.4e38f, n[3] = {0, 1, 0}, dx = p1[0] - p0[0], dz = p1[2] - p0[2], l2 = dx * dx + dz * dz, len = sqrtf(l2);
     int ci, hit = 0, k;
     *climb = 0;
+    probe_unit_hit = -2;
     if (t && clist_seg(s, p0, p1, dos ? 2 : 0, &tt, n, &ci)) {
         const cobj_t *c = &t->co[ci];
         float box[6], sph[4];
@@ -5396,7 +5544,7 @@ static int probe_engine_ex(const msim *s, int self, const float p0[3], const flo
                 hl = e > 0.0f ? e : g0.len;   /* 0x100107b0: the end stays when the entry is 0 */
                 if (!(e < tt) || !(hl < tt)) continue;
                 tt = hl;
-                hit = 2; *climb = 0; *ox = sph[0]; *oz = sph[2];
+                hit = 2; *climb = 0; *ox = sph[0]; *oz = sph[2]; probe_unit_hit = k;
                 if (getenv("MW2_PROBE_TRACE")) fprintf(stderr, "probe %.2fs actor %d: unit %d piece %s r %.0f at %.0f of %.0f\n", s->now / 1000.0, self, k, pp->model_name, sph[3], hl, g0.len);   /* TEST ONLY */
             }
         }
@@ -5404,6 +5552,15 @@ static int probe_engine_ex(const msim *s, int self, const float p0[3], const flo
     return hit;
 }
 
+/* GBL 0x2e450(unit, y): the line from the unit's x / z at height y to its target's position (+0xc8..+0xd0, the object's:
+ * feet + centre height) through the collision list (0x1da90 / 0x1c640): clear when it meets nothing, or when the object
+ * it meets first is the target itself */
+static int jump_line_clear(const msim *s, int i, int who, float y, const float to[3])
+{
+    float p0[3] = {(float)s->actors[i].mech.origin[0], y, (float)s->actors[i].mech.origin[2]}, ox, oz;
+    int climb, hit = probe_engine_ex(s, i, p0, to, 1, &climb, &ox, &oz);
+    return !hit || (hit == 2 && probe_unit_hit == who);
+}
 int msim_test_probe(const msim *s, const float p0[3], const float p1[3], float *ox, float *oz)   /* TEST ONLY */
 {
     int climb;
@@ -5623,36 +5780,40 @@ static void put32le(unsigned char *p, uint32_t v) { p[0] = (unsigned char)v; p[1
 
 int msim_write_results(const msim *s, const char *path)
 {
-    /* engine 0x1000aba0: [0] "MW2M", [1] entries, [2] the star's start (s), [3] when its result was set (s, -1 none;
-     * the port: the end), [4] its status; per visible table-0 node 13 ints: [0] succeeded, [1] the raw priority byte
-     * (L-6), [2] armed (s), [3] resolved (s, -1), [4] main objective ('M'), text from [5] (node +0xad) - as the
-     * original's own file (YELLSCN1: types 1, 1, 2, 4; [4] 1 for the two M nodes) */
-    unsigned char b[0x9d4];
+    /* GBL 0x17300 (at the simulation's end): [0] "MW2M", [1] entries, [2] the player's table's start time (+0x04: 0x16050
+     * sets it to the clock at the mission start, 0), [3] its result's time (+0x08, s; -1 none), [4] its result (+0x38: 0 none, 2 success,
+     * 3 failed, 4 time exceeded); then per SHOWN node (+0x5c, toggles included) 13 ints: [0] succeeded (state 5), [1] the
+     * raw priority byte (L-6), [2] armed (s, -1), [3] finished (s, -1), [4] main objective ('M'), its text at [5] copied
+     * up to its NUL (a text of 32+ characters runs into the next entry, whose fields then overwrite it) */
+    unsigned char b[0x9d4 + 64];
     const mtbl_table *t0 = &s->logic.tables[0];
     int i, n = 0;
     FILE *f;
     memset(b, 0, sizeof b);
     put32le(b + 0, 0x4d32574d);   /* "MW2M", as the original's file */
     put32le(b + 8, 0);
-    put32le(b + 12, (uint32_t)((s->ended_at ? s->ended_at : s->now) / 1000));
+    put32le(b + 12, s->logic.table_count > 0 && s->logic.result[0] && s->logic.result_time[0] >= 0 ? (uint32_t)(s->logic.result_time[0] / 1000) : 0xffffffffu);
     put32le(b + 16, (uint32_t)s->outcome);
-    for (i = 0; i < t0->node_count && 20 + (n + 1) * 52 <= (int)sizeof b; i++) {
+    for (i = 0; i < t0->node_count && 20 + (n + 1) * 52 <= 0x9d4; i++) {
         const mtbl_node *nd = &t0->nodes[i];
         unsigned char *e = b + 20 + n * 52;
         int32_t st = s->logic.started[0][i], en = s->logic.ended[0][i];
+        size_t l = strlen(nd->text);
         if (!s->logic.shown[0][i]) continue;
         put32le(e, s->logic.state[0][i] == MTBL_OK);
         put32le(e + 4, (uint32_t)nd->priority);
         put32le(e + 8, st >= 0 ? (uint32_t)(st / 1000) : 0xffffffffu);
         put32le(e + 12, en >= 0 ? (uint32_t)(en / 1000) : 0xffffffffu);
         put32le(e + 16, nd->objective == 'M' ? 1u : 0u);
-        memcpy(e + 20, nd->text, strlen(nd->text) < 31 ? strlen(nd->text) : 31);
+        if (l > (size_t)(b + sizeof b - 1 - (e + 20))) l = (size_t)(b + sizeof b - 1 - (e + 20));
+        memcpy(e + 20, nd->text, l);
+        e[20 + l] = 0;
         n++;
     }
     put32le(b + 4, (uint32_t)n);
     f = fopen(path, "wb");
     if (!f) return -1;
-    if (fwrite(b, 1, sizeof b, f) != sizeof b) { fclose(f); return -1; }
+    if (fwrite(b, 1, 0x9d4, f) != 0x9d4) { fclose(f); return -1; }
     return fclose(f);
 }
 

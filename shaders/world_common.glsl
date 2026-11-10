@@ -39,6 +39,7 @@ layout(std140, set = UBO_SET, binding = 0) uniform WorldFrame {
     vec4  u_tidc[8];   // xyz (was vec3[8])
     ivec4 u_pit_rank4[32];   // u_pit_rank[128] (GLR_PIT_MAX), four to an ivec4
     int   u_dos_near;      // the DOS view's near plane, camera z in quarter units: (+0x3c = (zoom x half width >> 17) + 1) x 4 (DAT_001617f8)
+    vec2  u_hz_L;          // the DOS horizon line's rows at the window's left and right columns (0x3ab4d's integers) as GL y: y0 + h - row
 };
 
 layout(std140, set = UBO_SET, binding = 1) uniform WorldDraw {
@@ -81,12 +82,40 @@ ivec2 dos_camscr(ivec3 c) { ivec2 h = ivec2(u_vp) / 2; int z = max(c.z, 1); retu
 // a polygon's corner on the near plane (GBL 0x3e8fe = base 0x3de4e) between a (behind) and b, or b and a: x, y
 // interpolated to z = nr (the cockpit set's: 32 quarter units, DAT_0014feb0; the view's u_dos_near) with imul / idiv; t
 // the share for the shade
+// (imul / idiv: the product is 64-bit - a corner far behind the eye gives (x or y difference) x (near - z) beyond 2^31,
+// DOSBox SACHSCN1 tilted up: the water's near-clipped quad wrapped and painted the canyon wall; dos_muldiv below)
 const int DOS_PIT_NEAR = 32;
+uvec2 dos_mul64(uint x, uint y) {   // x y as (hi, lo), 32-bit parts only (every backend)
+  uint xl = x & 0xffffu, xh = x >> 16, yl = y & 0xffffu, yh = y >> 16;
+  uint ll = xl * yl, lh = xl * yh, hl = xh * yl, hh = xh * yh, mid = lh + hl, mc = mid < lh ? 1u : 0u;
+  uint lo = ll + (mid << 16), c1 = lo < ll ? 1u : 0u;
+  return uvec2(hh + (mid >> 16) + (mc << 16) + c1, lo);
+}
+bool dos_le64(uvec2 a, uvec2 b) { return a.x < b.x || (a.x == b.x && a.y <= b.y); }
+uint dos_div64(uint n, uint d) {   // floor((n << 32) / d), n < d: long division
+  uint q = 0u, r = n;
+  for (int i = 0; i < 32; i++) { bool c = (r & 0x80000000u) != 0u; r <<= 1; q <<= 1; if (c || r >= d) { r -= d; q |= 1u; } }
+  return q;
+}
+int dos_muldiv(int a, int b, int c) {   // trunc(a b / c), a b a 64-bit product (idiv after imul)
+  if (c == 0) return 0;
+  uint ua = uint(abs(a)), ub = uint(abs(b)), uc = uint(abs(c));
+  uvec2 P = dos_mul64(ua, ub);
+  uint q = uint((float(P.x) * 4294967296.0 + float(P.y)) / float(uc));
+  for (int it = 0; it < 6; it++) {
+    uvec2 Q = dos_mul64(q, uc);
+    if (!dos_le64(Q, P)) { q--; continue; }
+    uvec2 Q1 = dos_mul64(q + 1u, uc);
+    if (dos_le64(Q1, P)) { q++; continue; }
+    break;
+  }
+  return ((a < 0) != (b < 0)) != (c < 0) ? -int(q) : int(q);
+}
 ivec3 dos_nclip(ivec3 A, ivec3 B, int nr, out float t) {
   if (B.z <= A.z) { int dz = A.z - B.z, e2 = nr - B.z; t = 1.0 - float(e2) / float(max(dz, 1));
-    return ivec3(dos_idiv((A.x - B.x) * e2, dz) + B.x, dos_idiv((A.y - B.y) * e2, dz) + B.y, nr); }
+    return ivec3(dos_muldiv(A.x - B.x, e2, dz) + B.x, dos_muldiv(A.y - B.y, e2, dz) + B.y, nr); }
   int dz = B.z - A.z, e2 = nr - A.z; t = float(e2) / float(max(dz, 1));
-  return ivec3(dos_idiv((B.x - A.x) * e2, dz) + A.x, dos_idiv((B.y - A.y) * e2, dz) + A.y, nr);
+  return ivec3(dos_muldiv(B.x - A.x, e2, dz) + A.x, dos_muldiv(B.y - A.y, e2, dz) + A.y, nr);
 }
 bool dos_ispit(int vtx) { int e = int(dvtx(vtx * 13 + 12) + 0.5) / 65536; return e >= 1 && e < 200; }
 // the near plane a polygon is clipped at in the camera's integers (GBL 0x3ec8e -> 0x3e8fe, DAT_001617f8): the cockpit
@@ -98,6 +127,32 @@ ivec2 dos_scr(vec3 w) {
   int xc = int(dos_rnd(dot(u_dos_rx, d))), yc = int(dos_rnd(dot(u_dos_ry, d))), zc = max(int(dos_rnd(dot(u_dos_rz, d))), 1);
   ivec2 c = ivec2(u_vp) / 2;
   return ivec2(c.x + dos_pq(xc, u_dos_ps.x, zc), c.y - dos_pq(yc, u_dos_ps.y, zc));
+}
+// a two-corner polygon (a line: GBL 0x3d780 -> 0x54fa9, DAT_000a7974 = 1 in the data): its corners' DOS points - both in
+// front, or the one in front and the edge's near-plane point (ASSUMED there: the original's walk then lists three
+// records, the near point twice, and fills them as a polygon); false when both are behind
+bool dos_line_ends(vec3 A, vec3 B, out ivec2 p0, out ivec2 p1) {
+  int nr = max(u_dos_order != 0 ? u_dos_near : 0, 1); float t;
+  ivec3 a = dos_cam(A), b = dos_cam(B);
+  if (a.z < nr && b.z < nr) return false;
+  if (a.z < nr) a = dos_nclip(a, b, nr, t);
+  else if (b.z < nr) b = dos_nclip(a, b, nr, t);
+  p0 = dos_camscr(a); p1 = dos_camscr(b);
+  return true;
+}
+// 0x54fa9's pixels: from corner 0 along the longer axis, both ends included, the other coordinate stepped by the carry
+// of a 0.32 fraction s = (minor << 32) / major (0xffffffff when equal) started at 0x80000000; clipped to the window
+// without changing the walk (run under unicorn against the rule: identical on 1300 random lines, clipped ones included)
+bool dos_line_on(ivec2 p, ivec2 a, ivec2 b) {
+  ivec2 d = b - a, ad = abs(d), sg = ivec2(d.x >= 0 ? 1 : -1, d.y >= 0 ? 1 : -1);
+  if (d.x == 0) return p.x == a.x && p.y >= min(a.y, b.y) && p.y <= max(a.y, b.y);
+  if (d.y == 0) return p.y == a.y && p.x >= min(a.x, b.x) && p.x <= max(a.x, b.x);
+  bool xm = ad.x > ad.y; int mj = xm ? ad.x : ad.y, mn = xm ? ad.y : ad.x;
+  uint s = ad.x == ad.y ? 0xffffffffu : dos_div64(uint(mn), uint(mj));
+  int k = xm ? (p.x - a.x) * sg.x : (p.y - a.y) * sg.y;
+  if (k < 0 || k > mj) return false;
+  uvec2 q = dos_mul64(uint(k), s); uint lo = q.y + 0x80000000u; int st = int(q.x + (lo < q.y ? 1u : 0u));
+  return xm ? p.y == a.y + sg.y * st : p.x == a.x + sg.x * st;
 }
 #endif
 

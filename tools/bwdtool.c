@@ -27,6 +27,7 @@ int main(int argc, char **argv)
     if (!(a = prj_open(argv[1], err, sizeof err))) { fprintf(stderr, "%s\n", err); return 1; }
     dp_add_roots_from_env();
     t = prj_find_type(a, "BWD");
+    prj_set_loose_reader(dp_read_file);   /* scenes are loose <NAME>.BWD files in the install folder */
 
     if (strcmp(argv[2], "logic") == 0 && argc >= 4) {
         /* the scene's MTBL state tables, readable */

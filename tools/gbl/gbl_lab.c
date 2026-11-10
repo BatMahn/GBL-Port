@@ -268,27 +268,77 @@ static int gl_wtable(int *out)
     return n;
 }
 #define GL_MAXW 14   /* the design's weapon array 0xabf40: 14 entries (loops to 0x38 bytes, FUN_00032f50); base 10 */
-/* the masses: the base's rules (mek_masses: engine, gyro, cockpit, jets, internal, armour, ammo, heat-sink guess) with
- * GBL's weapons (every weapon in the design's weapon array, the AMS included - FUN_00032f50 sums the table's mass over
- * 0xabf40) and equipment = MASC (tonnage / 25; MEASURED D2_c08 Horned Owl 1.00 T, D2_c28 Executioner 4.00 T) */
+/* the masses as GBL MW2SHELL's design load FUN_00034b30 computes them (hundredths of a ton; tools/audit/lab_diff.py runs it
+ * under unicorn on every stock design and compares): rating = tonnage x walk clamped to 10..400 (0x35020); XL when location
+ * 1 holds slot 5850 (0x16da); Endo-steel any slot 8001, Ferro-fibrous any 9001; heat sinks (0xabe84) = (dissipation - 10)
+ * x 100 as single sinks; double (0xabe80 = 2) when TWO or more slots are 6001 (one alone is single: 0x36260..0x36373),
+ * with no 6001 when the design is over its mass with single sinks, the dissipation is 20 or more and even (0x36391); double
+ * halves it: trunc(x / 2) - 500 (0x363dc). The page shows count (x + 50) / 100 + 10 and "count (count x 2)". Weapons: every
+ * weapon in the design's weapon array, the AMS included (FUN_00032f50 sums the table's mass over 0xabf40); equipment =
+ * MASC (tonnage / 25; MEASURED D2_c08 Horned Owl 1.00 T, D2_c28 Executioner 4.00 T) */
+static int gl_any_slot(const mek_def *d, int lo, int hi, uint16_t id)
+{
+    int l, k, n = 0;
+    for (l = lo; l <= hi && l < MEK_LOC_COUNT; l++)
+        for (k = 0; k < d->loc[l].slot_count && k < MEK_SLOTS; k++) n += d->loc[l].slots[k] == id;
+    return n;
+}
 static void gl_masses(const mek_def *d, mek_mass *m)
 {
-    int k, l, s6001 = 0, masc = 0;
+    int k, pts = 0, x, sinktype;
     mek_masses(d, m);
+    m->rating = (int)(d->tonnage * d->walk_mp);
+    if (m->rating < 10) m->rating = 10;
+    if (m->rating > 400) m->rating = 400;
+    m->xl = gl_any_slot(d, 1, 1, 5850) > 0;
+    m->endo = gl_any_slot(d, 0, MEK_LOC_COUNT - 1, 8001) > 0;
+    m->ferro = gl_any_slot(d, 0, MEK_LOC_COUNT - 1, 9001) > 0;
+    m->engine = m->xl ? engine_std_tons(m->rating) / 2.0 : engine_std_tons(m->rating);
+    m->gyro = ceil(m->rating / 100.0);
+    m->internal = m->endo ? d->tonnage / 20.0 : d->tonnage / 10.0;
+    for (k = 0; k < MEK_LOC_COUNT; k++) pts += (int)(d->loc[k].armor + d->loc[k].rear_armor);
+    m->armor = armor_tons(pts, m->ferro);
     m->weapons = 0;
     for (k = 0; k < d->item_count; k++) {
         const mek_weapon *w = d->items[k].id < 5000 && d->items[k].id % 100 ? gl_wp((int)(d->items[k].id / 100)) : NULL;
         if (w) m->weapons += w->weight_x100 / 100.0;
     }
-    for (l = 0; l < MEK_LOC_COUNT; l++)
-        for (k = 0; k < d->loc[l].slot_count && k < MEK_SLOTS; k++) { if (d->loc[l].slots[k] == 6001) s6001 = 1; if (d->loc[l].slots[k] == 5001) masc = 1; }
-    m->equip = masc ? masc_tons((int)d->tonnage) : 0;
-    m->dbl = s6001; m->nsinks = m->dbl ? m->dissip / 2 : m->dissip; m->sinks = m->nsinks > 10 ? m->nsinks - 10 : 0;
+    m->equip = gl_any_slot(d, 0, MEK_LOC_COUNT - 1, 5001) ? masc_tons((int)d->tonnage) : 0;
+    m->dissip = (int)d->heat_sinking;
+    x = (m->dissip - 10) * 100;
+    k = gl_any_slot(d, 0, MEK_LOC_COUNT - 1, 6001);
+    sinktype = k >= 2 ? 2 : k == 1 ? 1 : 0;
+    m->sinks = x / 100.0;
     m->used = m->engine + m->gyro + m->cockpit + m->sinks + m->jets + m->internal + m->armor + m->weapons + m->ammo + m->equip;
-    if (!m->dbl && m->used > d->tonnage + 1e-9 && m->sinks >= 10 && m->dissip % 2 == 0) {   /* as mek_masses */
-        m->dbl = 1; m->nsinks = m->dissip / 2; m->sinks = m->nsinks > 10 ? m->nsinks - 10 : 0;
-        m->used = m->engine + m->gyro + m->cockpit + m->sinks + m->jets + m->internal + m->armor + m->weapons + m->ammo + m->equip;
+    if (!sinktype) sinktype = m->used > d->tonnage + 1e-9 && m->dissip > 19 && m->dissip % 2 == 0 ? 2 : 1;
+    if (sinktype == 2) x = x / 2 - 500;
+    m->dbl = sinktype == 2;
+    m->sinks = x / 100.0;
+    m->nsinks = (x + 50) / 100 + 10;
+    m->used = m->engine + m->gyro + m->cockpit + m->sinks + m->jets + m->internal + m->armor + m->weapons + m->ammo + m->equip;
+}
+/* TEST ONLY (GBL_LAB_DUMP=name,name,...: tools/audit/lab_diff.py): each design's masses as the Mech Lab shows them, in
+ * hundredths of a ton, then exit */
+static int gl_lab_dump(const char *list)
+{
+    char nm[64];
+    const char *p = list;
+    while (*p) {
+        size_t n = strcspn(p, ",");
+        mek_def d;
+        mek_mass m;
+        snprintf(nm, sizeof nm, "%.*s", (int)(n < 63 ? n : 63), p);
+        p += n + (p[n] == ',');
+        if (!nm[0]) continue;
+        if (load_mek(nm, &d) != 0) { printf("%s missing\n", nm); continue; }
+        gl_masses(&d, &m);
+#define HT(v) (int)lrint((v) * 100.0)
+        printf("%s ton %d used %d rating %d xl %d engine %d gyro %d cockpit %d sinks %d count %d dbl %d jets %d njets %d internal %d armor %d weapons %d ammo %d equip %d\n",
+               nm, HT(d.tonnage), HT(m.used), m.rating, m.xl, HT(m.engine), HT(m.gyro), HT(m.cockpit), HT(m.sinks), m.nsinks, m.dbl, HT(m.jets), m.njets,
+               HT(m.internal), HT(m.armor), HT(m.weapons), HT(m.ammo), HT(m.equip));
+#undef HT
     }
+    return 0;
 }
 static void gl_ed_masses(const medit *e, mek_mass *m)   /* = ed_masses on gl_masses */
 {
@@ -441,7 +491,7 @@ static void gl_header(const char *l1, const char *l2)
  * D2_lab_main.png: Dire Wolf "22 (44)"; the HEAT SINKS page's Count ASSUMED the same) */
 static void gl_sinks_text(char *t, size_t n, const mek_mass *mm)
 {
-    if (mm->dbl) snprintf(t, n, "%d (%d)", mm->nsinks, mm->dissip); else snprintf(t, n, "%d", mm->nsinks);
+    if (mm->dbl) snprintf(t, n, "%d (%d)", mm->nsinks, mm->nsinks * 2); else snprintf(t, n, "%d", mm->nsinks);
 }
 static void gl_component_rows(const mek_mass *mm, int xl, int endo, int ferro, int tons, int edit)
 {

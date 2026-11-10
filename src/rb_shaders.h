@@ -57,8 +57,10 @@ typedef struct {
     float u_tidc[8][4];
     int32_t u_pit_rank4[32][4];
     int32_t u_dos_near;
-} rb_world_frame;   /* 1268 bytes */
-typedef char rb_world_frame_size_check[sizeof(rb_world_frame) == 1268 ? 1 : -1];
+    uint8_t _pad0[4];
+    float u_hz_L[2];
+} rb_world_frame;   /* 1280 bytes */
+typedef char rb_world_frame_size_check[sizeof(rb_world_frame) == 1280 ? 1 : -1];
 
 typedef struct {
     float u_wire[4];

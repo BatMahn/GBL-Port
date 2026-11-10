@@ -93,8 +93,10 @@ typedef struct {
     int          anim_rate;      /* TSK duration: ticks per key (x1.5 / x1 / x0.75 by gait, engine 0x1000e600) */
     int32_t      origin[3];      /* added to every posed part (placement in a world) */
     float        heading;        /* yaw of the whole mech, degrees */
-    int          twist_node;     /* torso node (carries the *_HEAD part), -1 if none */
+    int          twist_node;     /* torso node (carries the *_HEAD part; else the first THNG node), -1 if none */
     float        twist;          /* torso twist relative to the legs, degrees */
+    int          pitch_node;     /* the record's second THNG node (a turret's guns), -1 if none */
+    float        gun_pitch;      /* a turret's gun pitch on pitch_node, degrees, up positive (0 for other units) */
     float        tilt;           /* the torso node's own pitch, degrees, up positive (GBL MW2.EXE 0x26d05: the unit's +0x68 =
                                     the torso tilt servo >> 1 for a controller with +0x110 & 0x2000, then 0x1e350(torso node,
                                     +0x68, +0x6c twist, 0)) */

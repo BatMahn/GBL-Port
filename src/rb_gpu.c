@@ -774,6 +774,8 @@ static SDL_Rect rect_tl(const rtex *t, int x, int y, int w, int h)
 
 /* ---- state */
 void rb_viewport(int x, int y, int w, int h) { S.vp[0] = x; S.vp[1] = y; S.vp[2] = w; S.vp[3] = h; }
+int rb_test_tiny;
+static SDL_Rect tiny(SDL_Rect r) { if (rb_test_tiny) { if (r.w > 1) r.w = 1; if (r.h > 1) r.h = 1; } return r; }
 void rb_scissor(int on, int x, int y, int w, int h) { S.sc_on = on; S.sc[0] = x; S.sc[1] = y; S.sc[2] = w; S.sc[3] = h; }
 void rb_blend(int mode) { S.blend = mode; }
 void rb_depth_test(int on) { S.dtest = on; }
@@ -802,7 +804,7 @@ void rb_clear(const float rgba[4], int color, int depth)
     SDL_Rect r;
     record_target();
     t = cur_target();
-    r = S.sc_on ? rect_tl(t, S.sc[0], S.sc[1], S.sc[2], S.sc[3]) : rect_tl(t, 0, 0, t->w, t->h);
+    r = tiny(S.sc_on ? rect_tl(t, S.sc[0], S.sc[1], S.sc[2], S.sc[3]) : rect_tl(t, 0, 0, t->w, t->h));
     if (r.w <= 0 || r.h <= 0) return;
     c = cmd_new(C_CLEAR);
     memcpy(c->col, rgba, sizeof c->col);
@@ -857,7 +859,7 @@ void rb_draw(int first, int count)
     {   /* (the viewport unclamped: GL maps the whole rectangle, the target clips) */
         c->vp.x = (float)S.vp[0]; c->vp.y = (float)(t->h - S.vp[1] - S.vp[3]); c->vp.w = (float)S.vp[2]; c->vp.h = (float)S.vp[3];
         c->vp.min_depth = 0; c->vp.max_depth = 1;
-        c->sc = S.sc_on ? rect_tl(t, S.sc[0], S.sc[1], S.sc[2], S.sc[3]) : rect_tl(t, 0, 0, t->w, t->h);
+        c->sc = tiny(S.sc_on ? rect_tl(t, S.sc[0], S.sc[1], S.sc[2], S.sc[3]) : rect_tl(t, 0, 0, t->w, t->h));
     }
     c->count = (uint32_t)count;
     if (g_ncmd >= 2) {   /* the same state as the draw before, its stream vertices just after: one draw (the HUD's quads) */

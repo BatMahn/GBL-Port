@@ -322,6 +322,8 @@ int bwd_mission_load(prj_archive *a, const char *scene, bwd_mission *m)
                 c = &m->records[i].chunks[k]; /* records may have moved */
             } else if (strcmp(c->tag, "MUSI") == 0 && !m->music_track) {
                 bwd_musi(c, &m->music_track);
+            } else if (strcmp(c->tag, "CLIM") == 0 && c->size >= 6) {
+                m->clim_m = (int16_t)(c->data[4] | c->data[5] << 8);   /* movswl 0xc(chunk) (0x4f664) */
             } else if (strcmp(c->tag, "NAVP") == 0) {
                 bwd_navpoint *nv = realloc(m->navs, (size_t)(m->nav_count + 1) * sizeof *nv);
                 if (!nv) goto fail;

@@ -1412,7 +1412,7 @@ static int gbl_frame_hoh_cmp(const void *a, const void *b)
     if (x->rank != y->rank) return x->rank > y->rank ? -1 : 1;
     if (x->honor != y->honor) return x->honor > y->honor ? -1 : 1;
     if (x->done != y->done) return x->done > y->done ? -1 : 1;
-    return x < y ? -1 : x > y;   /* ties: record order (Watcom's qsort order is not known) - ASSUMED */
+    return 0;   /* ties: in the order Watcom's qsort leaves them (wc_qsort, tools/audit/qsort_diff.py) */
 }
 static void gbl_hall_of_honor(void)
 {
@@ -1423,7 +1423,7 @@ static void gbl_hall_of_honor(void)
     gbl_frame_logo logo;
     int i;
     for (i = 0; i < 20; i++) list[i] = &g_pil[i];
-    qsort(list, 20, sizeof list[0], gbl_frame_hoh_cmp);
+    wc_qsort(list, 20, sizeof list[0], gbl_frame_hoh_cmp);   /* 0x2b992: the library qsort 0x4b7aa */
     gbl_bg(2);
     gbl_frame_logo_open(&logo);
     for (;;) {

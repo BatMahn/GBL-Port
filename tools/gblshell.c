@@ -1367,6 +1367,7 @@ int main(int argc, char **argv)
         if (f) { if (fread(b, 1, 0x40, f) >= 0x40) g_transitions = b[0x3c] | b[0x3d] << 8; fclose(f); }
     }
     srand((unsigned)time(NULL));
+    if (getenv("GBL_LAB_DUMP")) return gl_lab_dump(getenv("GBL_LAB_DUMP"));   /* TEST ONLY */
     if (getenv("GBL_PILOT")) { g_cur = atoi(getenv("GBL_PILOT")); if (pil() && pil()->in_use) g_gstar[0] = pil()->star; else g_cur = -1; }
     if (getenv("GBL_SCREEN")) { g_state = atoi(getenv("GBL_SCREEN")); g_ctx = getenv("GBL_CTX") ? atoi(getenv("GBL_CTX")) : 0; g_flag = 1; }
     else if (!getenv("MW2_NO_INTRO") && !(argc > 2 && !strcmp(argv[argc - 1], "sim"))) gbl_video("mintro");   /* 0x3a207 */

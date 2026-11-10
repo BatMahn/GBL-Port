@@ -42,7 +42,7 @@ void main() {
   int tiwind = 0;
   v_tinofog = 0;
   int tisky = 0, ptc = -1;
-  if (pit >= 400) { ptc = pit - 400; pit = 0; }   // a point's pixel corner (glr set_layer)
+  if (pit >= 400) { ptc = pit - 400; pit = 0; }   // a point's pixel corner, 10 + a line's box corner (glr set_layer)
   else if (pit >= 300) { int q = pit - 300; tisky = q >= 8 ? 1 : 0; q -= 8 * tisky; v_tinofog = q >= 4 ? 1 : 0; q -= 4 * v_tinofog; tiwind = q == 1 ? 1 : q == 0 ? -1 : 0; pit = 0; }
   else if (pit >= 200) { kmode = pit - 200; pit = 0; }
   // the DOS draw list (glr_dos_list: the original's list built on the CPU, sorted by its own quicksort): this polygon's
@@ -330,7 +330,19 @@ void main() {
 #if DOS_LOOK
   // a point (one vertex, colour type 0): the pixel at its DOS integer projection, painted at its place in the draw list
   // (corners 0..5: two triangles over the pixel's square); not drawn outside the list
-  if (ptc >= 0) {
+  // a line (ptc 10..15, glr set_layer: a_pos corner 0, a_normal corner 1): the box of its DOS points' pixels, world.frag
+  // keeps 0x54fa9's
+  ivec2 la, lb;
+  if (ptc >= 10) {
+    if (u_dos == 0 || dli < 0 || dld > 2.5 || !dos_line_ends(a_pos, a_normal, la, lb)) gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+    else {
+      int lc = ptc - 10; vec2 h = 0.5 * u_vp;
+      ivec2 lo = clamp(min(la, lb), ivec2(-1), ivec2(u_vp)), hi = clamp(max(la, lb), ivec2(-1), ivec2(u_vp));
+      float px = float(lc == 1 || lc == 2 || lc == 4 ? hi.x + 1 : lo.x), py = u_vp.y - float(lc == 2 || lc == 4 || lc == 5 ? lo.y : hi.y + 1);
+      gl_Position = vec4((px - h.x) / h.x, (py - h.y) / h.y, 0.0, 1.0);
+    }
+  }
+  else if (ptc >= 0) {
     if (u_dos == 0 || dli < 0 || dld > 2.5) gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
     else {
       ivec2 sp = dos_scr(a_pos); vec2 h = 0.5 * u_vp;
