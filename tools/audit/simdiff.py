@@ -342,6 +342,234 @@ def manoeuvre_records(rep, rnd, n):
                           'class %d tons %d skill %d: dos %d rows / %d %s, port %d rows / %d %s' % (cls, tons, skill, rows, fp,
                           dos[:2], nr, first.value, prt[:2]))
 
+@test
+def seg_poly(rep, rnd, n):
+    """GBL 0x1c9f0 (a segment against one face: the plane crossing in 2.29 x cm integers, t = (-f << 16) / (n . d) on the
+    octagonal-length direction 0x1dbb0, the crossing point, then 0x1cbc0 -> 0x1cc50 / 0x1cfb0 / 0x1ce00 point in polygon
+    on the plane of the normal's largest component, and the segment cut there, 0x1de20) vs eseg_poly + cpoly_in (msim.c,
+    floats): random convex faces (3-6 integer vertices round a centre, any orientation) and segments crossing near them.
+    Hit / miss must agree, the cut point within 2 cm + 3.5 cm / cos (the DOS plane distance's rounding along a grazing segment); a case whose crossing lies within 2 cm of an edge (either side's
+    rounding can decide it) is counted, not judged."""
+    e = gblemu.Emu(); L = lib('msim')
+    F3 = ctypes.c_float * 3
+    edge = 0
+    for case in range(n * 40):
+        e.reset_data()
+        nv = rnd.randint(3, 6)
+        # the face's plane: a random unit normal, a centre, two axes in the plane
+        while True:
+            nx, ny, nz = rnd.gauss(0, 1), rnd.gauss(0, 1), rnd.gauss(0, 1)
+            if rnd.random() < 0.3: (nx, ny, nz) = rnd.choice([(0, 1, 0), (1, 0, 0), (0, 0, 1), (0, -1, 0), (1, 1, 0), (0, 1, 1)])
+            l = math.sqrt(nx * nx + ny * ny + nz * nz)
+            if l > 1e-3: break
+        nrm = (nx / l, ny / l, nz / l)
+        ax = (1, 0, 0) if abs(nrm[0]) < 0.9 else (0, 1, 0)
+        u = (nrm[1] * ax[2] - nrm[2] * ax[1], nrm[2] * ax[0] - nrm[0] * ax[2], nrm[0] * ax[1] - nrm[1] * ax[0])
+        lu = math.sqrt(sum(c * c for c in u)); u = tuple(c / lu for c in u)
+        w = (nrm[1] * u[2] - nrm[2] * u[1], nrm[2] * u[0] - nrm[0] * u[2], nrm[0] * u[1] - nrm[1] * u[0])
+        cen = [rnd.randint(-30000, 30000) for _ in range(3)]
+        R = rnd.choice([200, 1000, 5000, 20000])
+        angs = sorted(rnd.uniform(0, 2 * math.pi) for _ in range(nv))
+        if rnd.random() < 0.5: angs.reverse()
+        verts = [[int(round(cen[k] + R * (math.cos(a) * u[k] + math.sin(a) * w[k]))) for k in range(3)] for a in angs]
+        # DOS records: the face (+2 count, +4 offset of the index bytes, +0x14 normal 2.29), the vertices (0x2c each,
+        # world x / y / z at +0xc), the segment (0x38: start, end, delta, direction 16.16, length, +0x34 state)
+        N = [int(round(c * (1 << 29))) for c in nrm]
+        poly = e.alloc(0x60); vb = e.alloc(0x2c * nv); seg = e.alloc(0x40)
+        e.w16(poly + 2, nv); e.w32(poly + 4, 0x40)
+        for k in range(3): e.w32(poly + 0x14 + 4 * k, N[k])
+        for j in range(nv):
+            e.w8(poly + 0x40 + j, j)
+            for k in range(3): e.w32(vb + 0x2c * j + 0xc + 4 * k, verts[j][k])
+        # a segment from in front of the plane to behind it (now and then parallel, from behind, or short of it)
+        a, b = rnd.uniform(0, 1.3), rnd.uniform(0, 1.3)
+        q = [cen[k] + R * (a * math.cos(b * 6.28) * u[k] + a * math.sin(b * 6.28) * w[k]) for k in range(3)]
+        d0 = rnd.choice([rnd.uniform(1, 3000), rnd.uniform(1, 50), rnd.uniform(-500, -1)])
+        d1 = rnd.choice([rnd.uniform(-3000, -1), rnd.uniform(1, 400), -rnd.uniform(0, 30)])
+        tilt = [rnd.uniform(-1500, 1500) for _ in range(3)]
+        p0 = [int(round(q[k] + nrm[k] * d0 + tilt[k])) for k in range(3)]
+        p1 = [int(round(q[k] + nrm[k] * d1 - tilt[k] * rnd.uniform(0, 1))) for k in range(3)]
+        if p0 == p1: continue
+        for k in range(3):
+            e.w32(seg + 4 * k, p0[k]); e.w32(seg + 12 + 4 * k, p1[k]); e.w32(seg + 24 + 4 * k, p1[k] - p0[k])
+        e.w32(seg + 0x34, 0)
+        e.call(0x1dbb0, eax=seg)
+        if e.rs32(seg + 0x30) <= 0: continue
+        dh = e.call(0x1c9f0, eax=poly, edx=vb, ebx=seg) != 0
+        dpt = [e.rs32(seg + 12 + 4 * k) for k in range(3)]
+        out = F3()
+        vv = (ctypes.c_float * (3 * nv))(*[float(c) for vtx in verts for c in vtx])
+        ph = L.shim_seg_poly(vv, nv, F3(*nrm), F3(*map(float, p0)), F3(*map(float, p1)), out) != 0
+        # how near the plane crossing is to the face's edges (in the plane), for the edge class
+        dn = sum(nrm[k] * (p1[k] - p0[k]) for k in range(3))
+        near = False
+        if abs(dn) > 1e-9:
+            t = sum(nrm[k] * (verts[0][k] - p0[k]) for k in range(3)) / dn
+            X = [p0[k] + (p1[k] - p0[k]) * t for k in range(3)]
+            for j in range(nv):
+                A, B = verts[j], verts[(j + 1) % nv]
+                AB = [B[k] - A[k] for k in range(3)]; AX = [X[k] - A[k] for k in range(3)]
+                L2 = sum(c * c for c in AB) or 1
+                s = max(0, min(1, sum(AB[k] * AX[k] for k in range(3)) / L2))
+                if math.sqrt(sum((AX[k] - AB[k] * s) ** 2 for k in range(3))) < 2.0: near = True
+            if abs(t) * math.sqrt(sum((p1[k] - p0[k]) ** 2 for k in range(3))) < 2.0 or abs(1 - t) * math.sqrt(sum((p1[k] - p0[k]) ** 2 for k in range(3))) < 2.0: near = True
+            if abs(sum(nrm[k] * (p0[k] - verts[0][k]) for k in range(3))) < 2.0: near = True
+        if dh != ph and near: edge += 1; continue
+        # the DOS plane distance is a sum of six rounded 2.29 x cm products (up to 3 cm) and t a whole number: along the
+        # segment that is up to ~3 cm / cos(angle to the normal) + 1
+        sl = math.sqrt(sum((p1[k] - p0[k]) ** 2 for k in range(3)))
+        cs = abs(dn) / sl if sl else 1
+        tol = 2.0 + 3.5 / max(cs, 1e-3)
+        ok = dh == ph and (not dh or max(abs(dpt[k] - out[k]) for k in range(3)) <= tol)
+        rep.check(ok, 'case %d nv %d R %d: dos %s %s, port %s %s (p0 %s p1 %s)' % (case, nv, R, dh, dpt if dh else '',
+                  ph, [round(c, 1) for c in out] if ph else '', p0, p1))
+    rep.notes.append('%d cases within 2 cm of an edge / the plane / an end disagreed (not judged)' % edge)
+    # edge inputs: axis-aligned faces (a wall, a floor) with integer corners, hit straight on at a corner, on an edge, just
+    # inside / outside them (the DOS crossing rules count a point on an edge or a corner as inside)
+    for case in range(n * 20):
+        e.reset_data()
+        axis = rnd.randint(0, 2); sgn = rnd.choice([1, -1])
+        a1, a2 = [k for k in range(3) if k != axis]
+        x0, z0 = rnd.randint(-5000, 5000), rnd.randint(-5000, 5000)
+        wdt, hgt = rnd.randint(1, 3000), rnd.randint(1, 3000)
+        lvl = rnd.randint(-3000, 3000)
+        corners = [(x0, z0), (x0 + wdt, z0), (x0 + wdt, z0 + hgt), (x0, z0 + hgt)]
+        if rnd.random() < 0.5: corners = [(x0, z0), (x0 + wdt, z0 + hgt // 2), (x0, z0 + hgt)]
+        verts = []
+        for (c1, c2) in corners:
+            v = [0, 0, 0]; v[axis] = lvl; v[a1] = c1; v[a2] = c2; verts.append(v)
+        nv = len(verts)
+        nrm = [0.0, 0.0, 0.0]; nrm[axis] = float(sgn)
+        pick = rnd.choice(['corner', 'edge', 'in1', 'out1', 'mid'])
+        j = rnd.randrange(nv); A, B = verts[j], verts[(j + 1) % nv]
+        if pick == 'corner': h = list(A)
+        elif pick == 'mid': h = [sum(v[k] for v in verts) // nv for k in range(3)]
+        else:
+            f = rnd.uniform(0, 1); h = [int(round(A[k] + (B[k] - A[k]) * f)) for k in range(3)]
+            if pick != 'edge':
+                c = [sum(v[k] for v in verts) / nv for k in range(3)]
+                for k in (a1, a2):
+                    dd = 1 if c[k] > h[k] else -1 if c[k] < h[k] else 0
+                    h[k] += dd if pick == 'in1' else -dd
+        d0, d1 = rnd.randint(1, 2000), rnd.randint(1, 2000)
+        p0 = list(h); p0[axis] = lvl + sgn * d0
+        p1 = list(h); p1[axis] = lvl - sgn * d1
+        N = [int(round(c * (1 << 29))) for c in nrm]
+        poly = e.alloc(0x60); vb = e.alloc(0x2c * nv); seg = e.alloc(0x40)
+        e.w16(poly + 2, nv); e.w32(poly + 4, 0x40)
+        for k in range(3): e.w32(poly + 0x14 + 4 * k, N[k])
+        for jj in range(nv):
+            e.w8(poly + 0x40 + jj, jj)
+            for k in range(3): e.w32(vb + 0x2c * jj + 0xc + 4 * k, verts[jj][k])
+        for k in range(3):
+            e.w32(seg + 4 * k, p0[k]); e.w32(seg + 12 + 4 * k, p1[k]); e.w32(seg + 24 + 4 * k, p1[k] - p0[k])
+        e.w32(seg + 0x34, 0)
+        e.call(0x1dbb0, eax=seg)
+        dh = e.call(0x1c9f0, eax=poly, edx=vb, ebx=seg) != 0
+        out = F3()
+        vv = (ctypes.c_float * (3 * nv))(*[float(c) for vtx in verts for c in vtx])
+        ph = L.shim_seg_poly(vv, nv, F3(*nrm), F3(*map(float, p0)), F3(*map(float, p1)), out) != 0
+        rep.check(dh == ph, 'edge case %d (%s, axis %d): dos %s port %s, face %s, hit at %s' % (case, pick, axis, dh, ph, verts, h))
+
+@test
+def slot_point(rep, rnd, n):
+    """GBL 0x2d350 (a point d cm out in a 16-way slot of a unit: (d / 0xa6804[k], d / 0xa6808[k]) through the unit's object
+    matrix 0x3b98c, 2.29 fixed with the shrd / adc rounding) vs ai.c slot_point, every slot, d 10000 / 15000, random
+    units and headings (the matrix built for the heading as manoeuvre 1's rotation); and 0x2ced0 case 7 (manoeuvre 7's
+    start): 0x2d2f0 gets the unit's OWN code (+4 | 0x200), slot 3 / 15 (target 40 m or more away) or 4 / 12, d 10000 -
+    the port's manoeuvre 7 point is checked against that point round the unit"""
+    e = gblemu.Emu(); L = lib('ai')
+    F2 = ctypes.c_float * 2
+    for case in range(n * 4):
+        e.reset_data()
+        idx = rnd.randint(0, 20)
+        cx, cy, cz = rnd.randint(-300000, 300000), rnd.randint(-5000, 20000), rnd.randint(-300000, 300000)
+        h = rnd.choice([0.0, 90.0, 180.0, -90.0, rnd.uniform(-180, 180)])
+        a = math.radians(h); c, s_ = math.cos(a), math.sin(a)
+        rec = e.alloc(0x200); obj = e.alloc(0x100)
+        e.w32(0x10a390 + 4 * idx, rec); e.w32(rec + 0x40, obj); e.w32(rec + 0x60, 0x12345)
+        M = [c, 0, s_, 0, 1, 0, -s_, 0, c]
+        for k in range(9): e.w32(obj + 0x3c + 4 * k, int(round(M[k] * (1 << 29))))
+        for k, t in enumerate((cx, cy, cz)): e.w32(obj + 0x3c + 0x24 + 4 * k, t)
+        for d in (10000, 15000):
+            for k in range(16):
+                px, pz, py = e.alloc(4), e.alloc(4), e.alloc(4)
+                e.call(0x2d350, eax=idx | 0x200, edx=k, ebx=px, ecx=pz, stack=(py, d))
+                out = F2(); L.shim_slot_point(ctypes.c_float(cx), ctypes.c_float(cz), ctypes.c_float(h), k, ctypes.c_float(d), out)
+                dx, dz = e.rs32(px), e.rs32(pz)
+                rep.check(abs(dx - out[0]) <= 1.5 and abs(dz - out[1]) <= 1.5,
+                          'slot %d d %d h %.1f: dos (%d, %d) port (%.1f, %.1f)' % (k, d, h, dx - cx, dz - cz, out[0] - cx, out[1] - cz))
+    # 0x2ced0 case 7: what goes to 0x2d2f0
+    for case in range(n):
+        for dist in (3999, 4000, rnd.randint(0, 3999), rnd.randint(4000, 90000)):
+            for r in (0, 1):
+                e.reset_data()
+                u = e.alloc(0x200); e.w32(u + 4, 5); e.w8(u + 0x170, 7); e.w32(u + 0xc0, dist)
+                got = []
+                e.stub(0x4af60, lambda em, r=r: r)
+                e.stub(0x2d2f0, lambda em: got.append((em.reg('edx'), em.reg('ebx') & 0xffff, em.reg('ecx'))) or 0)
+                e.call(0x2ced0, eax=u)
+                want = (5 | 0x200, (3 if r else 15) if dist >= 4000 else (4 if r else 12), 10000)
+                rep.check(got == [want], 'case 7 dist %d rand %d: 0x2d2f0 got %s, the port\'s rule %s' % (dist, r, got, want))
+    # the port's manoeuvre 7 point is one of the rule's two slot points round the unit itself
+    for case in range(n * 4):
+        sx, sz, h = rnd.uniform(-1e5, 1e5), rnd.uniform(-1e5, 1e5), rnd.uniform(-180, 180)
+        dist = rnd.choice([rnd.uniform(0, 3999), rnd.uniform(4000, 50000)])
+        out = F2(); L.shim_man7(ctypes.c_float(sx), ctypes.c_float(sz), ctypes.c_float(h), ctypes.c_float(dist), rnd.randint(1, 1 << 30), out)
+        opts = (3, 15) if dist >= 4000 else (4, 12)
+        best = min(math.hypot(out[0] - q[0], out[1] - q[1]) for q in
+                   [(lambda o: (o[0], o[1]))((lambda o: (L.shim_slot_point(ctypes.c_float(sx), ctypes.c_float(sz), ctypes.c_float(h), k, ctypes.c_float(10000), o), o)[1])(F2())) for k in opts])
+        rep.check(best < 0.5, 'manoeuvre 7 at (%.0f, %.0f) h %.1f dist %.0f: point (%.0f, %.0f) not slot %s' % (sx, sz, h, dist, out[0], out[1], opts))
+
+@test
+def contact_rule(rep, rnd, n):
+    """GBL 0x2cb80 (the manoeuvre pick: a class 1 unit in contact backs off with 10 - unless its reverse input +0x2f is 1,
+    +0x194 is set or its manoeuvre +0x170 is 10) and 0x2eb20 (the same test ending a running manoeuvre, 0x2c590) on every
+    combination, vs ai.c contact_rule / choose_manoeuvre. The port had backed off on contact alone"""
+    e = gblemu.Emu(); L = lib('ai')
+    ends = ctypes.c_int()
+    for contact in (0, 1):
+        for rev in (0, 1):
+            for j in (0, 1):
+                for man in (-1, 0, 4, 10):
+                    e.reset_data()
+                    e.stub(0x22b50, ret=0)
+                    u = e.alloc(0x200); obj = e.alloc(0x200); inp = e.alloc(0x60)
+                    e.w32(u, 1); e.w32(u + 0x20, obj); e.w32(obj, u); e.w32(u + 0x4c, inp)
+                    e.w32(obj + 0xa8, contact); e.w8(inp + 0x2f, rev); e.w32(u + 0x194, j); e.w8(u + 0x170, man & 0xff)
+                    e.w16(u + 0x14a, 0x105)   # a nav point: the pick returns 0 after the contact rule
+                    dos = e.call(0x2cb80, eax=u)
+                    dend = e.call(0x2eb20, eax=obj)
+                    prt = L.shim_contact_pick(contact, rev, j, man, ctypes.byref(ends))
+                    rep.check(dos == prt and (dend != 0) == (ends.value != 0),
+                              'contact %d reverse %d +0x194 %d man %d: dos pick %d end %d, port pick %d end %d' % (contact, rev, j, man, dos, dend, prt, ends.value))
+
+@test
+def flank_pick(rep, rnd, n):
+    """GBL 0x2e9f0 (manoeuvre 1's slot: the sector of the attacker's bearing off the target's facing - 0x233f0 stubbed with
+    the angle - and the counters +0x1a0..+0x1a7: the front case on the attacker's OWN record, the others on the target's)
+    vs ai.c flank_pick, random and sector-edge angles, random counters, both rand(2) results. The port had tested the
+    front case on the target's counters (one shared set: the player's) and rounded the sector half to even"""
+    e = gblemu.Emu(); L = lib('ai')
+    I8 = ctypes.c_int * 8
+    for case in range(n * 40):
+        e.reset_data()
+        rel = rnd.choice([rnd.uniform(-180, 180), rnd.randint(-8, 8) * 22.5, rnd.randint(-4, 4) * 45.0, 180.0])
+        err = int(round(rel * 65536))
+        r2 = rnd.randint(0, 1)
+        own = [rnd.choice([0, 0, 1]) for _ in range(8)]
+        tgt = [rnd.choice([0, 0, 1, 2]) for _ in range(8)]
+        me, t = 3, 7
+        u = e.alloc(0x200); tr = e.alloc(0x200)
+        e.w32(u + 4, me); e.w16(u + 0x14a, 0x200 | t); e.w32(0x10a390 + 4 * t, tr); e.w32(tr + 0xdc, 0x200 | me)
+        for k in range(8): e.w8(u + 0x1a0 + k, own[k]); e.w8(tr + 0x1a0 + k, tgt[k])
+        e.stub(0x22b50, ret=0)
+        e.stub(0x233f0, ret=err & 0xffffffff)
+        e.stub(0x4af60, ret=r2)
+        dos = e.call(0x2e9f0, eax=u) & 0xffff
+        prt = L.shim_flank_pick(ctypes.c_float(rel), r2, I8(*own), I8(*tgt)) * 2
+        rep.check(dos == prt, 'rel %.3f r2 %d own %s tgt %s: dos slot %d port %d' % (rel, r2, own, tgt, dos, prt))
+
 def main():
     args = sys.argv[1:]
     n, seed = 30, 1

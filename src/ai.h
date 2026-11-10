@@ -75,6 +75,7 @@ typedef struct {
     int   has_enemy;         /* an enemy (the player) exists and is alive */
     int   provoked;          /* a member of this mech's group was just hit: the enemy counts as in range */
     float enemy_dist, enemy_bearing;
+    float enemy_dist3;       /* GBL +0xc4: centre to centre in 3D (enemy_dist is the horizontal +0xc0) */
     int   has_goal;          /* a goal point from the mission order (nav / leader slot) */
     float goal_dist, goal_bearing, goal_radius;
     float range_a, range_b, range_c;  /* stored AI ranges (GPS 2nd, 3rd, 1st value), cm */
@@ -87,7 +88,8 @@ typedef struct {
     int   no_fire_roll;      /* GBL 0x2eb60 skips the rand(3) when the target code's low byte (+0x14a & 0xff) is the player's
                               * unit index - the player, and also a nav point / thing with that index (msim) */
     float self_x, self_z, enemy_x, enemy_z, enemy_heading;
-    int  *flank_slots;       /* attackers per 45-degree slot around the enemy (engine target +0x1a2) */
+    int  *flank_slots;       /* attackers per 45-degree slot around the enemy (engine target +0x1a0) */
+    int  *own_flank;         /* the same counters of this unit (GBL 0x2e9f0's front case reads them) */
     int   can_jump;          /* has jump jets and fuel (engine 0x10020a30) */
     int   target_not_unit;   /* the target is a nav point or a thing (+0x14a & 0x200 clear): manoeuvre 0 (GBL 0x2cb80) */
     int   jump_blocked;      /* the jump pre-check's line probes failed (GBL 0x2dd50 / 0x2e450; msim fills it) */
@@ -184,6 +186,9 @@ typedef struct {
      * makes them (0x10013f00), in table order; the patrol's goal +0x14c is the first (0x10014050(0x100)) */
     float guard[16][2];
     int   guard_n;
+    int   goal_pt;           /* GBL +0x148 in manoeuvres 1 / 7 / 12: the own point steered for (index in guard) */
+    int   jump_man;          /* GBL +0x194: set when manoeuvre 4, 5, 9 or 11 starts, cleared when any other starts (0x2ced0);
+                              * the contact rule (0x2cb80 / 0x2eb20) leaves the unit alone while it is set */
     unsigned rng;
     /* Ghost Bear's Legacy boss profiles (ai_gbl_profile): the unit's own manoeuvre record (unit +0x1ac, GBL 0x2c970) and
      * engage range (+0x1a8); NULL / 0 = the engine's mech table and the base manoeuvre 0 rule */
@@ -197,7 +202,9 @@ typedef struct {
 /* GBL GPS skill 100-103 (GBL 0x217b0, table 0xa62dc: the GUI1-4 trial bosses): the profile's manoeuvre
  * table and engage range go into the mind; *skill / *level get the profile's (1 / 1) and *group_fire its flag (+0x14).
  * Returns 1 when the skill named a profile, else 0 (nothing changed) */
-void ai_set_class(ai_mind *m, int unit_class, int tons);   /* GBL 0x2c970: the manoeuvre record by class / tonnage */
+void ai_set_class(ai_mind *m, int unit_class, int tons);
+/* GBL 0x236d0 / 0x10013e90: the unit's own nav points deleted walking the table by index - every other one goes */
+void ai_guard_drop(ai_mind *m);   /* GBL 0x2c970: the manoeuvre record by class / tonnage */
 int  ai_gbl_profile(ai_mind *m, int gps_skill, int *skill, int *level, int *group_fire);
 
 void ai_init(ai_mind *m, int order_prog);

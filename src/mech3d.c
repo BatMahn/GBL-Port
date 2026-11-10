@@ -1752,6 +1752,20 @@ int world3d_paths_step(world3d_paths *P, mech3d *world, float now)
     return settled;
 }
 
+int world3d_paths_node_pos(const world3d_paths *P, const char *rec, int node, float out[3])
+{
+    int i;
+    wp_xf w;
+    if (!P || !rec) return -1;
+    for (i = 0; i < P->nrec; i++)
+        if (strcasecmp(P->recs[i].rec, rec) == 0) {
+            if (wp_world(&P->recs[i], node, &w, 0) != 0) return -1;
+            out[0] = w.t[0]; out[1] = w.t[1]; out[2] = w.t[2];
+            return 0;
+        }
+    return -1;
+}
+
 void world3d_paths_shift(world3d_paths *P, mech3d *world, const char *rec, float dx, float dy, float dz)
 {
     int i, hit = 0;

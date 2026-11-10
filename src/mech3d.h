@@ -247,6 +247,9 @@ int  world3d_paths_tasks(const world3d_paths *p);
  * have all ended stay where they are and lose `moving` (fixed world objects again: the caller rebuilds its static mesh and
  * collision); returns how many did. */
 int  world3d_paths_step(world3d_paths *p, mech3d *world, float now_ticks);
+/* The world position of record `rec`'s node `node` as its path tasks have it now (0; -1 when the record has no task or
+ * no such node) - the planet's light object (LITO, GBL MW2.EXE 0x10490 -> 0x37210) */
+int  world3d_paths_node_pos(const world3d_paths *p, const char *rec, int node, float out[3]);
 /* World part `intact` was destroyed: its tasks (and its descendants') end; when it was carried, world part `destroyed`
  * (-1 none) and its children are placed at its current world transform. Returns 1 if anything was moved. */
 int  world3d_paths_destroyed(world3d_paths *p, mech3d *world, int intact, int destroyed);

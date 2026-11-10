@@ -98,6 +98,59 @@ static float wrap180(float a)
     return a;
 }
 
+/* ---- the unit's own nav points (GBL 0x2a010: flag 1, owner the unit, 30 m radius; ai_mind.guard, in table order) as
+ * patrol (state 7, msim.c) and the attack manoeuvres 1, 7 and 12 make them. GBL 0x236d0 deletes them walking the table by
+ * index while each deletion (0x2a090) shifts the rest down: every other one goes (the port keeps a unit's points apart
+ * from the other units' - ASSUMED none in between, as msim.c's guard). 0x2a090 also pulls a goal index +0x148 behind a
+ * deleted point down by one */
+void ai_guard_drop(ai_mind *m)
+{
+    int r, w = 0;
+    for (r = 1; r < m->guard_n; r += 2, w++) { m->guard[w][0] = m->guard[r][0]; m->guard[w][1] = m->guard[r][1]; }
+    m->guard_n = w;
+    m->goal_pt /= 2;
+}
+static void own_add(ai_mind *m, float x, float z)   /* 0x2a010 (refused past 0x80 points in the table) */
+{
+    if (m->guard_n >= 16) return;
+    m->guard[m->guard_n][0] = x; m->guard[m->guard_n][1] = z;
+    m->guard_n++;
+}
+/* the goal +0x148 = the next own point after index i (0x238b0 -> 0x2af90 -> 0x2a210 with 0x2a420's own-point filter, the
+ * search running on through the unit and thing groups and round to the table's start): i = -1 the first own point
+ * (0x238b0(0x100) searches from index 1 - the mission's nav points come first); the steering point follows it */
+static void own_goal(ai_mind *m, int i)
+{
+    if (m->guard_n <= 0) return;   /* none: 0x2a210 marks +0xdc 0x1000 and the goal stays */
+    m->goal_pt = (i + 1) % m->guard_n;
+    if (m->goal_pt < 0) m->goal_pt = 0;
+    m->flank_x = m->guard[m->goal_pt][0];
+    m->flank_z = m->guard[m->goal_pt][1];
+}
+/* GBL 0x2d350: the point d cm out in slot k (16-way) of a unit: (d / 0xa6804[k], d / 0xa6808[k]) (0 for a 0 divisor) in
+ * its frame (0x1e790 / 0x3b98c, the object's matrix: heading h; the rotation manoeuvre 1 uses) - on a square, not a circle */
+static void slot_point(float cx, float cz, float h, int k, float d, float *x, float *z)
+{
+    static const int DX[16] = {0, 2, 1, 1, 1, 1, 1, 2, 0, -2, -1, -1, -1, -1, -1, -2};
+    static const int DZ[16] = {1, 1, 1, 2, 0, -2, -1, -1, -1, -1, -1, -2, 0, 2, 1, 1};
+    float a = h * 3.14159265f / 180.0f, lx, lz;
+    int di = (int)d;
+    lx = DX[k & 15] ? (float)(di / DX[k & 15]) : 0.0f;
+    lz = DZ[k & 15] ? (float)(di / DZ[k & 15]) : 0.0f;
+    *x = cx + cosf(a) * lx + sinf(a) * lz;
+    *z = cz - sinf(a) * lx + cosf(a) * lz;
+}
+/* GBL 0x23740 (manoeuvre 12; patrol entry 7): four own points round the target at x - r, z - r, x + r, z + r (r 0x22b80:
+ * a unit 100 m - an attack target is always a unit, 0x2cb80), the goal the first own point */
+static void own_square(ai_mind *m, const ai_view *v)
+{
+    own_add(m, v->enemy_x - 10000.0f, v->enemy_z);
+    own_add(m, v->enemy_x, v->enemy_z - 10000.0f);
+    own_add(m, v->enemy_x + 10000.0f, v->enemy_z);
+    own_add(m, v->enemy_x, v->enemy_z + 10000.0f);
+    own_goal(m, -1);
+}
+
 /* the rule's reference (engine 0x10011d20 resolves cond_ref with 0x10013400; the condition iterates it with
  * 0x10013a50): 0x40 the current target (+0x14e), 0x2a the assigned goal (+0x14c), 0x2101 the assigned nav (+0x16a),
  * 0x2201 my leader, 0x4201 the enemies. Gives the distance and the reference's radius (0x10013450: a nav point's
@@ -249,12 +302,22 @@ void ai_set_class(ai_mind *m, int unit_class, int tons)
 /* 0x10020a30(n): jets with fuel and heat below n */
 static int jets_ok(const ai_view *v, float n) { return v->can_jump && v->heat < n; }
 
+/* GBL 0x2eb20 (and the same test inlined in 0x2cb80): a class 1 unit in contact (object +0xa8) whose reverse input +0x2f is
+ * off, whose +0x194 is clear (jump_man) and whose manoeuvre +0x170 is not 10 - it backs off (10) / its manoeuvre ends */
+static int contact_rule(const ai_mind *m, const ai_view *v)
+{
+    return m->mech_rules && v->contact && !m->reverse && !m->jump_man && m->man != 10;
+}
+
 /* the manoeuvre chooser (engine 0x1001f030). Returns -2 for "flee" (forced -2). */
 static int choose_manoeuvre(ai_mind *m, const ai_view *v)
 {
     int tries, level_lt4 = v->pilot_level < 4;   /* +0x19e bit 2 (0x1001ee30) */
     if (m->forced_man != -1) { int f = m->forced_man; m->forced_man = -1; return f; }
-    if (m->mech_rules && v->contact) return 10;                                   /* 0x10020e00; GBL 0x2cb80: class 1 only */
+    /* GBL 0x2cb80 (class 1 only): in contact (object +0xa8), unless the reverse input +0x2f is on, +0x194 is set (the last
+     * manoeuvre started was a jump: 4, 5, 9 or 11 - it stays set past their end until another starts) or the manoeuvre is
+     * 10 - the port had backed away on any contact, also right after landing a jump against something */
+    if (contact_rule(m, v)) return 10;
     if (m->mech_rules && v->target_not_unit) return 0;                            /* GBL 0x2cc41: +0x14a & 0x200 clear -> 0 */
     /* jump pre-check (class 1 only): heat < 20, level < 4, the target above (0x10020090: > 8 m), reachable (0x100207b0; GBL
      * 0x2dd50 / 0x2e450: the line to the target from the unit's own height blocked, from the target's height clear) */
@@ -296,6 +359,7 @@ static int choose_manoeuvre(ai_mind *m, const ai_view *v)
 static void start_manoeuvre(ai_mind *m, const ai_view *v, int man)
 {
     m->man = man;
+    m->jump_man = man == 4 || man == 5 || man == 9 || man == 11;   /* GBL 0x2ced0: +0x194 */
     m->man_ticks = 0;
     m->man_phase = 0;
     m->last_dist = 0;                                                           /* +0x19a = 0 */
@@ -312,12 +376,16 @@ static void start_manoeuvre(ai_mind *m, const ai_view *v, int man)
     case 4: m->man_limit = 910.0f; m->throttle = 0; m->turn = 0; break;      /* 0x38e */
     case 5: m->last_dist = v->enemy_dist; break;                                /* 0x1001f290 case 5 -> 0x100208f0: +0x19a = distance */
     case 9: m->turn = 0; break;                                                 /* input +0xc = 0 */
-    case 7: {   /* 0x1001f290 case 7 -> 0x1001f630: a point 100 m from the target in a 16-way slot round its facing:
-                 * 3 or 15 (rand(2) == 0) when 40 m or more away, 4 or 12 (rand(2) == 0) when closer */
+    case 7: {   /* GBL 0x2ced0 case 7: slot 3 or 15 (rand(2) == 0) when the target is 40 m or more away, 4 or 12 (rand(2) ==
+                 * 0) when closer, through 0x2d2f0 with the unit's OWN code (+4 | 0x200) and 10000: a point 100 m out round
+                 * the unit itself in its own frame (0x2d350; z ahead) - 3 (x 100 m, z 50 m), 15 (x -50, z 100), 4 / 12
+                 * (x +-100 m) - made an own point, the goal the first own point. The port had followed the 3Dfx
+                 * DLL: a point on a 100 m circle round the TARGET's facing */
         int slot = v->enemy_dist >= 4000.0f ? (ai_rand(m, 2) == 0 ? 15 : 3) : (ai_rand(m, 2) == 0 ? 12 : 4);
-        float a = (v->enemy_heading + (float)slot * 22.5f) * 3.14159265f / 180.0f;
-        m->flank_x = v->enemy_x + sinf(a) * 10000.0f;
-        m->flank_z = v->enemy_z + cosf(a) * 10000.0f;
+        float px, pz;
+        slot_point(v->self_x, v->self_z, v->heading, slot, 10000.0f, &px, &pz);
+        own_add(m, px, pz);
+        own_goal(m, -1);
         break;
     }
     case 8: m->reverse = 1; m->man_limit = (float)((ai_rand(m, 11) + 10u) * 182u); break;   /* (rand(11) + 10) x 0xb6 */
@@ -330,9 +398,26 @@ static void start_manoeuvre(ai_mind *m, const ai_view *v, int man)
         m->man_limit = 364.0f; m->turn = 0;
         if (m->dodge_fwd) { m->jet_side = 0; m->jet_forward = 1; } else m->jet_side = -1;
         break;
-    case 12: m->man_limit = 18200.0f; break;                                    /* 0x4718 */
+    case 12: m->man_limit = 18200.0f; m->flank_retarget = 0; own_square(m, v); break;   /* 0x4718; 0x23740 */
     default: break;
     }
+}
+
+/* GBL 0x2d1b0 (a manoeuvre ends - and the attack state's exit, 0x22d90): 1 its own points dropped (0x236d0) and its slot
+ * freed; 7 and 12 their own points dropped; the reverse / jets inputs off */
+static void end_manoeuvre(ai_mind *m, const ai_view *v)
+{
+    if (m->man == 1) {
+        ai_guard_drop(m);
+        if (m->flank_slot >= 0 && v->flank_slots) v->flank_slots[m->flank_slot]--;
+    } else if (m->man == 7 || m->man == 12) ai_guard_drop(m);
+    m->flank_slot = -1;
+    m->prev_man = m->man;
+    m->man = -1;
+    m->reverse = 0;   /* 0x1001f500: 8 / 10 clear +0x2f */
+    m->jet_side = 0;
+    m->jet = 0; m->jet_forward = 0; m->jet_back = 0;   /* 0x1001f500: the jets off (0x100201b0(0)), 5 / 11 +0x20 / +0x21 = 0 */
+    m->man_phase = 0;
 }
 
 /* GBL 0x24a30: every 0x40 ticks (0x20 with the throttle input non-zero) input +4 += 5 degrees the way +0x17e says (0: -5),
@@ -348,6 +433,29 @@ static void patrol_sweep(ai_mind *m, float thr, float ticks)
         if (fabsf(m->torso) > 45.0f) m->sweep_dir = -m->sweep_dir;
         m->sweep_ticks = iv;
     }
+}
+
+/* GBL 0x2e9f0: manoeuvre 1's slot (8-way; x 2 the 16-way +0x17e) from the unit's bearing off the target's facing, rel:
+ * the sector ((rel + 360) % 360) / 45 rounded half up (8 -> 0); in front (0) a side at random (r2 = rand(2), only here: 0 -> 6,
+ * else 2), the other one when taken - by the ATTACKER's own counters (param_1 + 0x1a0); 1 -> 3, 7 -> 5; 2-4 the first free of
+ * 2, 3, 4 (else 4); 5-6 the first free of 6, 5, 4 (else 4) - the target's counters (tgt; NULL = none taken) */
+static int flank_pick(ai_mind *m, float rel, int r2, const int *own, const int *tgt)   /* r2 -1: ai_rand */
+{
+    int sector = (int)floorf(fmodf(rel + 360.0f, 360.0f) / 45.0f + 0.5f), slot, k2;
+    if (sector > 7) sector = 0;
+    if (sector == 0) {
+        if (r2 < 0) r2 = (int)ai_rand(m, 2);
+        slot = r2 == 0 ? 6 : 2;
+        if (own && own[slot]) slot = slot == 2 ? 6 : 2;
+    } else if (sector == 1 || sector == 7) slot = sector == 1 ? 3 : 5;
+    else if (sector <= 4) {
+        slot = 4;
+        for (k2 = 2; k2 <= 4; k2++) if (!tgt || !tgt[k2]) { slot = k2; break; }
+    } else {
+        slot = 4;
+        for (k2 = 6; k2 >= 4; k2--) if (!tgt || !tgt[k2]) { slot = k2; break; }
+    }
+    return slot;
 }
 
 /* closing speed (0x100208f0): (previous distance - distance) / ticks, cm/tick; +0x19a = 0 at a start */
@@ -391,22 +499,13 @@ static void attack_manoeuvre(ai_mind *m, const ai_view *v, float ticks, float *R
         if (m->flank_slot < 0 || m->flank_retarget <= 0) {
             /* 0x1001ea8e: every 0x21f ticks the slot's point is placed again round the target as it stands now
              * (0x1001f630 -> 0x1001f6b0); the slot itself is chosen once, when the manoeuvre starts (+0x184 = -1 ->
-             * 0x10020d00), and kept */
+             * 0x10020d00), and kept. GBL 0x2c590 case 1: first the unit's own points are dropped (0x236d0), then the
+             * slot's point is made an own point (0x2d2f0) and the goal is the FIRST own point (0x238b0(0x100)) - one left
+             * over from patrol or an earlier manoeuvre before the new one */
+            ai_guard_drop(m);
             if (m->flank_slot < 0) {
                 float rel = wrap180(atan2f(v->self_x - v->enemy_x, v->self_z - v->enemy_z) * 180.0f / 3.14159265f - v->enemy_heading);
-                int sector = ((int)lrintf(rel / 45.0f) + 8) % 8, slot, k2;
-                if (sector == 0) {                         /* in front: a side at random, the other if taken */
-                    slot = ai_rand(m, 2) ? 2 : 6;
-                    if (v->flank_slots && v->flank_slots[slot]) slot = slot == 2 ? 6 : 2;
-                } else if (sector >= 2 && sector <= 4) {
-                    slot = 4;
-                    for (k2 = 2; k2 <= 4; k2++) if (!v->flank_slots || !v->flank_slots[k2]) { slot = k2; break; }
-                } else if (sector >= 5 && sector <= 6) {
-                    slot = 4;
-                    for (k2 = 6; k2 >= 4; k2--) if (!v->flank_slots || !v->flank_slots[k2]) { slot = k2; break; }
-                } else {
-                    slot = sector == 1 ? 3 : 5;            /* 1 -> 3, 7 -> 5 */
-                }
+                int slot = flank_pick(m, rel, -1, v->own_flank, v->flank_slots);
                 if (v->flank_slots) v->flank_slots[slot]++;
                 m->flank_slot = slot;
             }
@@ -417,6 +516,8 @@ static void attack_manoeuvre(ai_mind *m, const ai_view *v, float ticks, float *R
                 float a = v->enemy_heading * 3.14159265f / 180.0f, lx = 15000.0f * FX[m->flank_slot], lz = 15000.0f * FZ[m->flank_slot];
                 m->flank_x = v->enemy_x + cosf(a) * lx + sinf(a) * lz;
                 m->flank_z = v->enemy_z - sinf(a) * lx + cosf(a) * lz;
+                own_add(m, m->flank_x, m->flank_z);
+                own_goal(m, -1);
             }
         }
         {   /* 0x1001f9d0: +0x184 = 0 - steer for the slot (throttle 0x100134c0 with R 4000: none within 40 m); once the
@@ -492,9 +593,10 @@ static void attack_manoeuvre(ai_mind *m, const ai_view *v, float ticks, float *R
         done = done0;
         break;
     }
-    case 6:   /* 0x1001fb90: charge at full throttle; within 20 m (+0xc4 <= 2000.0) input +0x43 = 1 - the self-destruct */
+    case 6:   /* 0x1001fb90: charge at full throttle; within 20 m (+0xc4 <= 2000.0) input +0x43 = 1 - the self-destruct. GBL
+               * 0x2d7a0: +0xc4 < 0x7d1 - the 3D distance (0x2aee0); the port had taken the horizontal one */
         *R = -1.0f;
-        if (d <= 2000.0f) { done = 1; m->self_destruct = 1; }
+        if ((v->enemy_dist3 > 0.0f ? v->enemy_dist3 : d) < 2001.0f) { done = 1; m->self_destruct = 1; }
         break;
     case 7: {   /* 0x1001fc40: to the slot point (R 30 m), done within 30 m of it */
         float fx = m->flank_x - v->self_x, fz = m->flank_z - v->self_z;
@@ -506,7 +608,25 @@ static void attack_manoeuvre(ai_mind *m, const ai_view *v, float ticks, float *R
     case 8:  *R = -1.0f; if (v->contact) done = 1; break;   /* 0x1001fc00: full reverse, ends on contact (+0xa4) */
     case 10: *R = -1.0f; break;                              /* 0x1001ff70: full reverse until the time limit */
     case 11: *R = 0; m->jet = 1; break;                      /* 0x1001fe10: sidestep on the jets, 362 ticks */
-    case 12: *R = 3000.0f; break;
+    case 12: {   /* GBL 0x2dc90: fire at the target (+0x14a) while walking round the own points of 0x23740 (+0x148, throttle
+                  * 0x22bd0 with R 30 m, 0x22ce0); every 0x5b0 ticks (+0x17a, 0 at the start: the first tick too), with the
+                  * target beyond 150 m, the points are dropped (0x236d0) and four made round it where it is now; within
+                  * 30 m (+0xc0 < 0xbb9) of the goal, the goal is the next own point (0x238b0). Ends on its time limit
+                  * 0x4718 (0x2dc90 returns 0). No unit's manoeuvre record lists 12 and nothing forces it (+0x172 is
+                  * written 4 / 5 / 6 / 10 / 11 / -2 only): never chosen in GBL - ported for completeness. The port had
+                  * closed on the target to 30 m */
+        float fx, fz;
+        m->flank_retarget -= ticks;
+        if (m->flank_retarget < 0) {
+            if (d > 15000.0f) { ai_guard_drop(m); own_square(m, v); }
+            m->flank_retarget = 1456.0f;
+        }
+        *R = 3000.0f;
+        *dist = -1.0f;
+        fx = m->flank_x - v->self_x; fz = m->flank_z - v->self_z;
+        if (sqrtf(fx * fx + fz * fz) < 3001.0f) own_goal(m, m->goal_pt);
+        break;
+    }
     default: done = 1;
     }
     if (*dist >= 0) *dist = d;
@@ -520,16 +640,9 @@ static void attack_manoeuvre(ai_mind *m, const ai_view *v, float ticks, float *R
             if (v->pilot_level >= 2) m->forced_man = -2;   /* +0x19e bit 0x20: level 1 mechs only charge */
         }
     }
-    if (v->contact && !m->reverse && !jumping && m->man != 10) done = 1;   /* 0x10020e00 */
-    if (done || m->man_ticks >= m->man_limit || m->forced_man != -1) {
-        if (m->man == 1 && m->flank_slot >= 0 && v->flank_slots) { v->flank_slots[m->flank_slot]--; m->flank_slot = -1; }
-        m->prev_man = m->man;
-        m->man = -1;
-        m->reverse = 0;   /* 0x1001f500: 8 / 10 clear +0x2f */
-        m->jet_side = 0;
-        m->jet = 0; m->jet_forward = 0; m->jet_back = 0;   /* 0x1001f500: the jets off (0x100201b0(0)), 5 / 11 +0x20 / +0x21 = 0 */
-        m->man_phase = 0;
-    }
+    /* GBL 0x2c590 -> 0x2eb20: a class 1 unit in contact ends its manoeuvre unless reversing, jumping (+0x194) or in 10 */
+    if (contact_rule(m, v)) done = 1;
+    if (done || m->man_ticks >= m->man_limit || m->forced_man != -1) end_manoeuvre(m, v);
 }
 
 static int program_allows(const ai_library *lib, const ai_mind *m, int state)
@@ -620,7 +733,7 @@ void ai_step(const ai_library *lib, ai_mind *m, const ai_view *v, float dt)
     m->rule_fired = fired;
     if (m->state != AI_GODIRECT) m->to_navref = 0;
     if (!v->has_enemy && (m->state == AI_TARGET || m->state == AI_ATTACK) && !fired) { m->entered = 1; m->entered_from = m->state; m->state = m->prev_state; m->target = 0; }
-    if (m->state != AI_ATTACK && m->man >= 0) { m->prev_man = m->man; m->man = -1; m->reverse = 0; m->jet_side = 0; }
+    if (m->state != AI_ATTACK && m->man >= 0) end_manoeuvre(m, v);   /* the attack state's exit 0x22d90 -> 0x2d1b0 */
     if (m->state != AI_ATTACK) m->jet = 0;
     m->wants_fire = 0;
     m->next_fire -= ticks;
@@ -647,7 +760,9 @@ void ai_step(const ai_library *lib, ai_mind *m, const ai_view *v, float dt)
              * ends, 0x2d1b0). The port had switched them on and off every tick wherever the unit was (short hops) and from
              * manoeuvre 6 too */
             if (v->pilot_level < 4 && m->man >= 0 && (m->man <= 3 || m->man == 7 || m->man == 8 || m->man == 12)) {
-                float off = fabsf(wrap180(v->enemy_bearing - v->heading));
+                /* 0x2e600 measures the bearing to +0x148 (0x22b50): the target, but in 1, 7 and 12 the own point steered for */
+                float jb = (m->man == 1 || m->man == 7 || m->man == 12) ? atan2f(m->flank_x - v->self_x, m->flank_z - v->self_z) * 180.0f / 3.14159265f : v->enemy_bearing;
+                float off = fabsf(wrap180(jb - v->heading));
                 float lim = v->twist_limit > 0 ? v->twist_limit : 90.0f;
                 int standing = v->height <= 1.0f;
                 if (lim < 360.0f && off >= lim) { if (!m->turn_jet && jets_ok(v, 20.0f) && standing) m->turn_jet = 1; }
@@ -700,6 +815,12 @@ void ai_step(const ai_library *lib, ai_mind *m, const ai_view *v, float dt)
             m->twist_demand = (m->state >= AI_FOLLOW && m->state <= AI_GODIRECT && m->mech_rules) ? m->torso : 0;
             m->pitch_demand = 0;
         }
+        /* GBL 0x22800 (the handler of states 1, 2, 4-10; table 0xa64ac) for a state with no case in its jump table 0x227e0
+         * (1, 9, 10): a computer-run unit (+0x10 == 2) gets throttle input 0x333 and nothing else - the leg input +0xc and
+         * the reverse flag stay as they were. No AIT rule (MW2.PRJ: next states 0, 2, 3, 5, 7, 8, 10, 11, -1), node kind
+         * (0x24963: 2, 7, 8, 4, 0), order (0x19b38..: 2, 3, 5, 7, 8, 11) or node assignment (0x23e55: 10, 11, 5) enters 1 or
+         * 9; in 10 the unit is powered down and the drive (0x2840d; msim unit_up) zeroes the input again */
+        if (m->state == AI_AVOID || m->state == 9 || m->state == AI_REST) { m->throttle = 819.0f / 1024.0f; return; }
         if (!moving) { m->throttle = 0; m->turn = 0; m->reverse = 0; return; }
         /* steering 0x10013600 */
         turn0 = m->turn;   /* as the manoeuvre left it (a start may have zeroed it) */
@@ -718,16 +839,27 @@ void ai_step(const ai_library *lib, ai_mind *m, const ai_view *v, float dt)
          * 0x41); under 0x66 -> 0. The 3Dfx floats (0.8 / 0.1 of full, heat > 65.0) differ by under 0.4 % */
         {
             int ti;
+            /* GBL: the turn rule reads the leg input +0xc as it stands when 0x22bd0 runs - the state handler (2, 5-8:
+             * 0x22857 / 0x228c1 / 0x228f5) and manoeuvres 0 (0x2d4e0), 7 (0x2d850) and 12 (0x2dc90) call it BEFORE the
+             * steering 0x22ce0 writes this tick's turn (the last tick's turn counts); 1 (0x2d590), 2 / 3 (0x2d6b0) and 6
+             * (0x2d7a0) after it - 3 before its weave is added (0x2c590 case 3). Manoeuvres 8 and 10 (0x2c590 case 8,
+             * 0x2dc40) write 0x400 themselves: no turn or heat rule. The port had used this tick's turn everywhere (the
+             * weave included) and halved 8 / 10's reverse above 65 heat */
+            float tt = m->turn;
+            int before = m->state != AI_ATTACK || m->man == 0 || m->man == 7 || m->man == 12;
+            if (before) tt = turn0;
+            else if (m->man == 3) tt = m->turn - 450.0f * m->weave;
             if (dist > 2.0f * R) ti = 0x400;
             else if (dist >= R) ti = 0x333;
             else ti = 0;
             if (full_attack) ti = 0x400;
-            if (ti != 0 && (int)(fabsf(m->turn) * 65536.0f) >> 16 > 0x2d) {
-                ti = (0x4000000 - (int)((double)(int)(fabsf(m->turn) * 65536.0f) * (2.0 / 3.0))) >> 16;
+            if (ti != 0 && (int)(fabsf(tt) * 65536.0f) >> 16 > 0x2d) {
+                ti = (0x4000000 - (int)((double)(int)(fabsf(tt) * 65536.0f) * (2.0 / 3.0))) >> 16;
                 if (ti < 0x66) ti = 0x66;
             }
             if ((int)v->heat > 0x41) ti >>= 1;
             if (ti < 0x66) ti = 0;
+            if (m->state == AI_ATTACK && (m->man == 8 || m->man == 10)) ti = 0x400;
             thr = (float)ti / 1024.0f;
             /* 4, 5, 9 and 11 do not call 0x100134c0: input +8 holds as it was (4 zeroes it at the start, 0x1001f290) - not
              * re-scaled by the turn or heat rules each tick (the port had halved a held throttle every tick above 65 heat) */

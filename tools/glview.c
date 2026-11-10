@@ -951,12 +951,20 @@ static int view_in_cockpit(void);   /* VIEW_IN_COCKPIT (DAT_1024e678, the engine
  * port's g_snd_* below, set where the frame's camera is final (camera_modes). The cockpit flag DAT_1024e678 (the
  * "halve" argument of most callers) is set there too (0x1002dc90: 0, the cockpit camera 0x1002e640: 1) - g_snd_pit. */
 static float g_snd_eye[3], g_snd_yaw;
+static float g_pl_pose_y;   /* the player's model height (origin y) at its last mech3d_pose: player_eye is relative to it */
 static int   g_snd_ok, g_snd_pit = 1;
 static void snd_listener(float L[3], float *yaw)
 {
     if (g_snd_ok) { memcpy(L, g_snd_eye, sizeof g_snd_eye); *yaw = g_snd_yaw; return; }
     /* before the first camera (the start-up's first frame): the cockpit eye, as the camera will be */
-    if (g_sim.player_eye_ok) memcpy(L, g_sim.player_eye, sizeof g_snd_eye);
+    if (g_sim.player_eye_ok) {
+        /* the eye as posed - with the height the model had then: on the mission's first frame the model was last posed
+         * at load (height 0) and the unit's height is set after the pose, which had put this listener the start height
+         * below the mech (SEAN 222 m, BRAN 1430 m): the player's own start-up sound came 0.7-4.3 s late. DOSBox SEANSCN1
+         * with the player 3 km up: its MECTURX2 at full level at once, the lancemates' 9-10 s later */
+        memcpy(L, g_sim.player_eye, sizeof g_snd_eye);
+        L[1] += g_sim.player_unit.y - g_pl_pose_y;
+    }
     else { L[0] = (float)g_pl.origin[0]; L[1] = g_sim.player_unit.y; L[2] = (float)g_pl.origin[2]; }
     *yaw = g_pl.heading + g_pl.twist;
 }
@@ -1029,7 +1037,8 @@ static void on_sound(void *user, int snd, const float pos[3])
 /* object sound tasks (TSK type 4: GBL MW2.EXE 0x418e0, base DOS 0x40df0 / 3Dfx 0x10032cc0 - once per run of the task,
  * every TSK period): a looping sample at the node, at most 8 at once (the first to ask keeps one); the task's first run
  * does nothing (+0x18 set at creation, cleared by that run: GBL 0x418fe..0x41907); ended beyond the task's range or 500 m;
- * volume (100 - 100 (d / 500 m)^2, d the 3D distance from the camera in whole metres) x EFFECTS >> 2 - a quarter of a
+ * volume (100 - 100 (d / 500 m)^2, d the 3D distance from the camera in whole metres: GBL 0x41a75 compares the cm with
+ * 50000 - unlike the one-shots' 0x41690, sfx_pos_level, which divide by 100 once more) x EFFECTS >> 2 - a quarter of a
  * one-shot at that distance; pan as sfx_play_at3 (camera - object: mirrored); playback rate re-drawn every run from the
  * rate table [rand(10)] (GBL 0xa7a10, 9922..11907 Hz - the base table's values; set at 0x41b0x) - it replaces the
  * record's own rate. The engine's rand(10) is the shared random generator (0x4af60); the port draws from its own so the
@@ -1117,7 +1126,7 @@ static void obj_sounds(void)
             id = st >= 0 ? prj_find_id(g_ma, st, s[i].name) : -1;
             if (id <= 0 || (len = obj_snd_pcm(id, &pcm, &frate)) <= 0) { free(pcm); bad[s[i].task] = 1; continue; }
             c = k; ch[c].task = s[i].task; ch[c].pcm = pcm;
-            sfx_play_pcm(g_sfx, pcm, len, rate, 0.0f, 1);   /* the record's own rate (frate) is overridden */
+            sfx_play_pcm_objloop(g_sfx, pcm, len, rate, 0.0f);   /* the record's own rate (frate) is overridden; channels 8-15 */
         }
         pan = sfx_pos_pan(dx, dz, yaw);
         sfx_pcm_level(g_sfx, ch[c].pcm, (float)vol / 100.0f * 0.8f * 0.25f, pan);
@@ -2344,6 +2353,7 @@ static void camera_modes(glr_view *v)
     /* the sounds' listener and cockpit flag for the next frame (0x1002dc90 / 0x1002e640, see snd_listener) */
     memcpy(g_snd_eye, v->eye, sizeof g_snd_eye);
     g_snd_yaw = v->look_yaw; g_snd_pit = VIEW_IN_COCKPIT; g_snd_ok = 1;
+    sfx_set_listener_yaw(g_sfx, g_snd_yaw);   /* the pans of positional sounds starting now (GBL 0x41260) */
 }
 /* The voice queue (engine 0x10031150 posts, 0x100313d0 advances, 0x10031440 starts; head DAT_1024f6bc): an entry is one
  * message = up to two voice lines said back to back - a message-table line and its suffix ("Autopilot" + "disengaged",
@@ -2795,18 +2805,17 @@ static dmg_set *target_outline(prj_archive *ma, const char *skel)
     return &g_tdmg[k];
 }
 /* a unit's outline: 15 regions coloured by its locations' damage (as the player's, engine 0x1001b620) */
+static int loc_nibble(const combat_unit *tu, int gq);
 static void draw_outline(const hud_sprite lvl[4], const int regions[15][4], const combat_unit *u, float dx, float dy)
 {
     static const int REG_LOC[15] = {1, 3, 3, 2, 2, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8};
     int q;
     hud_draw(g_hud, &lvl[0], dx, dy, NULL);   /* the whole outline, then the damaged regions over it (0x1001b620) */
     for (q = 0; q < 15; q++) {
-        int loc = REG_LOC[q] - 1, lf = 0, lr = 0, lv, pick;
+        int loc = REG_LOC[q] - 1, lv, pick;
         const int *rg = regions[q];
         if (rg[2] <= 0 || rg[3] <= 0) continue;
-        if (u->armor_max[loc] > 0) lf = 15 - 15 * (int)u->armor[loc] / u->armor_max[loc];
-        if (u->rear_max[loc] > 0) lr = 15 - 15 * (int)u->rear[loc] / u->rear_max[loc];
-        lv = lf > lr ? lf : lr;
+        lv = loc_nibble(u, loc + 1);
         pick = u->loc_gone[loc] ? 3 : lv <= 0 ? 0 : lv < 12 ? 1 : 2;
         if (pick == 0) continue;
         hud_draw_region(g_hud, &lvl[pick], dx, dy, (float)rg[0] * 2.0f * g_hud_s, (float)rg[1] * 2.0f * g_hud_s, (float)rg[2] * 2.0f * g_hud_s, (float)rg[3] * 2.0f * g_hud_s);
@@ -3102,16 +3111,67 @@ static const combat_unit *g_wire_unit;
 /* a location's colour in the target view, as the damage outline (0x1001b620: levels 6 / 3 / 11 / 0 - here the HUD
  * blue, yellow, red, black): armour lost front or rear in fifteenths, 0 intact, 1-11 yellow, 12+ red; the centre torso
  * of a destroyed unit black. Returns 0 blue, 1 yellow, 2 red, 3 black; tu NULL or gq outside 1-8: blue */
-/* a location's damage nibble 0-15 (the fifteenths of armour lost, front or rear - the location objects' +0 bits 4-7) */
+/* a unit's starting internal structure per location (the loader's values: GBL 0x4dd7b.. keeps them in the location
+ * record's +0x26 nibbles, below), captured when the mission's simulation is set up: [actor][loc], the player's last */
+static float (*g_int0)[MEK_LOC_COUNT];
+static int g_int0_n;
+static void int0_capture(void)
+{
+    int k, l;
+    free(g_int0); g_int0 = NULL; g_int0_n = 0;
+    if (!g_sim_ok || !g_sim.units) return;
+    g_int0 = calloc((size_t)g_sim.actor_count + 1, sizeof *g_int0);
+    if (!g_int0) return;
+    g_int0_n = g_sim.actor_count + 1;
+    for (k = 0; k < g_sim.actor_count; k++) for (l = 0; l < MEK_LOC_COUNT; l++) g_int0[k][l] = g_sim.units[k].internal[l];
+    for (l = 0; l < MEK_LOC_COUNT; l++) g_int0[g_sim.actor_count][l] = g_sim.player_unit.internal[l];
+}
+static float int0_of(const combat_unit *u, int loc)
+{
+    int k = u == &g_sim.player_unit ? g_sim.actor_count : (int)(u - g_sim.units);
+    if (!g_int0 || k < 0 || k >= g_int0_n || loc < 0 || loc >= MEK_LOC_COUNT) return u->internal[loc];
+    return g_int0[k][loc];
+}
+/* GBL MW2.EXE's damage level of one side of a location (0-15): at load (0x4dd7b..) the side's nibble n = (structure +
+ * armour) / 5 in whole points, clamped to 0..15 (+0x26: front bits 0-3, rear 4-7); then level = 15 - (armour / div +
+ * structure) x 3 / (n << 16) in 16.16 (the armour as kept, multiplied by the loader's factor), clamped to 0..15; n = 0: 0.
+ * div: the player's 4 (DAT_000a6668), another unit's DAT_000a6664 (1 / 3 / 4 by difficulty). So both the armour and the
+ * structure count, and a location with more than 75 points stays undamaged on the display until it is down to 75 (the
+ * port had taken the armour's fraction alone: red at a fifth of the armour left, yellow with its first point lost) */
+static int gbl_side_level(float armor, int armor_max, float mult, float internal, float int0, int div)
+{
+    const int m = (int)lrintf(mult) > 0 ? (int)lrintf(mult) : 1;
+    long long n = ((long long)lrintf(int0) + armor_max / m) / 5, a, v;
+    if (n < 1) return 0;
+    if (n > 15) n = 15;
+    a = (long long)(armor * 65536.0f);
+    v = 15 - ((a / div + (long long)(internal * 65536.0f)) * 3) / (n << 16);
+    return v < 1 ? 0 : v > 15 ? 15 : (int)v;
+}
+/* the damage outline's level of a location (GBL 0x2f930, the player's display): both sides' levels, the higher - the
+ * rear nibble of a location with no rear armour is the structure's (structure / 5) */
+static int hud_loc_level(const combat_unit *u, int loc)
+{
+    float i0 = int0_of(u, loc);
+    int lf = gbl_side_level(u->armor[loc], u->armor_max[loc], u->armor_mult, u->internal[loc], i0, 4);
+    int lr = gbl_side_level(u->rear[loc], u->rear_max[loc], u->armor_mult, u->internal[loc], i0, 4);
+    return lf > lr ? lf : lr;
+}
+/* a location's damage nibble 0-15 on the unit's object (GBL 0x265e0 -> 0x1ea30 at each hit: the level of the side hit,
+ * the rear only for the torsos; raised, never lowered - so the higher of the two): the target view's colours, image
+ * enhancement and the damage shading */
 static int loc_nibble(const combat_unit *tu, int gq)
 {
-    int loc, lf = 0, lr = 0;
+    int loc, lf, lr = 0, div;
+    float i0;
     if (!tu || gq < 1 || gq > 8) return 0;
     loc = gq - 1;
-    if (tu->armor_max[loc] > 0) lf = 15 - 15 * (int)tu->armor[loc] / tu->armor_max[loc];
-    if (tu->rear_max[loc] > 0) lr = 15 - 15 * (int)tu->rear[loc] / tu->rear_max[loc];
-    lf = lf > lr ? lf : lr;
-    return lf < 0 ? 0 : lf > 15 ? 15 : lf;
+    div = tu == &g_sim.player_unit ? 4 : (int)lrintf(combat_armor_mult(0, 1, g_sim.difficulty));
+    if (div < 1) div = 1;
+    i0 = int0_of(tu, loc);
+    lf = gbl_side_level(tu->armor[loc], tu->armor_max[loc], tu->armor_mult, tu->internal[loc], i0, div);
+    if (loc == MEK_RT || loc == MEK_CT || loc == MEK_LT) lr = gbl_side_level(tu->rear[loc], tu->rear_max[loc], tu->armor_mult, tu->internal[loc], i0, div);
+    return lf > lr ? lf : lr;
 }
 static int loc_level(const combat_unit *tu, int gq)
 {
@@ -3279,6 +3339,13 @@ static void draw_target_wire(const mech3d *m, int part_lo, int part_hi, float vi
  * (JACK: 2, STANDARD); the light - the planet's LITE {+8 x, +12 y, +16 z, +20 ambient, +22 directional, +24 the distance
  * per darker level}. The time-of-day fades between slots are not reproduced. */
 static float g_dos_lite[6] = {0, 20000, 0, 72, 0, 0};
+/* the planet's light object (LITO {i16 node}, GBL MW2.EXE 0x4f530 -> DAT_000a5924 / 592c): every frame 0x10490 -> 0x37210
+ * puts that object's position (+0x34..+0x3c) in the view's light (+0x1c..+0x24) - unless a blast holds the light
+ * (DAT_000a5928 = 0, 0x52567) - so the LITE position only counts until the first frame. PETESCN1's 'light' object
+ * moves on a path (TSK 'repeat,norotate,light'): with the LITE directional flag its position is the light's direction */
+static char g_lito_rec[17];
+static int g_lito_node = -1, g_lito_have_off;
+static float g_lito_off[3];
 /* the DOS time of day (0x14ee0 / 0x14f80): the PALG slots' PAL records (6-bit), the start time (INIT +8), the day length
  * (PLNT +12), the haze band height (HRZM +4, shown unless PLNT +68; GBL MW2.EXE 0x4f8ed -> 0x4e700 stores HRZM +4 in
  * DAT_000a79c8, whose initial value is 36 - a mission without HRZM (ASAH, FOST, JEEH, NEWC, TIM_) keeps 36; MW2.EXE runs
@@ -3355,6 +3422,7 @@ static void dos_scene(glr *r, prj_archive *ma, const char *mission)
     int have_luma = 0;
     snprintf(name, sizeof name, "%.4sSCN1", mission);
     g_dos_day = 0; g_dos_group = -1; g_dos_evals = 0; g_dos_band = 36; g_dos_next_eval = 0; g_dos_fade_len = 0; g_dos_t0 = 0;
+    g_lito_node = -1; g_lito_have_off = 0;
     if (bwd_mission_load(ma, name, &bm) == 0) {
         for (k = 0; k < bm.record_count; k++)
             for (c = 0; c < bm.records[k].chunk_count; c++) {
@@ -3379,6 +3447,20 @@ static void dos_scene(glr *r, prj_archive *ma, const char *mission)
                 else if (strcmp(ch->tag, "HRZM") == 0 && ch->size >= 8 && g_dos_band >= 0)
                     g_dos_band = (float)(int32_t)(ch->data[4] | ch->data[5] << 8 | ch->data[6] << 16 | (uint32_t)ch->data[7] << 24);
                 else if (strcmp(ch->tag, "LTBL") == 0 && ch->size >= 2) luma_id = ch->data[0] | ch->data[1] << 8;
+                else if (strcmp(ch->tag, "LITO") == 0 && ch->size >= 2 && (int16_t)(ch->data[0] | ch->data[1] << 8) != -1) {
+                    int c2;
+                    g_lito_node = (int16_t)(ch->data[0] | ch->data[1] << 8);
+                    snprintf(g_lito_rec, sizeof g_lito_rec, "%s", bm.records[k].name);
+                    g_lito_have_off = 0;
+                    for (c2 = 0; c2 < bm.records[k].chunk_count; c2++) {   /* (no path: the node where its OBJ puts it - ASSUMED
+                                                                            * unmoved by a block) */
+                        bwd_obj o;
+                        if (bwd_obj_decode(&bm.records[k].chunks[c2], &o) == 0 && o.index == g_lito_node) {
+                            g_lito_off[0] = (float)o.offset[0]; g_lito_off[1] = (float)o.offset[1]; g_lito_off[2] = (float)o.offset[2];
+                            g_lito_have_off = 1;
+                        }
+                    }
+                }
                 else if (strcmp(ch->tag, "LITE") == 0 && ch->size >= 28) {
                     const uint8_t *d = ch->data;
                     g_dos_lite[0] = (float)(int32_t)(d[8] | d[9] << 8 | d[10] << 16 | (uint32_t)d[11] << 24);
@@ -3920,6 +4002,7 @@ static int load(glr *r, prj_archive *ma, prj_archive *ta, int ati, const char *r
         g_radar_ri[0] = g_radar_ri[1] = g_radar_ri[2] = 2;   /* the radar descriptors' ranges reset at the load (1.0 km) */
         g_orb_d = g_orb_h = g_orb_ang = g_orb_tilt = 0;     /* the external orbit's distance / height: set again on its first entry */
         g_sim_ok = msim_init(&g_sim, ma, scene, g_actors, g_actor_count) == 0;
+        int0_capture();   /* the starting structure (damage levels) */
         {   /* CLIM (one mission a process in MW2.EXE: DAT_000a5be0 starts at 0) */
             bwd_mission cm;
             g_clim_m = 0;
@@ -4008,6 +4091,7 @@ static int load(glr *r, prj_archive *ma, prj_archive *ta, int ati, const char *r
             if (g_pl_walk <= 0) g_pl_walk = 1500;
             if (g_sim_ok && g_sim.planet.gravity_g > 0) g_pl_walk = msim_top_speed((int)lrintf(g_pl_walk / 300.0f), g_sim.planet.gravity_g);   /* speed / gravity in DOS's integers (see msim) */
             mech3d_pose(&g_pl, &g_pl_anim, 0);
+            g_pl_pose_y = (float)g_pl.origin[1];
             {   /* HUD sprites and the CPIT layout. Each piece exists three times: <name> (the 320x200 set), <name>6 (640x480) and
                  * <name>K (1024x768), the font too (BASE6X7, BASE6X76, BASE6X7K) - SHP resource IDs n, n + 1, n + 2. The
                  * engine (0x100024b0, at the screen's set-up 0x10004910) takes the set index 0x102453c8 = the entry of
@@ -5545,6 +5629,7 @@ int main(int argc, char **argv)
             memset(g_drop_texs, 0, sizeof g_drop_texs);
         }
         sfx_log_time = g_sim_ok && g_world ? g_sim.now / 1000.0 : -1;   /* TEST ONLY (MW2_SFX_LOG) */
+        if (g_sfx && g_sim_ok && g_world) sfx_test_clock(g_sfx, g_sim.now / 1000.0);   /* TEST ONLY (MW2_SFX_WAV) */
         vq_drain();   /* the voice queue (0x100313d0) */
         if (g_sim_ok && g_world && g_sfx) {   /* missile lock tones: MECBYHLX as a guided weapon starts acquiring (0x40),
                                                * MECXLOCK when it locks (0x80) - by their names */
@@ -6525,6 +6610,7 @@ int main(int argc, char **argv)
                  * pitch = unit +0x5c + +0x68) - so the cockpit frame stays where it is on the screen while the view tilts */
                 g_pl.tilt = g_pitch * 0.5f;
                 mech3d_pose(&g_pl, &g_pl_anim, g_pl_t);   /* g_pl_t: the absolute key time (anim_player) */
+                g_pl_pose_y = (float)g_pl.origin[1];
                 if (g_plpit_ok) {
                     memcpy(g_plpit.origin, g_pl.origin, sizeof g_pl.origin);
                     g_plpit.heading = g_pl.heading; g_plpit.twist = g_pl.twist; g_plpit.tilt = g_pl.tilt; g_plpit.pose_off = g_pl_ap.off;
@@ -7587,6 +7673,11 @@ int main(int argc, char **argv)
                     if (!(ed_light || getenv("MW2_FXLIGHT")) || getenv("MW2_NO_FXLIGHT")) bi = -1;
                 }
                 v.point_light = bi >= 0;
+                if (g_tex_kind == 3 && g_lito_node >= 0 && !v.point_light) {   /* the light object (g_lito_node) */
+                    float lp[3];
+                    if (world3d_paths_node_pos(g_sim_ok ? g_sim.paths : NULL, g_lito_rec, g_lito_node, lp) == 0) memcpy(v.dos_lpos, lp, sizeof lp);
+                    else if (g_lito_have_off) memcpy(v.dos_lpos, g_lito_off, sizeof g_lito_off);
+                }
                 if (bi >= 0) {
                     int lvl = g_lite_level - 10;
                     if (lvl < 0 || lvl > 255) lvl = 64;
@@ -8585,12 +8676,10 @@ int main(int argc, char **argv)
                  * the side torsos' lower edges - are drawn; the port had drawn the regions alone) */
                 hud_draw(g_hud, &g_hs_dmg_lvl[0], dx, dy, NULL);
                 for (q = 0; q < 15; q++) {
-                    int loc = REG_LOC[q] - 1, lf = 0, lr = 0, lv, pick;
+                    int loc = REG_LOC[q] - 1, lv, pick;
                     const int *rg = g_dmg_regions[q];
                     if (rg[2] <= 0 || rg[3] <= 0) continue;
-                    if (pu->armor_max[loc] > 0) lf = 15 - 15 * (int)pu->armor[loc] / pu->armor_max[loc];
-                    if (pu->rear_max[loc] > 0) lr = 15 - 15 * (int)pu->rear[loc] / pu->rear_max[loc];
-                    lv = lf > lr ? lf : lr;
+                    lv = hud_loc_level(pu, loc);   /* GBL 0x2f930: >= 12 colour 0xb, 1-11 3, 0 the outline's 6 */
                     pick = pu->loc_gone[loc] ? 3 : lv <= 0 ? 0 : lv < 12 ? 1 : 2;
                     if (pick == 0) continue;
                     hud_draw_region(g_hud, &g_hs_dmg_lvl[pick], dx, dy, (float)rg[0] * 2.0f * g_hud_s, (float)rg[1] * 2.0f * g_hud_s, (float)rg[2] * 2.0f * g_hud_s, (float)rg[3] * 2.0f * g_hud_s);
@@ -8798,10 +8887,12 @@ int main(int argc, char **argv)
                                 g_wire_r[0] = sr0; g_wire_r[1] = sr1; g_wire_f[0] = sf0; g_wire_f[1] = sf1;
                             }
                         }
-                        {   /* one text line (0x10020e40): the inspection result for 0x16a ticks, else the name ("Installation"
-                             * when empty); its colour by the thing's alliance (0x10021167) - not kept by the port: red */
+                        {   /* one text line (GBL 0x30065): the inspection result for 0x16c ticks, else the name ("Installation"
+                             * when empty); its colour by the thing's alliance (0x2b5e0: no team 2, else the team's - the
+                             * port's side): 0 colour 0xe, 1 10, 2 6 (0x304b0..0x304f9, as a unit's). The port had red 0xb for
+                             * every structure */
                             const char *it = inspect_text(-1, g_tgt_thing);
-                            hud_text(g_hud, nx, ty, it ? it : gb->name[0] ? gb->name : "Installation", red);
+                            hud_text(g_hud, nx, ty, it ? it : gb->name[0] ? gb->name : "Installation", gb->side == 1 ? HP(10) : gb->side == 2 ? HP(6) : HP(0xe));
                         }
                         range_text(info, sizeof info, sqrtf(cx * cx + cz * cz));
                         hud_text(g_hud, rgx, rgy, info, green);
@@ -8816,7 +8907,9 @@ int main(int argc, char **argv)
                              * BASSSCN1 a (autopilot to the visited drop nav): the diamond VTGT_NR6; the port had VTGT_NP always */
                             const hud_sprite *nsp = nv < 256 && g_nav_seen[nv] && g_hs_vtgt_nr.tex ? &g_hs_vtgt_nr : &g_hs_vtgt_nav;
                             if (nsp->tex && !snow) hud_draw(g_hud, nsp, (float)(tvw.x0 + (tvw.x1 - tvw.x0) / 2) * tvw.ux, (float)(tvw.y0 + (tvw.y1 - tvw.y0) / 2) * tvw.uy, NULL);   /* at ((x1 - x0) / 2, (y1 - y0) / 2) of the window (0x100213d1, C division): DOSBox (114, 622) at 1024 x 768 */
-                            hud_text(g_hud, nx, ty, label, HP(2));   /* DOSBox YELLSCN1 "Nav Epsilon": 190,146,0 = index 2 */
+                            /* GBL 0x304d3: colour (nav flag 0x20 clear) + 1 - 2 before the player's side has been there, 1
+                             * after (DOSBox BASSSCN1, the drop nav at 0 m: "Nav Point" in 190,138,0 = index 1; the port had 2) */
+                            hud_text(g_hud, nx, ty, label, nv < 256 && g_nav_seen[nv] ? HP(1) : HP(2));
                             /* the range as for any target (the player's +0xc4, formatted by range_text) in the text
                              * routine's colour 0xe (DOS 0x30180 / 3Dfx 0x1002118f reset it after the name): DOSBox YELLSCN1
                              * "1.08k" in green for Nav Epsilon at 1075 m (the port had " 1075m" in the name's yellow) */

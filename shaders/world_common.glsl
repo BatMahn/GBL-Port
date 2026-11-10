@@ -129,8 +129,8 @@ ivec2 dos_scr(vec3 w) {
   return ivec2(c.x + dos_pq(xc, u_dos_ps.x, zc), c.y - dos_pq(yc, u_dos_ps.y, zc));
 }
 // a two-corner polygon (a line: GBL 0x3d780 -> 0x54fa9, DAT_000a7974 = 1 in the data): its corners' DOS points - both in
-// front, or the one in front and the edge's near-plane point (ASSUMED there: the original's walk then lists three
-// records, the near point twice, and fills them as a polygon); false when both are behind
+// front, or the one in front and the edge's near-plane point - false when both are behind: the box world.vert lays over
+// its pixels (world.frag dos_line_recs / dos_line_px: which of them, as the original paints them)
 bool dos_line_ends(vec3 A, vec3 B, out ivec2 p0, out ivec2 p1) {
   int nr = max(u_dos_order != 0 ? u_dos_near : 0, 1); float t;
   ivec3 a = dos_cam(A), b = dos_cam(B);

@@ -1,7 +1,64 @@
 # Changelog
 
-## Unreleased (work in progress)
+## 1.0.0 (2026-11-10)
 
+The first full release: rendering, simulation, AI, missions, HUD, sound and the shell checked systematically against
+the original DOS game's code (running its routines under emulation) and against DOSBox recordings.
+
+- **Rendering, last checks against the original:**
+  - **Standing height on sloped floors:** your 'Mech no longer stands 20-odd cm sunk into some sloped floors (the start
+    floors of the GUI missions and others): the height on polygon ground now comes from the floor's corners as the
+    original works it out, not from the slightly tilted surface direction stored with the model. The cockpit view in
+    those missions now sits where the original's does.
+  - **Underwater mission's sea floor (PETE):** the light under water comes from a light that drifts above you, as in
+    the original, so the sea floor and the rocks are lit and visible; before they were lit from below and came out the
+    colour of the water.
+  - When an explosion briefly takes over a scene's light in a mission with no ambient light, the shading now uses the
+    original's fallback level instead of going darker than black.
+  - Tracer streaks that pass right by your cockpit or run far off the screen's edge are drawn the way the original
+    draws them (a thinner, stepped streak) instead of as a full line; and a sliver of a polygon that fits in a single row
+    of pixels is no longer drawn, as in the original.
+
+- **Enemy AI and collisions, last checks against the original:**
+  - A shot or a probe that meets a wall, a building face or the ground exactly on a corner or an edge now counts as a
+    hit, as in the original (before it could slip through the outline of a face).
+  - Enemy 'Mechs that bump into something back away only when the original would: not while already reversing,
+    and not straight after a jump (landing against a wall or another 'Mech no longer sends them backing off).
+  - **Enemy 'Mechs sidestep the original's way:** their short sidestep move now heads for a point about 100 m to
+    their own side (or ahead and to the side when you are farther than 40 m), not to a point circling round you, and
+    their flanking and sidestep moves steer by the original's waypoints - including the jump-jet turn, which now
+    looks at the point they are heading for. Their circling attack (unused by the missions) circles round its target
+    and returns to it from beyond 150 m as in the original.
+  - Enemy 'Mechs spread round the 'Mech they attack as in the original: each target keeps its own count of the
+    flanking positions taken (before, every target shared the counts of the attackers round you), so lancemates and
+    enemies fighting each other no longer crowd or skip positions because of what happens round you.
+  - Enemy 'Mechs set their speed in turns as the original does (from the turn they were already making), and back
+    away at full speed even when running hot, as in the original (before they backed off at half speed above 65
+    heat).
+  - An enemy 'Mech out of ammunition that charges you self-destructs within 20 m measured in 3D, as in the original -
+    not when it passes 20 m beside you on a ledge above or below.
+  - Resting units hold the original's throttle setting while powered down (no visible change: they stay put until
+    they power up, as before).
+- **Sound, checked against recordings of the original:**
+  - **Distant sounds carry as in the original:** weapon fire, explosions, footsteps and power-ups far away are heard at
+    full strength (arriving later with distance, at the speed of sound) instead of fading out by 500 m - the
+    original's fade only begins kilometres away. Ambient object loops (machinery, fans) still fade by 500 m, as there.
+    Branson and Zack keep their 10 m hearing limit.
+  - **Stereo placement as in the original:** a distant sound's left / right balance is set when it arrives, from where
+    you are facing then (turning while it travels moves it), and follows your view while it plays.
+  - **Ambient loops no longer crowd out other sounds:** machinery and other object loops have their own channels, as in
+    the original, so with several of them running weapon fire and footsteps still get all eight effect channels.
+  - **Your own power-up sound** at the start of a mission is heard at once and at full strength: on the mission's first
+    frame the port listened from the start height below your 'Mech, so it came late and quieter, and in missions that
+    start high up (Branson) not at all.
+- **HUD colours, checked against the original's code and screenshots:**
+  - **Target display:** a selected nav point's name turns from bright to darker yellow once your side has been there,
+    as in the original; a targeted building's name is coloured by its side (green for your side's, red for the
+    enemy's, blue for neutral ones) instead of always red.
+  - **Damage display:** a location turns yellow and red by how much of its armour and internal structure together is
+    left, as in the original - it no longer goes red as soon as the armour is nearly gone while the structure is
+    intact, and heavily armoured locations stay blue until they are down to 75 points. The same grading colours a
+    target's locations in the target display and image enhancement.
 - **Enemy turrets and AI, checked further against the original:**
   - **Turrets now turn and aim their guns:** the big carrier and base turrets never visibly rotated, and their shots
     left along the turret's base direction - on Branson's carrier deck they landed 40 m away from you. Their body now

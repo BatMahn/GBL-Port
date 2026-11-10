@@ -207,6 +207,7 @@ typedef struct {
     int         *ai_focus;       /* per actor: the attacker it turned on (0x10012520): -1 the player, -2 none */
     int         *ai_who;
     int         *powered_down;   /* per actor: shut down by a rest / hold node (states 10 / 11, mech +0xa0 |= 3) */
+    int        (*unit_flank)[8]; /* per actor: attackers per manoeuvre 1 slot round it (record +0x1a0; the player's: flank_slots) */
     /* the DOS end (MW2.EXE 0x16e80): the player's star resolved, the radio idle - "Press any key to exit..." once more
      * than 3 s (whole seconds, clock / 0xb6) have passed, any key then ends (0x45d80), and the mission ends by itself past
      * 0x14 s */

@@ -214,6 +214,40 @@ ivec2 dos_gchain(ivec2 V[20], int C[20], int m, int top, int dir, int y, int ybo
   return ivec2(int(uint(V[a].x) * 65536u + 0x8000u + t * dos_xstep(V[b].x - V[a].x, cnt)),
                int(uint(C[a] + 0x8000) + t * uint(dos_idiv(C[b] - C[a], cnt))));
 }
+// a two-corner polygon (a line, GBL 0x3d780 -> 0x54fa9 for two records) as the original lists and paints it: the walk
+// (0x3ec8e) gives the corners in front and, where the edge crosses the near plane, its point there - once from each edge,
+// so a line with one end behind it is three records (the front corner and the near point twice); the paint (0x3dd70)
+// cuts records beyond -0x3fff..0x3ffe to the +-0x4000 box (0x3de30, dos_clip2d) - a line from inside to outside gives
+// three again (the cut point from each edge); 0x3d780 then draws one record as a point, two as the line, three or more
+// with the flat filler (0x3c610 type 0 -> 0x5a900: the chains as dos_gchain, nothing when every record is on one row).
+// Returns the records' screen points in Rs (0: nothing listed). 0x5a900 run under unicorn against this rule (600
+// polygons: degenerate, one-row and general): identical
+int dos_line_recs(vec3 A, vec3 B, out ivec2 Rs[20]) {
+  int nr = max(u_dos_order != 0 ? u_dos_near : 0, 1); float t;
+  ivec3 a = dos_cam(A), b = dos_cam(B), Rc[20]; ivec2 Ra[20];
+  bool ba = a.z < nr, bb = b.z < nr; int m = 0;
+  for (int i = 0; i < 20; i++) { Rc[i] = ivec3(0); Rs[i] = ivec2(0); Ra[i] = ivec2(0); }
+  if (ba && bb) return 0;
+  if (!ba) { Rc[m] = a; m++; }
+  if (ba != bb) { Rc[m] = dos_nclip(a, b, nr, t); m++; }
+  if (!bb) { Rc[m] = b; m++; }
+  if (ba != bb) { Rc[m] = dos_nclip(b, a, nr, t); m++; }
+  for (int i = 0; i < m; i++) Rs[i] = dos_camscr(Rc[i]);
+  return dos_clip2d(Rc, Rs, Ra, m);
+}
+bool dos_line_px(ivec2 p, ivec2 Rs[20], int m) {
+  if (m == 1) return p == Rs[0];
+  if (m == 2) return dos_line_on(p, Rs[0], Rs[1]);
+  if (m < 3) return false;
+  int top = 0, ybot = Rs[0].y, C[20];
+  for (int i = 0; i < 20; i++) C[i] = 0;
+  for (int i = 0; i < m; i++) { if (Rs[i].y <= Rs[top].y) top = i; ybot = max(ybot, Rs[i].y); }
+  if (ybot == Rs[top].y || p.y < Rs[top].y || p.y > ybot) return false;
+  ivec2 e1 = dos_gchain(Rs, C, m, top, -1, p.y, ybot), e2 = dos_gchain(Rs, C, m, top, 1, p.y, ybot);
+  if (e2.x <= e1.x) { ivec2 t2 = e1; e1 = e2; e2 = t2; }
+  int x0 = e1.x >> 16, w = (e2.x >> 16) - x0;
+  return p.x >= x0 && p.x <= x0 + w;
+}
 // one chain's edge at DOS row y, as dos_gchain walks it: (a, b, rows into the edge, its row count)
 ivec4 dos_gedge(ivec2 V[20], int m, int top, int dir, int y, int ybot) {
   int a = top, b = (a + dir + m) % m, r0 = V[top].y;
@@ -351,8 +385,9 @@ vec3 dos_gouraud(float lev) {
 // 0x59f58: the last of the least y
       int y0 = int(u_vp.y) - 1 - (int(py) - int(u_vpo.y)), y = clamp(y0, V[top].y, ybot);
 // the DOS row (y down)
-      if (trust && (m == n || pitclip) && y0 != y) discard;
-// not near-clipped: the DOS span's rows only (see the vertex shader)
+      if (trust && (m == n || pitclip) && (y0 != y || ybot == V[top].y)) discard;
+// not near-clipped: the DOS span's rows only (see the vertex shader); a polygon all on one row draws nothing (0x59e77 /
+// 0x5a900: no row between its top and bottom - both fillers run under unicorn on one-row polygons: no pixel)
       ivec2 e1 = dos_gchain(V, CF, m, top, -1, y, ybot), e2 = dos_gchain(V, CF, m, top, 1, y, ybot);
       if (e2.x <= e1.x) { ivec2 t2 = e1; e1 = e2; e2 = t2; }
 // 0x5a1d5
@@ -464,10 +499,11 @@ void main() {
 // bottom one's and each from the left chain's x >> 16 to the right one's, both inclusive, chains from x + 0.5
 // kind 5: a line (a two-corner polygon, colour type 0) - 0x54fa9's pixels in the palette colour (world.vert: its box)
     if (kind == 5) {
-      int s = v_texsel - 1; ivec2 la, lb;
-      if (s < 0 || !dos_line_ends(vec3(dvtx(s * 13), dvtx(s * 13 + 1), dvtx(s * 13 + 2)), vec3(dvtx(s * 13 + 3), dvtx(s * 13 + 4), dvtx(s * 13 + 5)), la, lb)) discard;
+      int s = v_texsel - 1; ivec2 Rs[20];
+      if (s < 0) discard;
+      int m = dos_line_recs(vec3(dvtx(s * 13), dvtx(s * 13 + 1), dvtx(s * 13 + 2)), vec3(dvtx(s * 13 + 3), dvtx(s * 13 + 4), dvtx(s * 13 + 5)), Rs);
       ivec2 pp = ivec2(int(floor(glFragCoord.x)) - int(u_vpo.x), int(u_vp.y) - 1 - (int(floor(glFragCoord.y)) - int(u_vpo.y)));
-      if (!dos_line_on(pp, la, lb)) discard;
+      if (!dos_line_px(pp, Rs, m)) discard;
       o_color = u_dos_tc != 0 ? dos_tc_out(dos_colour(base)) : vec4(dos_colour(base), 1.0); return;
     }
     if (kind <= 2 && v_texsel > 0 && u_dos_exact != 0) dos_gouraud(0.0);

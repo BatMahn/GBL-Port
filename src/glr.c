@@ -2486,10 +2486,11 @@ void glr_draw_rect(glr *r, const glr_view *v, int x0, int y0, int w, int h)
     if (r->dos) {   /* the DOS edition's shading: the LUMA / palette table on unit 1 */
         rb_texture(1, r->dos_tex);
         r->F.u_dos = v->wire ? 0 : 1;
-        /* an explosion takes the light (0x51060: moved to the blast, the ambient 10 lower) */
+        /* an explosion takes the light (0x51060: moved to the blast, the ambient 10 lower - 64 when that leaves 0..255,
+         * GBL 0x52567..0x5257f) */
         if (v->point_light) UV(r->F.u_dos_lpos, v->light_pos, 3);   /* (already in GL coordinates, as u_lpos) */
         else U3(r->F.u_dos_lpos, v->dos_lpos[0], v->dos_lpos[1], -v->dos_lpos[2]);
-        r->F.u_dos_amb = v->point_light ? v->dos_amb - 10.0f : v->dos_amb;
+        r->F.u_dos_amb = !v->point_light ? v->dos_amb : v->dos_amb - 10.0f < 0.0f || v->dos_amb - 10.0f > 255.0f ? 64.0f : v->dos_amb - 10.0f;
         r->F.u_dos_fogdist = v->dos_fogdist;
         r->F.u_dos_dir = v->point_light ? 0 : v->dos_dir;
         r->F.u_dos_smooth = v->dos_sky_smooth;   /* the port's dos_shading=smooth */

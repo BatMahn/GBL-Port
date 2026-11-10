@@ -79,17 +79,18 @@ action tables 0xa64ac.., the weapon fire pointers 0xafed0.., the path-task table
 0x1f000-0x2f400 and 0x51000-0x54d00, and the loader 0x4d670: 695 functions. "checked earlier": an earlier agent's notes / docs trace an address
 inside it (AC AD AE AI J U V W Y ...). Runtime: the C library, DOS4GW, sound and video drivers (>= 0x54d00).
 
-| status | functions |
+| status (after Round 12) | functions |
 |---|---|
 | runtime / driver | 180 |
-| not checked | 175 |
-| checked earlier | 152 |
+| checked earlier | 148 |
+| not checked | 141 |
 | shared (render) | 68 |
 | shared (render+mission) | 48 |
+| checked (read) | 37 |
+| FIXED | 32 |
 | shared (mission) | 30 |
-| checked (read) | 24 |
-| FIXED | 14 |
-| checked (emulator) | 4 |
+| checked (emulator) | 10 |
+| differs (not ported) | 1 |
 
 | GBL | decomp lines | port cites | status | note |
 |---|---|---|---|---|
@@ -122,10 +123,10 @@ inside it (AC AD AE AI J U V W Y ...). Runtime: the C library, DOS4GW, sound and
 | 0x1c760 | 50 | - | checked earlier | AC, AE |
 | 0x1c850 | 53 | - | not checked |  |
 | 0x1c970 | 29 | - | not checked |  |
-| 0x1c9f0 | 106 | - | not checked |  |
-| 0x1cbc0 | 42 | - | not checked |  |
+| 0x1c9f0 | 106 | msim.c eseg_poly | checked (emulator) | simdiff seg_poly: segment vs face, hit / miss and point |
+| 0x1cbc0 | 42 | msim.c eseg_poly | checked (emulator) | projection plane by the normal's largest component (seg_poly) |
 | 0x1cc50 | 108 | - | shared (render) | also reached from the render loop (AM) |
-| 0x1ce00 | 108 | - | not checked |  |
+| 0x1ce00 | 108 | msim.c cpoly_in | FIXED | edge / corner inside, truncated crossing (seg_poly); 0x1cc50 / 0x1cfb0 the same rule |
 | 0x1cfb0 | 108 | - | checked earlier | AH |
 | 0x1d160 | 52 | - | shared (render) | also reached from the render loop (AM) |
 | 0x1d230 | 117 | - | shared (render) | also reached from the render loop (AM) |
@@ -136,10 +137,10 @@ inside it (AC AD AE AI J U V W Y ...). Runtime: the C library, DOS4GW, sound and
 | 0x1da90 | 27 | - | checked earlier | AD |
 | 0x1daf0 | 35 | - | not checked |  |
 | 0x1db90 | 15 | - | not checked |  |
-| 0x1dbb0 | 56 | - | not checked |  |
+| 0x1dbb0 | 56 | msim.c eseg_set | checked (emulator) | octagonal length + 16.16 direction: the same line, the length only bounds t (seg_poly) |
 | 0x1dc40 | 26 | - | not checked |  |
 | 0x1dcf0 | 35 | - | checked earlier | AH |
-| 0x1de20 | 35 | - | not checked |  |
+| 0x1de20 | 35 | msim.c eseg_len | checked (emulator) | segment cut at the hit (seg_poly) |
 | 0x1de90 | 14 | - | not checked |  |
 | 0x1dec0 | 21 | - | not checked |  |
 | 0x1def0 | 47 | msim.c | not checked |  |
@@ -188,7 +189,7 @@ inside it (AC AD AE AI J U V W Y ...). Runtime: the C library, DOS4GW, sound and
 | 0x1f0d2 | 35 | glview.c, mech3d.c, mech3d.h | not checked |  |
 | 0x1f1e0 | 12 | msim.c | checked earlier | E_sim.md, J_sim_impl.md |
 | 0x1f202 | 39 | glview.c, mech3d.h | checked earlier | E_sim.md |
-| 0x1f314 | 22 | - | not checked |  |
+| 0x1f314 | 22 | msim.c cobj_seg case 2 / 7 | checked (read) | the first face crossed in polygon order |
 | 0x1f370 | 72 | glview.c | checked earlier | AL |
 | 0x1f4c0 | 64 | glview.c, mech3d.h | checked earlier | AL |
 | 0x1f650 | 21 | - | not checked |  |
@@ -217,11 +218,11 @@ inside it (AC AD AE AI J U V W Y ...). Runtime: the C library, DOS4GW, sound and
 | 0x20ca0 | 50 | combat.c, glview.c, msim.c | FIXED | threshold 200000, x3/1300000, DOS length; thing share whole points | test: collision_damage |
 | 0x20d60 | 17 | msim.h | checked earlier | E_sim.md, W |
 | 0x20de0 | 23 | - | shared (mission) | also reached from the node interpreter (AO) |
-| 0x20e30 | 18 | - | not checked |  |
-| 0x20e70 | 163 | - | not checked |  |
-| 0x212a0 | 21 | - | not checked |  |
-| 0x213b0 | 101 | - | not checked |  |
-| 0x216f0 | 26 | - | not checked |  |
+| 0x20e30 | 18 | - | checked (read) | debug display: clears lines 4-24 |
+| 0x20e70 | 163 | - | checked (read) | debug: AI status page on the monochrome display (0x164b70), int3 on a negative distance - not ported, no player effect |
+| 0x212a0 | 21 | - | checked (read) | debug display: unit list |
+| 0x213b0 | 101 | - | checked (read) | debug: a star's node list on the monochrome display - not ported, no player effect |
+| 0x216f0 | 26 | - | checked (read) | debug page dispatcher (0x21a80 calls it only with 0x164b70 set) |
 | 0x21760 | 23 | - | not checked |  |
 | 0x217b0 | 71 | ai.h, msim.c | checked earlier | AI, E_sim.md, J_sim_impl.md |
 | 0x219c0 | 35 | - | not checked |  |
@@ -251,14 +252,14 @@ inside it (AC AD AE AI J U V W Y ...). Runtime: the C library, DOS4GW, sound and
 | 0x22d90 | 57 | - | shared (mission) | also reached from the node interpreter (AO) |
 | 0x22ef0 | 128 | msim.c | FIXED | AQ: state 2 entry fire delay rand(10) x 0x12 on every path |
 | 0x23220 | 87 | - | checked earlier | AE |
-| 0x233f0 | 18 | - | not checked |  |
+| 0x233f0 | 18 | ai.c (bearing - heading) | checked (read) | wrap to +-180 in 16.16 |
 | 0x23420 | 67 | - | checked earlier | AE |
 | 0x23531 | 17 | - | not checked |  |
 | 0x23580 | 25 | - | shared (mission) | also reached from the node interpreter (AO) |
 | 0x235e0 | 44 | - | checked earlier | AE |
 | 0x236d0 | 21 | - | shared (mission) | also reached from the node interpreter (AO) |
 | 0x23740 | 65 | - | shared (mission) | also reached from the node interpreter (AO) |
-| 0x238b0 | 15 | - | not checked | AQ: next nav of manoeuvre 12 (not ported) |
+| 0x238b0 | 15 | ai.c own_goal | FIXED | the next own point (manoeuvres 1 / 7 / 12) |
 | 0x23900 | 24 | - | shared (mission) | also reached from the node interpreter (AO) |
 | 0x23970 | 24 | - | not checked |  |
 | 0x23a00 | 23 | - | not checked |  |
@@ -377,17 +378,17 @@ inside it (AC AD AE AI J U V W Y ...). Runtime: the C library, DOS4GW, sound and
 | 0x2cb80 | 125 | ai.c | FIXED | chooser: contact / jump pre-checks class 1 only |
 | 0x2ced0 | 112 | ai.c, ai.h | FIXED | manoeuvre limits in 182 Hz ticks; manoeuvre 10 after 10 at a wall |
 | 0x2d1b0 | 55 | - | checked (read) | manoeuvre end: matches |
-| 0x2d2f0 | 21 | - | not checked |  |
-| 0x2d350 | 65 | - | not checked |  |
+| 0x2d2f0 | 21 | ai.c own_add / own_goal | checked (emulator) | one own point, goal the first own (slot_point checks its arguments from 0x2ced0 case 7) |
+| 0x2d350 | 65 | ai.c slot_point | checked (emulator) | simdiff slot_point: every slot, d 10000 / 15000 |
 | 0x2d4e0 | 34 | ai.c, msim.c | checked earlier | E_sim.md, J_sim_impl.md, W, Y |
 | 0x2d590 | 57 | msim.c | checked (read) | manoeuvre 1: matches |
 | 0x2d6b0 | 44 | ai.c, msim.c | FIXED | closing x 65536/500000 |
-| 0x2d7a0 | 26 | - | not checked |  |
-| 0x2d850 | 23 | - | not checked |  |
+| 0x2d7a0 | 26 | ai.c manoeuvre 6 | FIXED | self-destruct on +0xc4 (3D) < 2001 |
+| 0x2d850 | 23 | ai.c manoeuvre 7 | FIXED | point round the unit itself (was round the target), steer to the first own point, done < 30 m |
 | 0x2d8c0 | 64 | ai.c | FIXED | AQ: phase 0 needs 0x2dd50, jets on through phase 1 |
 | 0x2dab0 | 77 | msim.c, msim.h | checked (read) | AQ: manoeuvre 5 matches |
-| 0x2dc40 | 25 | - | not checked |  |
-| 0x2dc90 | 33 | - | differs | AQ: manoeuvre 12 beyond 150 m switches its goal to a patrol nav (0x23740) - not ported |
+| 0x2dc40 | 25 | ai.c manoeuvre 10 | FIXED | throttle 0x400 written directly: no turn / heat rule |
+| 0x2dc90 | 33 | ai.c manoeuvre 12 | FIXED | four own points round the target (0x23740), re-made beyond 150 m every 0x5b0 ticks; never chosen in GBL |
 | 0x2dd50 | 25 | - | FIXED | AQ: jump pre-check / manoeuvre 9 line probe |
 | 0x2ddc0 | 36 | ai.h, msim.c | checked earlier | AE |
 | 0x2de80 | 163 | msim.c | checked earlier | E_sim.md, W |
@@ -396,11 +397,11 @@ inside it (AC AD AE AI J U V W Y ...). Runtime: the C library, DOS4GW, sound and
 | 0x2e450 | 35 | - | FIXED | AQ: line probe (probe_engine_ex) |
 | 0x2e540 | 33 | - | checked (read) | AQ: weapons left |
 | 0x2e600 | 60 | ai.c | FIXED | jump-to-turn: standing-only switching, manoeuvres 0-3/7/8/12 |
-| 0x2e6d0 | 16 | - | not checked |  |
-| 0x2e700 | 27 | - | not checked |  |
+| 0x2e6d0 | 16 | ai.c jets_ok / msim can_jump | checked (read) | fuel > 5, jets, heat >> 16 < n |
+| 0x2e700 | 27 | - | checked (read) | an object's +0x6c id (manoeuvre 6's avoidance re-check; avoidance not modelled in ai.c) |
 | 0x2e750 | 111 | ai.c, ai.h, msim.c | checked earlier | E_sim.md |
-| 0x2e9f0 | 74 | - | not checked |  |
-| 0x2eb20 | 16 | - | not checked |  |
+| 0x2e9f0 | 74 | ai.c flank_pick | FIXED | simdiff flank_pick: front case on the attacker's own counters, per-target counters, half-up sector |
+| 0x2eb20 | 16 | ai.c contact_rule | FIXED | simdiff contact_rule |
 | 0x2eb60 | 50 | ai.c, ai.h, msim.c | checked (read) | fire decision: matches (aim error always 0) |
 | 0x2ec90 | 90 | combat.c | checked earlier | AE, AI, E_sim.md, J_sim_impl.md |
 | 0x2ee80 | 22 | glview.c, msim.c, msim.h | FIXED | turret servos 0.8 s = 145 (0x2eed0 init, not decompiled); short-way twist (0x2f0f0 update) | test: turret_twist |
@@ -577,7 +578,7 @@ inside it (AC AD AE AI J U V W Y ...). Runtime: the C library, DOS4GW, sound and
 | 0x52cd0 | 44 | msim.c | checked earlier | AI, E_sim.md, J_sim_impl.md |
 | 0x52dd0 | 38 | - | not checked |  |
 | 0x52ea0 | 10 | - | checked earlier | E_sim.md |
-| 0x52ec0 | 74 | - | not checked |  |
+| 0x52ec0 | 74 | - | differs (not ported) | fire cards (world class 0x10) heat units near them with heat tracking on: see section 7 |
 | 0x53010 | 31 | - | not checked |  |
 | 0x530d0 | 19 | - | not checked |  |
 | 0x531a0 | 28 | - | not checked |  |
@@ -799,14 +800,14 @@ repo; the record's byte sum fixed as render_audit.py's patch_prj) and the player
 | 0x2eed0 / 0x2f050 / 0x4f4a0 | a unit's THNG nodes: the first turned by the twist, a turret's second by its pitch | FIXED | mech3d.c pitch_node / gun_pitch; twist_node falls back to THNG 0 |
 | 0x21a80 / 0x21b60 | the rule pass in every state but 12 (DEFLT state 10: cond 7 within range a -> post) | FIXED | msim.c rules while powered down; a state entered wakes |
 | 0x235e0 / 0x229e1 / 0x22a42 / 0x23dc0 | push / pop depth 1; a node change writes slot +0x13c | FIXED | counter = 1 on the assignment and the reaction; node change skipped |
-| 0x22800 | state handler: 2 aim+fire / nav, 4 flee 0x400, 5 sweep + recon mark (0x23900), 6-8 sweep + nav, 1 / 9 / 10 throttle 0x333 | checked | 1 / 9 never entered (no rule); 0x23900 recon marking is mission code (AR) |
+| 0x22800 | state handler: 2 aim+fire / nav, 4 flee 0x400, 5 sweep + recon mark (0x23900), 6-8 sweep + nav, 1 / 9 / 10 throttle 0x333 | FIXED (Round 12) | 1 / 9 / 10 throttle ported; 1 / 9 never entered (section 7); 0x23900 recon marking is mission code (AR) |
 | 0x22990 | state 3: trigger flags off, 0x2c590 | checked | ai.c attack |
 | 0x24a30 | patrol torso sweep | FIXED | ai.c patrol_sweep (simdiff patrol_sweep) |
 | 0x22ef0 | state entry (power, fire delay, flags) | FIXED | next_fire on the reaction / assignment |
 | 0x2c590 | manoeuvre dispatch | checked | 5 = 0x2dab0, 9 = 0x2d8c0, 12 = 0x2dc90 |
 | 0x2dab0 | manoeuvre 5 (glide on the directional jets) | checked, same | |
 | 0x2d8c0 | manoeuvre 9 (jump up) | FIXED | line probe, jets through phase 1 |
-| 0x2dc90 | manoeuvre 12 | differs (not ported) | beyond 150 m GBL re-goals to a patrol nav every 0x5b0 ticks (0x236d0 / 0x23740 / 0x238b0) |
+| 0x2dc90 | manoeuvre 12 | FIXED (Round 12) | ported (never chosen in GBL): see section 7 |
 | 0x2cb80 | manoeuvre pick: non-unit target -> 0, jump pre-check probes | FIXED | ai.c choose_manoeuvre, msim.c jump_line_clear |
 | 0x2dd50 / 0x2e450 | jump line probes | FIXED | probe_engine_ex reports the unit it stops at |
 | 0x28298..0x28386 | MASC x 1.5 / roll only with a flag-0x10 key playing, jets off; T 0x5b once | FIXED | glview g_masc_key |
@@ -830,3 +831,38 @@ Not changed / open:
   current manoeuvre (port: contact alone). States 1 / 9 throttle 0x333 (no rule enters them).
 - Collision geometry 0x1c9f0 / 0x1ce00 / 0x20e70 / 0x213b0: not re-read this round (E_sim.md: 1:1 with the 3D-card
   DLL the port follows).
+
+## 7. Round 12 (AT): the last sim / AI items before 1.0
+
+Base main 2039cab, branch at-work. simdiff has 4 new tests (seg_poly, slot_point, contact_rule, flank_pick; 14 in
+all, all pass). Commits (each with its GBL addresses):
+
+| item | GBL | before | after |
+|---|---|---|---|
+| point in a face | 0x1c9f0 -> 0x1cbc0 -> 0x1cc50 / 0x1cfb0 / 0x1ce00 | even-odd rule: a point on a face's edge or corner was out (seg_poly: 80 of 2000 corner / edge hits, 9 slanted-edge hits 1 cm off) | the original's left / right crossing rule, ends included, the crossing truncated: 0 of 6000 differ (shots, probes, the ground lookup) |
+| back off on contact | 0x2cb80, 0x2eb20 | contact alone picked 10 | not while the reverse input is on, +0x194 is set (the last manoeuvre started was 4 / 5 / 9 / 11) or in 10; the manoeuvre-ending test also for class 1 only |
+| manoeuvre 7 | 0x2ced0 case 7 -> 0x2d2f0 / 0x2d350, 0x2d850 | a point on a 100 m circle round the target's facing (the 3Dfx DLL) | slot 3 / 15 (>= 40 m) or 4 / 12, 100 m out in the 16-way table 0xa6804 round the unit ITSELF |
+| own nav points | 0x2a010, 0x236d0, 0x238b0, 0x2c590 case 1, 0x2d1b0, 0x22d90 | manoeuvres 1 / 7 steered to a private point | 1, 7 and 12 keep their points among the unit's own nav points (ai_mind.guard, shared with patrol): every other one dropped at a re-place / the end / leaving attack, the goal the first own point (a leftover first) |
+| jump-to-turn bearing | 0x2e600 (0x22b50(+0x148)) | the target's bearing | in 1 / 7 / 12 the bearing to the point steered for |
+| manoeuvre 12 | 0x2dc90, 0x23740 | closed on the target to 30 m | four own points round the target at 100 m (x - r, z - r, x + r, z + r), re-made every 0x5b0 ticks while the target is beyond 150 m, the next point within 30 m. Never runs in GBL: none of the 13 manoeuvre records (0xa6e38 .. 0xa6e98, dumped) lists 12 and +0x172 is only written 4 / 5 / 6 / 10 / 11 / -2 |
+| slot counters | 0x2e9f0, record +0x1a0..+0x1a7 | one set (the player's) for every target; front case on the target's; half-even sector | per target (msim unit_flank), the front case on the attacker's own counters, half-up sector (flank_pick: 1200 pass) |
+| throttle order | 0x22bd0 from 0x22857 / 0x228c1 / 0x228f5 / 0x2d4e0 / 0x2d850 / 0x2dc90 (before 0x22ce0) vs 0x2d590 / 0x2d6b0 / 0x2d7a0 (after) | this tick's turn (the weave included) everywhere | the last tick's turn where the handler reads it first; 3 without the weave; 8 / 10 write 0x400 (no turn or heat halving) |
+| manoeuvre 6 | 0x2d7a0 | horizontal 20 m | +0xc4, the 3D centre distance (0x2aee0), < 2001 |
+| states 1 / 9 / 10 | 0x22800 default (jump table 0x227e0 covers 2-8) | throttle 0 | 0x333 for a computer-run unit, the leg input held. Never entered: MW2.PRJ AIT next states 0 2 3 5 7 8 10 11 -1 (install, disc and Titanium copies identical), node kinds 0x24963 -> 2 7 8 4 0, orders 0x19b38.. 2 3 5 7 8 11, node assignment 0x23e55 10 11 5; the in-mission menu's commands (0x249f0 callback, menu data) ASSUMED the same set. In 10 the unit is powered down (the drive zeroes it) |
+
+Read, no change: 0x20e70 / 0x213b0 / 0x216f0 / 0x20e30 / 0x212a0 are the monochrome debug display (gated by 0x164b70),
+not collision geometry; 0x1f314 = cobj_seg's type 2 / 7 face loop; the plane test's integer limits (start >= 1 cm in front,
+t >= 1 cm) are rounding-class and kept as floats.
+
+Open:
+- 0x52ec0 (from the effect pass 0x52670, with MW2DIF +4 heat tracking on): every unit (only the player when 0xa8bfc,
+  ASSUMED a network flag, is set) within its radius (+0xec) + 2 x the object's radius of a world object of class 0x10 (the
+  fire cards FIRn_m) gains ((2r - d 2r / R) >> 3) x frame ticks of 16.16 heat in +0x94 (d the octagonal distance). Not
+  ported: in the main loop the effect pass (0x15e6a) runs after the units' controller update (0x24b30 -> 0x27b05, which
+  sums +0x94 in 0x252b0) and before the next motion update zeroes +0x94 (0x24ae0 -> 0x26d05, 0x26d63) - if the record's
+  +0x28 / +0x2c are those two handlers the fire heat never counts. Needs the record handler mapping or a DOSBox heat
+  reading standing in MARO's street fires.
+- Manoeuvre 1's leftover-point quirk depends on the order of every unit's points in the one nav table (another unit's
+  point between two of this unit's shifts which ones 0x236d0 drops): the port keeps each unit's points apart (ASSUMED none
+  in between, as msim.c's guard).
+

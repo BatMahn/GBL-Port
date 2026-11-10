@@ -23,3 +23,30 @@ void shim_patrol_seq(int n, const float *ticks, const float *thr, float *torso_o
     m.sweep_dir = dir0; m.torso = torso0; m.sweep_ticks = rem0;
     for (k = 0; k < n; k++) { patrol_sweep(&m, thr[k], ticks[k]); torso_out[k] = m.torso; }
 }
+/* GBL 0x2d350's point: slot k (16-way), d cm, round (cx, cz) facing h degrees */
+void shim_slot_point(float cx, float cz, float h, int k, float d, float *xz)
+{ slot_point(cx, cz, h, k, d, &xz[0], &xz[1]); }
+/* manoeuvre 7's start (start_manoeuvre case 7) for a unit at (sx, sz) facing h, target dist away: the point steered for */
+void shim_man7(float sx, float sz, float h, float dist, unsigned seed, float *xz)
+{
+    ai_mind m; ai_view v;
+    ai_init(&m, 0); memset(&v, 0, sizeof v);
+    m.rng = seed;
+    v.self_x = sx; v.self_z = sz; v.heading = h; v.enemy_dist = dist; v.enemy_x = sx + 50000.0f; v.enemy_z = sz - 30000.0f;
+    start_manoeuvre(&m, &v, 7);
+    xz[0] = m.flank_x; xz[1] = m.flank_z;
+}
+/* the manoeuvre chooser's first answer for a class 1 unit (target a nav point: no jump pre-check, the table pick
+ * skipped) given contact, the reverse input, +0x194 and the current manoeuvre; and the contact end rule */
+int shim_contact_pick(int contact, int reverse, int jump_man, int man, int *ends)
+{
+    ai_mind m; ai_view v;
+    ai_init(&m, 0); memset(&v, 0, sizeof v);
+    m.mech_rules = 1; m.reverse = reverse; m.jump_man = jump_man; m.man = man;
+    v.contact = contact; v.target_not_unit = 1;
+    *ends = contact_rule(&m, &v);
+    return choose_manoeuvre(&m, &v);
+}
+/* manoeuvre 1's slot pick (flank_pick) for a bearing off the target's facing, rand(2) result r2 and the counters */
+int shim_flank_pick(float rel, int r2, const int *own, const int *tgt)
+{ ai_mind m; ai_init(&m, 0); return flank_pick(&m, rel, r2, own, tgt); }

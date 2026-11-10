@@ -22,6 +22,12 @@
       cc -shared -fPIC -O1 -Isrc tools/audit/qsort_shim.c src/shelldb.c -o /tmp/libqs.so
       python3 tools/audit/qsort_diff.py --lib /tmp/libqs.so
 
+- `sndvol_diff.py` + `sndvol_shim.c`: the positional sounds' level - 0x41690 (with the scene limit CLIM and the cockpit
+  halving) against `sfx_pos_level` - and pan - 0x41800 against `sfx_pan_engine_ang` (src/sfx.h):
+
+      cc -shared -fPIC -O1 -Isrc tools/audit/sndvol_shim.c -o /tmp/libsndvol.so -lm
+      python3 tools/audit/sndvol_diff.py --lib /tmp/libsndvol.so
+
 - `mtbl_diff.py` / `mtbl_shim.c`, `honor_diff.py`: the mission tables and the debriefing multiplier (see their headers).
 
 No game data is needed beyond the ELF images (and, for lab_diff, a GBL install); nothing here is built by the main

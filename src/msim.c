@@ -388,6 +388,7 @@ int msim_init(msim *s, prj_archive *a, const char *scene, world_actor *actors, i
     s->ai_who = malloc((size_t)(count > 0 ? count : 1) * sizeof *s->ai_who);
     for (i = 0; s->ai_focus && s->ai_who && i < count; i++) s->ai_focus[i] = s->ai_who[i] = -2;
     s->powered_down = calloc((size_t)(count > 0 ? count : 1), sizeof *s->powered_down);
+    s->unit_flank = calloc((size_t)(count > 0 ? count : 1), sizeof *s->unit_flank);
     s->seen_node = malloc((size_t)(count > 0 ? count : 1) * sizeof *s->seen_node);
     for (i = 0; s->seen_node && i < count; i++) s->seen_node[i] = -2;
     for (i = 0; s->online_at && i < count; i++) s->online_at[i] = (float)startup_ticks(s) * 1000.0f / 182.0f;
@@ -1043,12 +1044,7 @@ static int task_pos(const msim *s, int code, float p[3], float *range)
  * walking the nav table by index: each deletion (0x1001cb40) shifts the rest down while the index still steps on, so
  * only every other one goes - the 1st, 3rd, 5th ... (the port keeps a unit's points apart from the other units': in the
  * engine's one table another unit's point between two of them takes the skip instead - ASSUMED none) */
-static void guard_drop(ai_mind *m)
-{
-    int r, w = 0;
-    for (r = 1; r < m->guard_n; r += 2, w++) { m->guard[w][0] = m->guard[r][0]; m->guard[w][1] = m->guard[r][1]; }
-    m->guard_n = w;
-}
+static void guard_drop(ai_mind *m) { ai_guard_drop(m); }
 /* entering patrol (0x10013790 case 7 -> 0x10013f00): four 30 m nav points (0x1001cab0) at x - R, z - R, x + R, z + R
  * round the target (R = 0x10013450's range; a thing 250 m, 0x46c35000), appended to the table in that order; the goal is
  * the first own point in the table (0x10014050(0x100) -> 0x1001dac0(1) -> 0x1001cca0 from index 1). On arriving (DEFLT
@@ -1878,7 +1874,11 @@ void msim_step(msim *s, int32_t dt_ms)
             v.enemy_x = ex; v.enemy_z = ez; v.enemy_heading = ef; v.enemy_height = ey - s->units[i].ground;   /* against my own height above my ground */
             enemy_cy = v.has_enemy && who >= -1 ? unit_centre_y(s, who) : ey;
         }
-        v.flank_slots = s->flank_slots;
+        /* manoeuvre 1's slot counters: the target's record +0x1a0..+0x1a7 (GBL 0x2e9f0 / 0x2c590) - every unit has its own;
+         * the port had one set (the player's) for every target. The front case of the pick reads the attacker's OWN
+         * counters (0x2e9f0: param_1 + 0x1a0, the others the target's) */
+        v.flank_slots = !v.has_enemy ? NULL : enemy_who == -1 ? s->flank_slots : enemy_who >= 0 && s->unit_flank ? s->unit_flank[enemy_who] : NULL;
+        v.own_flank = s->unit_flank ? s->unit_flank[i] : NULL;
         /* the attacker reaction (0x10012520, at the start of every rule pass unless lock bit 1): a live unit of another
          * alliance attacking this one (state 3 with this one as its target - the player only while firing at an
          * alliance-1 target, 0x10011c50 -> 0x10014110) makes this one target it */
@@ -2103,6 +2103,10 @@ void msim_step(msim *s, int32_t dt_ms)
              * (DOSBox: they fire from ~8 s and kill the start-up player within seconds; the port's first shot came at
              * 14 s) */
             int was_down = s->powered_down && s->powered_down[i];
+            {   /* +0xc4 (0x2aee0): the 3D distance between the two object centres */
+                float dy3 = enemy_cy - unit_centre_y(s, i);
+                v.enemy_dist3 = sqrtf(v.enemy_dist * v.enemy_dist + dy3 * dy3);
+            }
             ai_step(&s->ai, m, &v, dt);
             if (m->entered && was_down && m->state != AI_REST && m->state != AI_SHUTDOWN) ai_wake(s, i);
             else if (m->entered && !was_down && (m->state == AI_REST || m->state == AI_SHUTDOWN)) ai_power_down(s, i);   /* a pop back to 10 / 11 */
@@ -2573,7 +2577,7 @@ void msim_free(msim *s)
     free(s->msg_seen); s->msg_seen = NULL;
     free(s->twist_limit);
     free(s->minds);
-    free(s->cmd); free(s->online_at); free(s->radius); free(s->fly_seen); free(s->scattered); s->scattered = NULL; free(s->centre_h); free(s->draw_lift); free(s->fly_y); free(s->ai_focus); free(s->ai_who); free(s->powered_down); free(s->seen_node); free(s->cmd_target); free(s->engage); free(s->mate_target); free(s->defend_leg);
+    free(s->cmd); free(s->online_at); free(s->radius); free(s->fly_seen); free(s->scattered); s->scattered = NULL; free(s->centre_h); free(s->draw_lift); free(s->fly_y); free(s->ai_focus); free(s->ai_who); free(s->powered_down); free(s->unit_flank); free(s->seen_node); free(s->cmd_target); free(s->engage); free(s->mate_target); free(s->defend_leg);
     free(s->bld);
     free(s->inspected);
     free(s->ai_lock);
@@ -4200,7 +4204,8 @@ static terrain_t *terrain_build(const mech3d *w, const int *seq, int nseq)
  * 0x1000d690 -> 0x1000cf80), 3, 6, 8, 9 the bounding sphere (no entries: 0x100107b0). A face is the polygon with the
  * engine's normal (the stored one negated, 0x10042140; the winding normal negated when there is none) and its first
  * vertex. */
-typedef struct cpoly { float v[WTB_MAX_POLY_VERTS][3]; int n; float nrm[3]; float mn[3], mx[3]; } cpoly_t;
+typedef struct cpoly { float v[WTB_MAX_POLY_VERTS][3]; int n; float nrm[3]; float mn[3], mx[3]; int32_t dn[3]; } cpoly_t;   /* dn: the DOS
+                                                                                                                     * normal (dos_poly_normal) */
 typedef struct qnode { float r[6]; int ch[4]; int np, p0; } qnode_t;   /* r: x0 x1 y0 y1 z0 z1; np > 0: a leaf */
 typedef struct cobj { int part, type, moving; float box[6], sph[4], lsph[4]; int p0, np, root; } cobj_t;
 
@@ -4230,27 +4235,134 @@ static int eng_poly_normal(const mech3d_part *wp, const wtb_poly *pg, float nw[3
     }
 }
 
+/* GBL MW2.EXE 0x3af49: the plane normal of P, Q, C in 2.29 - the cross product (Q - P) x (C - Q) in 64 bits, its magnitudes
+ * scaled so that the largest one's top bit is bit 29 (shrd / shl of each value's low word), each divided (<< 13, idiv) by
+ * chop(1024 sqrt(((a >> 16)^2 + (b >> 16)^2 + (c >> 16)^2 as 16-bit squares, the sum in 32 bits) >> 20)) (the start-up
+ * table 0x3b630) and negated; returns the scale's exponent (0: degenerate, every component -1) */
+static int dos_plane_normal(const int32_t P[3], const int32_t Q[3], const int32_t C[3], int32_t out[3])
+{
+    int64_t v[3];
+    uint64_t hi = 0, lo = 0;
+    int32_t w[3];
+    int k, cl, ret;
+    uint32_t sum = 0, s;
+    v[0] = (int64_t)(Q[1] - P[1]) * (C[2] - Q[2]) - (int64_t)(C[1] - Q[1]) * (Q[2] - P[2]);
+    v[1] = (int64_t)(Q[2] - P[2]) * (C[0] - Q[0]) - (int64_t)(C[2] - Q[2]) * (Q[0] - P[0]);
+    v[2] = (int64_t)(Q[0] - P[0]) * (C[1] - Q[1]) - (int64_t)(C[0] - Q[0]) * (Q[1] - P[1]);
+    for (k = 0; k < 3; k++) { uint64_t a = (uint64_t)(v[k] < 0 ? -v[k] : v[k]); hi |= a >> 32; lo |= a & 0xffffffffu; }
+    if (hi != 0) {   /* 0x3b018: shifted right */
+        uint32_t e = (uint32_t)hi; int ax = 0, t = 15;
+        if (e & 0xffff0000u) { ax += 16; e >>= 16; }
+        if (e & 0xff00u) { ax += 8; e >>= 8; }
+        e = (e << 8) & 0xffffu;
+        while (t > 0 && !(e >> t)) t--;
+        cl = t - 5 + ax;
+        for (k = 0; k < 3; k++) w[k] = (int32_t)(uint32_t)((uint64_t)v[k] >> (cl & 31));
+        ret = cl + 0x1d;
+    } else if (lo == 0) {
+        out[0] = out[1] = out[2] = -1;
+        return 0;
+    } else {   /* 0x3b071: left (or right) to bit 29 */
+        uint32_t e = (uint32_t)lo; int ax = 0x18, t = 15;
+        if (e & 0xffff0000u) { ax -= 16; e >>= 16; }
+        if (e & 0xff00u) { ax -= 8; e >>= 8; }
+        e = (e << 8) & 0xffffu;
+        while (t > 0 && !(e >> t)) t--;
+        cl = 0xd - t + ax;
+        if (cl == 0) { for (k = 0; k < 3; k++) w[k] = (int32_t)v[k]; ret = 0x1d; }
+        else if (cl > 0) { for (k = 0; k < 3; k++) w[k] = (int32_t)((uint32_t)v[k] << (cl & 31)); ret = 0x1d - cl; }
+        else { cl = -cl; for (k = 0; k < 3; k++) w[k] = (int32_t)(uint32_t)((uint64_t)v[k] >> (cl & 31)); ret = cl + 0x1d; }
+    }
+    for (k = 0; k < 3; k++) { int32_t h16 = (int16_t)(w[k] >> 16); sum += (uint32_t)(h16 * h16); }
+    s = (uint32_t)(int)(1024.0 * sqrt((double)((sum >> 20) & 0xfff)));   /* (index past 1023 never reached: < 3 x 2^30 >> 20) */
+    for (k = 0; k < 3; k++) out[k] = s ? (int32_t)-(((int64_t)w[k] << 13) / (int64_t)s) : -1;
+    return (int16_t)ret;
+}
+/* GBL MW2.EXE 0x38b30 (every model's polygons at load, 0x39230): the polygon's normal (+0x14..+0x1c, 2.29) - a triangle's
+ * from its corners; a larger polygon's from its longest edge by the octagonal length ((4 max + mid + min) >> 2, the
+ * first of equals, walked backward from the edge (last, 0)) and the corner giving the largest exponent (walked backward,
+ * done once one exceeds 16); (2^29, 0, 0) when none (fewer than 3 corners, or all edges of length 0). Run under unicorn
+ * against the port's (3000 random polygons): identical */
+static void dos_poly_normal(const int32_t (*V)[3], int n, int32_t out[3])
+{
+    int k, best = 0, e, be = -1, a = 0, b = 0;
+    out[0] = 0x20000000; out[1] = out[2] = 0;
+    if (n < 3) return;
+    if (n == 3) { dos_plane_normal(V[0], V[1], V[2], out); return; }
+    for (k = n - 1; k >= 0; k--) {
+        const int32_t *p = V[k], *q = V[(k + 1) % n];
+        int dx = abs(q[0] - p[0]), dy = abs(q[1] - p[1]), dz = abs(q[2] - p[2]), t, l;
+        if (dx < dy) { t = dx; dx = dy; dy = t; }
+        if (dx < dz) { t = dx; dx = dz; dz = t; }
+        l = (dx * 4 + dy + dz) >> 2;
+        if (l > best) { best = l; a = k; b = (k + 1) % n; }
+    }
+    if (best == 0) return;
+    for (k = n - 1; k >= 0; k--) {
+        int32_t nn[3];
+        if (k == a || k == b) continue;
+        e = dos_plane_normal(V[a], V[b], V[k], nn);
+        if (e > be) { memcpy(out, nn, sizeof nn); be = e; }
+        if (e > 16) break;
+    }
+}
+
 /* a part's polygons as engine faces (world vertices, normal, extent) */
 static void cpoly_fill(cpoly_t *c, const mech3d_part *wp, const wtb_poly *pg, const float nrm[3])
 {
     int j, a;
+    int32_t iv[WTB_MAX_POLY_VERTS][3];
     c->n = pg->n > WTB_MAX_POLY_VERTS ? WTB_MAX_POLY_VERTS : pg->n;
     for (a = 0; a < 3; a++) { c->mn[a] = 3.4e38f; c->mx[a] = -3.4e38f; c->nrm[a] = nrm[a]; }
     for (j = 0; j < c->n; j++) {
         part_vertex(wp, &wp->model.objects[0].verts[pg->idx[j]], c->v[j]);
         for (a = 0; a < 3; a++) { if (c->v[j][a] < c->mn[a]) c->mn[a] = c->v[j][a]; if (c->v[j][a] > c->mx[a]) c->mx[a] = c->v[j][a]; }
+        for (a = 0; a < 3; a++) iv[j][a] = (int32_t)lrintf(c->v[j][a]);
     }
+    /* the DOS normal from the corners (the original's from the model's own vertices: the same for an unturned object -
+     * ASSUMED the world corners for a turned one) */
+    dos_poly_normal((const int32_t (*)[3])iv, c->n, c->dn);
 }
 
-/* point in polygon on two axes (0x10010a90 x / z, 0x100110d0 y / z, 0x10010db0 x / y) */
+/* point in polygon on two axes (GBL MW2.EXE 0x1cc50 x / z, 0x1cfb0 y / z, 0x1ce00 x / y; the 3Dfx DLL's 0x10010a90 /
+ * 0x100110d0 / 0x10010db0): a vertex on each side of the point on both axes first (else out); then the edges (v[n-1],
+ * v[0]), (v[n-2], v[n-1]) .. (v[0], v[1]) whose y range holds y (ends included; an edge starting at y is skipped, so a
+ * vertex at y counts once) are classed left / right of the point: the first of each side is noted, a second on the side
+ * already seen gives out, one on the other side gives in. A point ON an edge or a corner - the crossing at x, or on a
+ * flat edge at y between its ends - is in. The port had the even-odd rule, which leaves a point on the outline out
+ * (simdiff seg_poly: 80 of 2000 corner / edge hits) */
 static int cpoly_in(const cpoly_t *p, int a, int b, float x, float y)
 {
-    int i, j, c = 0;
-    for (i = 0, j = p->n - 1; i < p->n; j = i++) {
-        const float *P = p->v[i], *Q = p->v[j];
-        if ((P[b] > y) != (Q[b] > y) && x < (Q[a] - P[a]) * (y - P[b]) / (Q[b] - P[b]) + P[a]) c = !c;
+    int k, bits = 0, left = 0, right = 0;
+    const float *Q;
+    if (p->n < 3) return 0;
+    for (k = p->n - 1; k >= 0 && bits != 0xf; k--) {
+        bits |= x < p->v[k][a] ? 2 : 1;
+        bits |= y < p->v[k][b] ? 8 : 4;
     }
-    return c;
+    if (bits != 0xf) return 0;
+    Q = p->v[0];
+    for (k = p->n - 1; k >= 0; Q = p->v[k], k--) {
+        const float *P = p->v[k];
+        int side;   /* -1 left, 1 right */
+        if (!((y <= P[b] || y <= Q[b]) && (P[b] <= y || Q[b] <= y))) continue;
+        if (y == P[b] && P[b] == Q[b]) {
+            if (P[a] < x && Q[a] < x) return 0;
+            if (P[a] <= x) return 1;
+            return x < Q[a] ? 0 : 1;
+        }
+        if (y == P[b]) continue;
+        if (P[a] < x && Q[a] < x) side = -1;
+        else if (x < P[a] && x < Q[a]) side = 1;
+        else {
+            float xi = truncf((Q[a] - P[a]) * (y - P[b]) / (Q[b] - P[b])) + P[a];   /* (the 64-bit idiv truncates) */
+            if (xi == x) return 1;
+            side = xi < x ? -1 : 1;
+        }
+        if (side < 0) { if (left) return 0; if (right) return 1; left = 1; }
+        else { if (right) return 0; if (left) return 1; right = 1; }
+    }
+    return 0;
 }
 
 /* the quadtree of a type 5 object (0x1000c550 / 0x1000c640): the root is the vertex box and always splits; a child takes
@@ -4477,8 +4589,14 @@ static int qt_ground(const terrain_t *t, int ni, float x, float z, float *h, con
     if (q->np > 0) {
         for (k = 0; k < q->np; k++) {
             const cpoly_t *p = &t->cp[t->qidx[q->p0 + k]];
-            if (p->nrm[1] > 0.0f && cpoly_in(p, 0, 2, x, z)) {
-                *h = p->v[0][1] - ((x - p->v[0][0]) * p->nrm[0] + (z - p->v[0][2]) * p->nrm[2]) / p->nrm[1];
+            /* GBL MW2.EXE 0x1d900: the first leaf polygon whose DOS normal (0x38b30) points up (+0x18 > 0) holding the
+             * point; its height 0x1c2e0 -> 0x3ae3a: corner 0's y - (nx (x - x0) + nz (z - z0)) / ny in whole cm (imul / idiv,
+             * truncated; the query point rounded - ASSUMED). The stored model normal (the 3D editions' faces) tilted some
+             * sloped floors off their corners - GUI1-4 / GUIN's start floor by 22 cm at the 'Mech (DOSBox: the view
+             * higher by that) */
+            if (p->dn[1] > 0 && cpoly_in(p, 0, 2, x, z)) {
+                int64_t q = (int64_t)p->dn[0] * (lrintf(x) - lrintf(p->v[0][0])) + (int64_t)p->dn[2] * (lrintf(z) - lrintf(p->v[0][2]));
+                *h = (float)(lrintf(p->v[0][1]) - (int32_t)(q / p->dn[1]));
                 *nrm = p->nrm;
                 return 1;
             }

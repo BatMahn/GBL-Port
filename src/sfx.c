@@ -11,7 +11,12 @@
 #define SFX_CACHE  512
 
 typedef struct { unsigned char *data; int len; Uint32 last; } clip;
-typedef struct { const clip *c; double pos, step; float l, r; int loop, is_voice, index, prio; clip own; } voice;   /* pos < 0: a delayed start (sfx_play_at) */
+typedef struct { const clip *c; double pos, step; float l, r; int loop, is_voice, index, prio; clip own;
+                 float ang; float level; double pan_at; int objloop; } voice;   /* pos < 0: a delayed start (sfx_play_at); ang: a positional
+                                                                  * sound's direction (degrees, SFX_NO_ANG: a fixed pan),
+                                                                  * level its volume, pan_at the next pan refresh (samples);
+                                                                  * objloop: an object sound task's loop (sfx_play_pcm_objloop) */
+#define SFX_NO_ANG (-100000.0f)
 /* the engine's sound table (0x1024e6a8, copied by 0x10030590): {sound, priority, playing cap, rate}; -1 = none
  * (priority default 0x32, no cap, the default rate). A later entry for the same sound replaces the earlier (64). */
 static const short SND_TABLE[][4] = {
@@ -166,9 +171,11 @@ static void snd_rule(int index, int *prio, int *cap)
 struct sfx_s {
     float gain_fx, gain_voice;   /* sfx_set_gains; 0 = unset (full) */
     int   next_is_voice;         /* the next sfx_play_g is on the voice channel */
+    int   next_is_objloop;       /* the next sfx_play_pcm is an object loop (its own channels) */
     long  plays, mixed_frames, callbacks;
     sfx_music_fn music; void *music_user;
     int   paused;                /* sfx_pause */
+    float lyaw;                  /* the listener's yaw (sfx_set_listener_yaw): positional pans at their start */
     prj_archive *a;
     SDL_AudioStream *dev;        /* the device's stream (SDL_OpenAudioDeviceStream); its lock guards the voices */
     int    rate;
@@ -254,6 +261,13 @@ int sfx_decode(prj_archive *a, int index, unsigned char **out)
     return n;
 }
 
+static void set_lr(voice *vc, float volume, float pan)
+{
+    if (pan < -1) pan = -1;
+    if (pan > 1) pan = 1;
+    vc->l = volume * (pan <= 0 ? 1.0f : 1.0f - pan);
+    vc->r = volume * (pan >= 0 ? 1.0f : 1.0f + pan);
+}
 static void mix(void *user, Uint8 *stream, int len)
 {
     sfx *s = user;
@@ -269,6 +283,13 @@ static void mix(void *user, Uint8 *stream, int len)
         for (f = 0; f < frames; f++) {
             int i, n = vc->c->len;
             if (vc->pos < 0) { vc->pos += vc->step; continue; }   /* not started yet: the sound's travel time */
+            if (vc->ang != SFX_NO_ANG && vc->pos >= vc->pan_at) {
+                /* GBL 0x41260 (every frame): a positional channel's pan (0x41800: its direction against the camera's
+                 * yaw NOW) is set when its start time comes - after the travel delay - and again with each chunk of
+                 * 0x2000 bytes the streamer feeds (0x40a70: +0x1e8 blocks of the sample's block size) */
+                set_lr(vc, vc->level, sfx_pan(sfx_pan_engine_ang(s->lyaw, vc->ang)));
+                vc->pan_at += 8192.0;
+            }
             i = (int)vc->pos;
             float smp, fr, a, b, env = 1.0f;
             if (i >= n) {
@@ -299,15 +320,39 @@ static void mix(void *user, Uint8 *stream, int len)
 /* SDL3: the device asks for more of the stream; it is filled in mix()'s blocks of SFX_BLOCK frames, as SDL2's callback
  * device of SFX_BLOCK samples called it (the same mix, the same block boundaries for a sound's start) */
 #define SFX_BLOCK 1024
+static FILE *s_test_wav;   /* TEST ONLY (MW2_SFX_WAV): the mix rendered on the simulation's clock (sfx_test_clock) */
+static double s_test_t = -1;
 static void SDLCALL feed(void *user, SDL_AudioStream *st, int additional, int total)
 {
     static float buf[SFX_BLOCK * 2];
     (void)total;
     while (additional > 0) {
-        mix(user, (Uint8 *)buf, (int)sizeof buf);
+        if (getenv("MW2_SFX_WAV")) memset(buf, 0, sizeof buf);   /* TEST ONLY: mixed by sfx_test_clock instead */
+        else mix(user, (Uint8 *)buf, (int)sizeof buf);
         SDL_PutAudioStreamData(st, buf, (int)sizeof buf);
         additional -= (int)sizeof buf;
     }
+}
+
+/* TEST ONLY (MW2_SFX_WAV=file): the mix of the time since the last call (t: the simulation's seconds) appended to the
+ * file as raw 32-bit float stereo at the device rate - a recording on the game's own clock, for level comparisons */
+void sfx_test_clock(sfx *s, double t)
+{
+    static float buf[SFX_BLOCK * 2];
+    const char *f = getenv("MW2_SFX_WAV");
+    long n;
+    if (!s || !f || t < 0) return;
+    if (!s_test_wav) { s_test_wav = fopen(f, "wb"); s_test_t = t; if (!s_test_wav) return; }
+    n = (long)((t - s_test_t) * s->rate);
+    SDL_LockAudioStream(s->dev);
+    while (n > 0) {
+        int k = n > SFX_BLOCK ? SFX_BLOCK : (int)n;
+        mix(s, (Uint8 *)buf, k * (int)(2 * sizeof(float)));
+        fwrite(buf, sizeof(float), (size_t)k * 2, s_test_wav);
+        n -= k; s_test_t += (double)k / s->rate;
+    }
+    SDL_UnlockAudioStream(s->dev);
+    fflush(s_test_wav);
 }
 
 sfx *sfx_create(prj_archive *a)
@@ -338,6 +383,7 @@ void sfx_destroy(sfx *s)
 
 static void sfx_play_g(sfx *s, int index, float volume, float pan);
 static double s_delay;   /* the next sfx_play_g starts this many seconds late (sfx_play_at) */
+static float s_ang = SFX_NO_ANG;   /* the next sfx_play_g is positional from this direction (sfx_play_at3) */
 void sfx_set_gains(sfx *s, float effects, float voice)
 {
     if (!s) return;
@@ -387,59 +433,66 @@ static void sfx_play_g(sfx *s, int index, float volume, float pan)
         snd_rule(index, &prio, &cap);
         for (k = 0; k < SFX_VOICES; k++) if (s->v[k].c && s->v[k].index == index) same++;
         if (cap >= 0 && same >= cap) { SDL_UnlockAudioStream(s->dev); return; }
-        for (k = 0; k < SFX_VOICES; k++) if (s->v[k].c && !s->v[k].is_voice) { busy++; if (s->v[k].prio < prio && !s->v[k].loop) steal = k; }
+        /* the object loops have channels of their own (GBL 0x418e0 takes 8..15, 0x41980..0x419a4; 0x40a70 hands out 0..7, the count
+         * +0x44 = 8 set at 0x44953 -> 0x41070): they do not fill the eight */
+        for (k = 0; k < SFX_VOICES; k++) if (s->v[k].c && !s->v[k].is_voice && !s->v[k].objloop) { busy++; if (s->v[k].prio < prio && !s->v[k].loop) steal = k; }
         best = -1;
         if (s->next_is_voice || busy < 8) { for (k = 0; k < SFX_VOICES; k++) if (!s->v[k].c) { best = k; break; } }
         else best = steal;
         if (best < 0) { SDL_UnlockAudioStream(s->dev); return; }
         s->v[best].index = index; s->v[best].prio = prio;
     }
-    if (pan < -1) pan = -1;
-    if (pan > 1) pan = 1;
     s->v[best].c = c;
     s->v[best].loop = 0;
     if (s->next_is_voice) sim_voice(c->len);   /* TEST ONLY */
     s->v[best].is_voice = s->next_is_voice; s->next_is_voice = 0;
     s->v[best].pos = -s_delay * 11025.0;   /* the handle is taken now, the sample starts after the delay (0x100328e0 +0x3a8) */
     s->v[best].step = 11025.0 / (double)s->rate;    /* engine rate: 11025 Hz */
-    s->v[best].l = volume * (pan <= 0 ? 1.0f : 1.0f - pan);
-    s->v[best].r = volume * (pan >= 0 ? 1.0f : 1.0f + pan);
+    set_lr(&s->v[best], volume, pan);
+    s->v[best].ang = s_ang; s->v[best].level = volume; s->v[best].pan_at = 0; s->v[best].objloop = 0;
     SDL_UnlockAudioStream(s->dev);
 }
 
 void sfx_play_at(sfx *s, int index, float dx, float dz, float listener_yaw) { sfx_play_at3(s, index, dx, 0.0f, dz, listener_yaw, 0); }
 void sfx_play_at_h(sfx *s, int index, float dx, float dz, float listener_yaw, int half) { sfx_play_at3(s, index, dx, 0.0f, dz, listener_yaw, half); }
-/* the engine's pan of a positional sound (0x10032c10 / DOS 0x40d10) as the port's pan: the vector's yaw (0x1001d970 ->
- * 0x10030120: atan2(x, z) in degrees; both under 1e-7 - the zero vector - 45 degrees; DOS 0x3a9e5 the same), taken to
- * whole degrees (__ftol, 0x10032b37) when the sample is set up; then 64 + 64 sin(listener yaw - that) (__ftol), clamped
- * to 15..111 of 0..127, through the mixer's table (sfx_pan). DOSBox YELLSCN1 (heading 158), the in-game menu's sounds
+/* the pan of a positional sound as the port's pan: the vector's yaw (GBL 0x2aee0's angle, 16.16 degrees: atan2(x, z);
+ * both under 1e-7 - the zero vector - 45 degrees; DOS 0x3a9e5), then sfx_pan_engine_ang (GBL 0x41800: floored, the
+ * fractions kept - the 3D-card edition's 0x10032c10 took whole degrees and truncated), clamped to 15..111 of 0..127,
+ * through the mixer's table (sfx_pan). DOSBox YELLSCN1 (heading 158), the in-game menu's sounds
  * (the zero vector): pan 111 - L 0.790 R 0.197 */
-int sfx_pos_pan_engine(float dx, float dz, float listener_yaw)
+static float pos_ang(float dx, float dz)
 {
-    float a = fabsf(dx) < 1e-7f && fabsf(dz) < 1e-7f ? 45.0f : atan2f(dx, dz) * 180.0f / 3.14159265f;
-    int p = 64 + (int)(64.0f * sinf((listener_yaw - (float)(int)a) * 3.14159265f / 180.0f));
-    return p < 15 ? 15 : p > 111 ? 111 : p;
+    return fabsf(dx) < 1e-7f && fabsf(dz) < 1e-7f ? 45.0f : atan2f(dx, dz) * 180.0f / 3.14159265f;
+}
+int sfx_pos_pan_engine(float dx, float dz, float listener_yaw) { return sfx_pan_engine_ang(listener_yaw, pos_ang(dx, dz)); }
+void sfx_set_listener_yaw(sfx *s, float yaw)
+{
+    if (!s) return;
+    SDL_LockAudioStream(s->dev);
+    s->lyaw = yaw;
+    SDL_UnlockAudioStream(s->dev);
 }
 float sfx_pos_pan(float dx, float dz, float listener_yaw) { return sfx_pan(sfx_pos_pan_engine(dx, dz, listener_yaw)); }
 void sfx_play_at3(sfx *s, int index, float dx, float dy, float dz, float listener_yaw, int half)
 {
     float d3 = sqrtf(dx * dx + dy * dy + dz * dz), vol;
     if (!s) return;
-    {   /* engine 0x10032ad0 (DOS 0x40bc0): the distance is the 3D one (0x1001d970's local_4 = horizontal / cos(pitch));
-         * 0x10032f60: volume % = 100 - 100 (d / 500 m)^2 in whole metres, nothing beyond 500 m (half at 354 m); halved
-         * (>> 1) when the caller passes the flag (0x10032ad0 edx: DAT_1024e678, the cockpit view); pan sfx_pos_pan; the
-         * start delayed by the distance x 0x1024a984 (0.00549 = 1 / 182.15 ticks per cm, DOS 0x40bc0: x 0x168 / 65536) -
-         * sound at 182 cm a tick, 331 m/s - when that is more than the frame's ticks (0x100328e0 / DOS 0x409b0: start
-         * time +0x3a8 = now + delay; port: one 30 fps frame) */
-        int m = (int)(d3 / 100.0f), v;
+    {   /* GBL MW2.EXE 0x41690 (engine 0x10032ad0): the distance is the 3D one; the level sfx_pos_level (GBL's curve: no
+         * fade within kilometres - the port had the 3D-card edition's 500 m); halved (>> 1) when the caller passes the flag
+         * (DAT_000a7834, the cockpit view); pan sfx_pos_pan; the start delayed by the distance x 0x168 / 65536 ticks
+         * (0x41710; 0.00549 = 1 / 182.15 ticks per cm) - sound at 182 cm a tick, 331 m/s - when that is more than the
+         * frame's ticks (0x41460: start time +0x3a8 = now + delay when above DAT_000a5c48; port: one 30 fps frame). The
+         * channel is taken at once (0x40a70), so a far sound holds it through its delay */
+        int v = sfx_pos_level((long)d3);
         float ticks = d3 * 0.00549f;
-        if (m >= 500) return;
-        v = 100 - m * m * 100 / 250000;
+        if (v <= 0) return;
         if (half) v >>= 1;
         vol = (float)v / 100.0f;
         s_delay = ticks > 182.0f / 30.0f ? ticks / 182.0f : 0.0;
+        s_ang = pos_ang(dx, dz);
+        sfx_set_listener_yaw(s, listener_yaw);
         sfx_play(s, index, vol * 0.8f, sfx_pos_pan(dx, dz, listener_yaw));
-        s_delay = 0;
+        s_delay = 0; s_ang = SFX_NO_ANG;
     }
 }
 
@@ -461,8 +514,19 @@ int sfx_play_pcm(sfx *s, const unsigned char *pcm, int len, int rate, float volu
     s->v[best].l = s->v[best].r = volume;
     s->v[best].loop = loop;
     s->v[best].is_voice = s->next_is_voice; s->next_is_voice = 0;
+    s->v[best].ang = SFX_NO_ANG; s->v[best].objloop = s->next_is_objloop; s->next_is_objloop = 0;
     SDL_UnlockAudioStream(s->dev);
     return 0;
+}
+
+int sfx_play_pcm_objloop(sfx *s, const unsigned char *pcm, int len, int rate, float volume)
+{
+    int r;
+    if (!s) return -1;
+    s->next_is_objloop = 1;
+    r = sfx_play_pcm(s, pcm, len, rate, volume, 1);
+    s->next_is_objloop = 0;
+    return r;
 }
 
 void sfx_play_pcm_voice(sfx *s, const unsigned char *pcm, int len, float volume)

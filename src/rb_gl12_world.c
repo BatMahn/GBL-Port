@@ -1672,7 +1672,7 @@ static void dos_tri_spans(const wv *v[3], const dmode *M, const dpoly *P)
             const int y0 = vph - 1 - (py - vpo_y), y = y0 < P->V[P->top][1] ? P->V[P->top][1] : y0 > P->ybot ? P->ybot : y0;
             drow R;
             int kL, kR;
-            if (P->discard && y0 != y) continue;
+            if (P->discard && (y0 != y || P->ybot == P->V[P->top][1])) continue;   /* (one row: nothing, world.frag) */
             dos_row(P, y, &R);
             kL = vpo_x + R.x0; kR = kL + R.w;
             if (P->discard) {
@@ -1751,16 +1751,55 @@ static void dos_flat(const wv *v[3], int idx)
     }
 }
 
-/* a line's box triangle (world.frag kind 5): within its GL coverage, 0x54fa9's pixels (dos_line_on) in the flat colour */
+/* world.frag dos_line_recs / dos_line_px: a line's records as the original lists and paints them (the walk 0x3ec8e: the
+ * near plane's point once from each edge; the paint's 2D cut 0x3de30) and their pixels by count (0x3d780: one a point,
+ * two 0x54fa9's line, more the flat filler 0x5a900 - nothing when every record is on one row) */
+static int dos_line_recs(const float A[3], const float B[3], dpoly *P)
+{
+    const int nr = G.F.u_dos_order != 0 && G.F.u_dos_near > 1 ? G.F.u_dos_near : 1;
+    int a[3], b[3], q[3], i, m = 0, ba, bb;
+    int32_t R[20][7];
+    float t;
+    memset(R, 0, sizeof R);
+    dos_cam(A, a); dos_cam(B, b);
+    ba = a[2] < nr; bb = b[2] < nr;
+    P->m = 0; P->ok = 0;
+    if (ba && bb) return 0;
+    if (!ba) { R[m][0] = a[0]; R[m][1] = a[1]; R[m][2] = a[2]; m++; }
+    if (ba != bb) { dos_nclip(a, b, nr, q, &t); R[m][0] = q[0]; R[m][1] = q[1]; R[m][2] = q[2]; m++; }
+    if (!bb) { R[m][0] = b[0]; R[m][1] = b[1]; R[m][2] = b[2]; m++; }
+    if (ba != bb) { dos_nclip(b, a, nr, q, &t); R[m][0] = q[0]; R[m][1] = q[1]; R[m][2] = q[2]; m++; }
+    for (i = 0; i < m; i++) { int c[3] = {R[i][0], R[i][1], R[i][2]}; dos_camscr(c, &R[i][3]); }
+    m = dos_clip2d(R, m);
+    for (i = 0; i < m; i++) { P->V[i][0] = R[i][3]; P->V[i][1] = R[i][4]; P->CF[i] = 0; }
+    P->m = m;
+    if (m >= 3) {
+        P->top = 0; P->ybot = P->V[0][1];
+        for (i = 0; i < m; i++) { if (P->V[i][1] <= P->V[P->top][1]) P->top = i; if (P->V[i][1] > P->ybot) P->ybot = P->V[i][1]; }
+        P->ok = P->ybot != P->V[P->top][1];
+    }
+    return m;
+}
+static int dos_line_px(const dpoly *P, int x, int y)
+{
+    drow R;
+    if (P->m == 1) return x == P->V[0][0] && y == P->V[0][1];
+    if (P->m == 2) return dos_line_on(x, y, P->V[0], P->V[1]);
+    if (P->m < 3 || !P->ok || y < P->V[P->top][1] || y > P->ybot) return 0;
+    dos_row(P, y, &R);
+    return x >= R.x0 && x <= R.x0 + R.w;
+}
+/* a line's box triangle (world.frag kind 5): within its GL coverage, the original's pixels (dos_line_px) in the flat colour */
 static void dos_line_tri(const wv *v[3], const dmode *M, int s)
 {
     tcov T;
     const int vx = G.vp[0], vy = G.vp[1], vw = G.vp[2], vh = G.vp[3];
     const int vph = (int)G.F.u_vp[1], vpo_x = (int)G.F.u_vpo[0], vpo_y = (int)G.F.u_vpo[1];
     float A[3], B[3];
-    int la[2], lb[2], ylo, yhi, py, cx0 = vx, cx1 = vx + vw - 1;
+    dpoly LP;
+    int ylo, yhi, py, cx0 = vx, cx1 = vx + vw - 1;
     dpos(s, A); B[0] = dvtx(s * FPV + 3); B[1] = dvtx(s * FPV + 4); B[2] = dvtx(s * FPV + 5);
-    if (s < 0 || !dos_line_ends(A, B, la, lb) || !tcov_make(v, &T)) return;
+    if (s < 0 || dos_line_recs(A, B, &LP) == 0 || !tcov_make(v, &T)) return;
     ylo = (int)ceil(T.ymin - 0.5); yhi = (int)ceil(T.ymax - 0.5) - 1;
     if (ylo < vy) ylo = vy;
     if (yhi > vy + vh - 1) yhi = vy + vh - 1;
@@ -1777,7 +1816,7 @@ static void dos_line_tri(const wv *v[3], const dmode *M, int s)
         if (gx0 < cx0) gx0 = cx0;
         if (gx1 > cx1) gx1 = cx1;
         for (x = gx0; x <= gx1 + 1; x++) {
-            const int on = x <= gx1 && dos_line_on(x - vpo_x, y, la, lb);
+            const int on = x <= gx1 && dos_line_px(&LP, x - vpo_x, y);
             if (on && run < 0) run = x;
             if (!on && run >= 0) { seg_out(&T, M, NULL, NULL, run, x - 1, py, 0, -1); run = -1; }
         }

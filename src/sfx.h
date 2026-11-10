@@ -9,12 +9,15 @@
 #define MW2_SFX_H
 
 #include "prj.h"
+#include <math.h>
 
 typedef struct sfx_s sfx;
 
 /* Opens an SDL audio device stream (SDL_INIT_AUDIO must be initialised). NULL if unavailable. */
 sfx *sfx_create(prj_archive *a);
 void sfx_destroy(sfx *s);
+/* TEST ONLY: with MW2_SFX_WAV set, the mix up to the simulation time t (s) appended to that file (raw float stereo) */
+void sfx_test_clock(sfx *s, double t);
 /* Play SNDS record `index` (1-based PRJ index). volume 0..1, pan -1 (left) .. 1 (right). */
 void sfx_play(sfx *s, int index, float volume, float pan);
 /* Engine levels. Every sound, positional or not, reaches the mixer as an AIL volume 0..127 (0x100328e0 / DOS 0x409b0:
@@ -52,12 +55,40 @@ void sfx_play_at_h(sfx *s, int index, float dx, float dz, float listener_yaw, in
  * their pan is mirrored (DOSBox: an LRM explosion straight ahead with the view glanced right is heard on the right).
  * Volume and delay by the 3D distance */
 void sfx_play_at3(sfx *s, int index, float dx, float dy, float dz, float listener_yaw, int half);
+/* GBL MW2.EXE 0x41690 (every positional one-shot: the wrappers 0x417e0, the weapons 0x53779, the effects 0x52656): the
+ * level 0..100 for a distance in cm - whole metres (cm / 100, 0x416ba), none past 50 000 m (0x416cc), then 100 - h^2 x
+ * 100 / 250000 with h the whole HUNDREDS of metres (a second / 100, 0x416e2): 100 to 4.99 km, 96 at 10 km, 64 at 30 km,
+ * 0 at 50 km - in practice no fade. (The base game's 3D-card edition, 0x10032f60, divides once: 0 at 500 m. GBL's own
+ * object loops 0x418e0 keep that 500 m curve - 0x41a75 compares the cm with 50000.) Emulated (tools/audit/sndvol_diff.py)
+ * and DOSBox SEANSCN1 with the player 3 km up: other mechs' footsteps 1.5-4 km away at AIL level 50 (the cockpit
+ * halving) - 0.396 of full scale, as near ones */
+static inline int sfx_pos_level(long dist_cm)
+{
+    long m = dist_cm / 100;
+    if (m > 50000) return 0;
+    m /= 100;
+    return (int)(100 - m * m * 100 / 250000);
+}
+/* GBL 0x41800: the pan for a direction a (degrees, 16.16 - fractions kept) heard facing yaw: 64 + (sin(yaw - a) >> 23)
+ * - floored (sar; the 3D-card edition truncates, __ftol) - clamped 15..111. tools/audit/sndvol_diff.py runs it against
+ * 0x41800 (whole degrees and truncation each differed by one step in ~27 % of directions) */
+static inline int sfx_pan_engine_ang(float yaw, float a)
+{
+    int p = 64 + (int)floorf(64.0f * sinf((yaw - a) * 3.14159265f / 180.0f));
+    return p < 15 ? 15 : p > 111 ? 111 : p;
+}
+/* the listener's yaw now (the camera's, each frame): a positional sound's pan is taken when it starts - after its
+ * travel delay - and refreshed while it plays (GBL 0x41260 -> 0x41800) */
+void  sfx_set_listener_yaw(sfx *s, float yaw);
 /* the engine's positional pan (0x10032c10) for that vector: 15..111, and as the port's pan */
 int   sfx_pos_pan_engine(float dx, float dz, float listener_yaw);
 float sfx_pos_pan(float dx, float dz, float listener_yaw);
 /* Play caller-owned unsigned 8-bit mono PCM at `rate` Hz (data must stay valid while playing).
  * loop = 1 repeats until sfx_stop_loops. Returns 0 on success. */
 int  sfx_play_pcm(sfx *s, const unsigned char *pcm, int len, int rate, float volume, int loop);
+/* the same, looped, for an object sound task (GBL 0x418e0): on the loop channels (8..15), not one of the eight effect
+ * channels */
+int  sfx_play_pcm_objloop(sfx *s, const unsigned char *pcm, int len, int rate, float volume);
 void sfx_stop_loops(sfx *s);
 /* the in-game menu's pause (engine 0x10031f30 / 0x10031f50): one-shot effects end, voice, loops and music hold */
 void sfx_pause(sfx *s, int on);
