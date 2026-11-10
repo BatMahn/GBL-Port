@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.0.1 (2026-11-10)
+
+- **Change the look during a mission:** choosing another look in the in-game menu (Graphics, Renderer) now changes it
+  straight away, to and from TITANIUM too - no more "from the next mission" and no need to quit and restart. After a
+  short pause the picture is drawn in the new look and the mission carries on exactly where it was: the 'Mechs, damage,
+  enemies, objectives, timers and sounds are untouched, as if the mission had been played in that look all along. If
+  the Titanium files are missing, the game says so and stays on the current look. The choice is still saved for the
+  next missions and the menus.
+- **The look no longer changes how the game plays:** a mission in the TITANIUM look now plays exactly as in the DOS
+  look - 'Mechs stand and move with the DOS game's placement, shots and collisions use its levels of detail, and the
+  missile smoke no longer moves the random rolls used for a MASC failure and the cockpit's damage static.
+- Legacy build (OpenGL 1.2): the transparency test and two other drawing switches could stay off for a while after
+  start-up, depending on what had been drawn before (a few cloud edges in the TITANIUM sky came out slightly different).
+
 ## 1.0.0 (2026-11-10)
 
 The first full release: rendering, simulation, AI, missions, HUD, sound and the shell checked systematically against

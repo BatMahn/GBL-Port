@@ -1214,3 +1214,12 @@ void rb_read_rgb(int x, int y, int w, int h, unsigned char *rgb)
     }
     SDL_UnmapGPUTransferBuffer(g_dev, g_down);
 }
+
+void rb_test_counts(long out[3])
+{
+    int k;
+    out[0] = out[1] = out[2] = 0;
+    for (k = 1; k < g_ntex; k++) if (g_tex[k].live) { out[0]++; out[2] += (g_tex[k].t != NULL) + (g_tex[k].msaa != NULL) + (g_tex[k].depth != NULL); }
+    for (k = 1; k < g_nbuf; k++) if (g_buf[k].live) { out[1]++; out[2] += g_buf[k].b != NULL; }
+    out[2] += g_nrel / 2;   /* (released after the frame that used them) */
+}

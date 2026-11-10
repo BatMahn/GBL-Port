@@ -225,11 +225,13 @@ static void glr_use_variant(glr *r, int dos)
     r->prog = !dos ? RB_PROG_WORLD : getenv("MW2_DOS_DEBUG") ? RB_PROG_WORLD_DOSDBG : RB_PROG_WORLD_DOS;
 }
 
+static const texture *asrc[GLR_SLOTS];   /* set_layer's texture average cache (glr_flush_textures and glr_create clear it) */
 glr *glr_create(void)
 {
     glr *r = calloc(1, sizeof *r);
     int l, k;
     if (!r) return NULL;
+    memset(asrc, 0, sizeof asrc);   /* (keyed by the texture's address: a new renderer's textures may reuse a freed one's) */
     glr_use_variant(r, 0);
     for (l = 0; l < GLR_LAYERS; l++) {
         r->layer[l].vbo = rb_buf_new();
@@ -272,7 +274,6 @@ void glr_destroy(glr *r)
     free(r);
 }
 
-static const texture *asrc[GLR_SLOTS];   /* set_layer's texture average cache (glr_flush_textures clears it) */
 static float aval[GLR_SLOTS][3];
 void glr_flush_textures(glr *r)
 {

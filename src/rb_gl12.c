@@ -105,7 +105,7 @@ static void set_alpha(int func, float ref)
 {
     if (C.alpha_func == func && (func == 0 || C.alpha_ref == ref)) return;
     if (!func) glDisable(GL_ALPHA_TEST);
-    else { if (!C.alpha_func) glEnable(GL_ALPHA_TEST); glAlphaFunc((GLenum)func, ref); }
+    else { if (C.alpha_func <= 0) glEnable(GL_ALPHA_TEST); glAlphaFunc((GLenum)func, ref); }   /* (-1: not known yet) */
     C.alpha_func = func; C.alpha_ref = ref;
 }
 static void set_depth(int test, int write, int func)
@@ -128,7 +128,7 @@ static void set_stipple(int s)
     else {
         /* the first byte's top bit is window x 0 (GL_UNPACK_LSB_FIRST false): pattern 0 sets the pixels with x + y even */
         if (cur != pat[s - 1]) { glPolygonStipple(pat[s - 1]); cur = pat[s - 1]; }
-        if (!C.stipple) glEnable(GL_POLYGON_STIPPLE);
+        if (C.stipple <= 0) glEnable(GL_POLYGON_STIPPLE);   /* (-1: not known yet) */
     }
     C.stipple = s;
 }
@@ -136,7 +136,7 @@ static void set_offset(int on, float slope, float units)
 {
     if (C.offset == on && (!on || (C.slope == slope && C.units == units))) return;
     if (!on) glDisable(GL_POLYGON_OFFSET_FILL);
-    else { if (!C.offset) glEnable(GL_POLYGON_OFFSET_FILL); glPolygonOffset(slope, units); }
+    else { if (C.offset <= 0) glEnable(GL_POLYGON_OFFSET_FILL); glPolygonOffset(slope, units); }   /* (-1: not known yet) */
     C.offset = on; C.slope = slope; C.units = units;
 }
 static void set_scissor(int on, int x, int y, int w, int h)
@@ -283,12 +283,22 @@ int rb_init(SDL_Window *win, int pref, int samples, char *err, size_t errn)
     return 0;
 }
 
+/* every GL texture made and deleted here, counted (rb_test_counts) */
+static long g_gl_live;
+static void gl12_gen(GLuint *id) { glGenTextures(1, id); g_gl_live++; }
+static void gl12_del(GLuint *id)
+{
+    int u;
+    for (u = 0; u < 2; u++) if (C.bound[u] == *id) C.bound[u] = 0;   /* (GL unbinds it; a later texture may get its name) */
+    glDeleteTextures(1, id);
+    g_gl_live--;
+}
 static void var_free(gl12_var *v)
 {
     while (v) {
         gl12_var *n = v->next;
         int k;
-        for (k = 0; k < v->ntx * v->nty; k++) if (v->t[k].id) glDeleteTextures(1, &v->t[k].id);
+        for (k = 0; k < v->ntx * v->nty; k++) if (v->t[k].id) gl12_del(&v->t[k].id);
         free(v->t);
         free(v);
         v = n;
@@ -301,9 +311,9 @@ void rb_quit(void)
     if (!g_ctx) return;
     for (k = 1; k < g12_ntex; k++) if (g12_tex[k].live) rb_tex_delete((rb_tex)k);
     for (k = 1; k < g_nbuf; k++) if (g_buf[k].live) rb_buf_delete((rb_buf)k);
-    if (g_fogtab) glDeleteTextures(1, &g_fogtab);
-    if (g_fogramp) glDeleteTextures(1, &g_fogramp);
-    if (g_ramp) glDeleteTextures(1, &g_ramp);
+    if (g_fogtab) gl12_del(&g_fogtab);
+    if (g_fogramp) gl12_del(&g_fogramp);
+    if (g_ramp) gl12_del(&g_ramp);
     g_fogtab = g_fogramp = g_ramp = 0;
     SDL_GL_DestroyContext(g_ctx);
     g_ctx = NULL;
@@ -539,7 +549,7 @@ static gl12_var *var_make(gl12_tex *t, int kind, int param, int tiled)
         v->ntx = v->nty = 1;
         v->t = calloc(1, sizeof *v->t);
         if (!v->t) { free(px); free(v); return NULL; }
-        glGenTextures(1, &v->t[0].id);
+        gl12_gen(&v->t[0].id);
         bind2d(0, v->t[0].id);
         for (;;) {
             uint8_t *nx;
@@ -585,7 +595,7 @@ static gl12_var *var_make(gl12_tex *t, int kind, int param, int tiled)
                         memcpy(tile + ((size_t)y * (size_t)P[0] + (size_t)x) * 4, px + ((size_t)sy * (size_t)w + (size_t)sx) * 4, 4);
                     }
                 }
-                glGenTextures(1, &g->id);
+                gl12_gen(&g->id);
                 bind2d(0, g->id);
                 glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, P[0], P[1], 0, GL_RGBA, GL_UNSIGNED_BYTE, tile);
             }
@@ -730,7 +740,7 @@ static void store_make(gl12_tex *t)
             g->h = t->h - g->y0 < P[1] - 2 ? t->h - g->y0 : P[1] - 2;
             g->pw = P[0]; g->ph = P[1]; g->levels = 1;
             g->min = g->mag = g->ws = g->wt = g->base = -1;
-            glGenTextures(1, &g->id);
+            gl12_gen(&g->id);
             bind2d(0, g->id);
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, P[0], P[1], 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
         }
@@ -897,8 +907,8 @@ void gl12_fog_table(const float rgb[3], int kind)
             for (c = 0; c < 3; c++) ramp[i * 4 + c] = (uint8_t)floor(rgb[c] * 255.0f + 0.5f);
             ramp[i * 4 + 3] = (uint8_t)i;
         }
-        if (!g_fogtab) glGenTextures(1, &g_fogtab);
-        if (!g_fogramp) glGenTextures(1, &g_fogramp);
+        if (!g_fogtab) gl12_gen(&g_fogtab);
+        if (!g_fogramp) gl12_gen(&g_fogramp);
         active(0);
         glBindTexture(GL_TEXTURE_1D, g_fogtab);
         glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
@@ -921,7 +931,7 @@ static GLuint lum_ramp(void)
         uint8_t r[256];
         int i;
         for (i = 0; i < 256; i++) r[i] = (uint8_t)i;
-        glGenTextures(1, &g_ramp);
+        gl12_gen(&g_ramp);
         active(1);
         glBindTexture(GL_TEXTURE_1D, g_ramp);
         glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
@@ -1263,4 +1273,13 @@ void rb_draw(int first, int count)
     draw_target();
     if (G.prog == RB_PROG_HUD) gl12_hud_draw(first, count);
     else gl12_world_draw(first, count);
+}
+
+void rb_test_counts(long out[3])
+{
+    int k;
+    out[0] = out[1] = 0;
+    for (k = 1; k < g12_ntex; k++) out[0] += g12_tex[k].live != 0;
+    for (k = 1; k < g_nbuf; k++) out[1] += g_buf[k].live != 0;
+    out[2] = g_gl_live;
 }

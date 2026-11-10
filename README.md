@@ -6,7 +6,7 @@ or Vulkan on Windows, Vulkan on Linux, Metal on macOS); builds on macOS, Linux a
 
 As on DOS, Ghost Bear's Legacy is its own program: `gbl`.
 
-## Status (1.0, 2026-11-10)
+## Status (1.0.1, 2026-11-10)
 Complete and playable from start to finish: all 22 campaign missions, the Combat Simulator and the Mech Lab. Tagged
 releases (`v*`) are built by GitHub Actions: a macOS app (Apple Silicon), a Debian / Ubuntu package, a Fedora RPM, a
 Windows zip and a Windows legacy zip (32-bit, Windows XP and newer, OpenGL 1.2 - see "The legacy build"). Or build from
@@ -51,8 +51,10 @@ What the port covers:
     Edition.
   - **TITANIUM:** the Titanium Edition's Direct3D look, with its models, textures, sky and particles.
 
-  ENHANCED and TITANIUM need three files from the Titanium disc. The in-game videos have their own look setting:
-  original, smooth, scanlines, CRT or curved CRT.
+  ENHANCED and TITANIUM need three files from the Titanium disc. The look can also be changed during a mission, in the
+  in-game menu (Esc, Graphics, Renderer): after a short pause the picture is drawn in the new look and the mission goes
+  on exactly where it was - nothing in the game itself changes - and the choice is kept for the next missions. The
+  in-game videos have their own look setting: original, smooth, scanlines, CRT or curved CRT.
 - **Sound:** the original's effects and voices (briefings and debriefings included), and the disc's CD audio as the
   mission music from your own rips.
 - **No CD check:** the original looked for a hidden file on the GBL disc at start-up. The port never asks for the disc.

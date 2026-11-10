@@ -30,5 +30,13 @@
 
 - `mtbl_diff.py` / `mtbl_shim.c`, `honor_diff.py`: the mission tables and the debriefing multiplier (see their headers).
 
-No game data is needed beyond the ELF images (and, for lab_diff, a GBL install); nothing here is built by the main
-Makefile.
+- `lookswitch.py`: the in-mission look switch (DOS / ENHANCED / TITANIUM) - for every GBL scene, headless, a mission
+  switching looks mid-mission against the same mission without switches (the game state's hash every frame, the sound
+  byte for byte) and against missions started in each look (the frames after each switch, pixel for pixel); `--repeat
+  N`: N switches in one mission, the GPU objects and the game's own heap after each (needs a GBL-game folder with
+  install/, cd/ and titanium/; works with the RB=gl12 build too):
+
+      python3 tools/audit/lookswitch.py --bin ./gbl --game <GBL-game folder> --repeat 20
+
+No game data is needed beyond the ELF images (and, for lab_diff, a GBL install; for lookswitch, a GBL-game folder);
+nothing here is built by the main Makefile.

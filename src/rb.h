@@ -116,4 +116,8 @@ void rb_storage(rb_buf b);
 void rb_storage_aux(rb_buf b);
 void rb_draw(int first, int count);
 
+/* TEST ONLY (tools/audit/lookswitch.py): the live texture and buffer handles, and the GPU objects behind them (SDL_GPU:
+ * textures incl. multisample / depth, buffers, releases pending; OpenGL: GL texture names) */
+void rb_test_counts(long out[3]);
+
 #endif

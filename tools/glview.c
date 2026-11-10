@@ -37,6 +37,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stddef.h>
+#if defined(__GLIBC__)
+#include <malloc.h>  /* (TEST ONLY: mallinfo2, test_lookswitch_report) */
+#endif
+#if !defined(_WIN32) && !defined(__APPLE__)
+#include <dlfcn.h>   /* (TEST ONLY: test_lookswitch_report's heap tracker, tools/audit/lookswitch.py) */
+#endif
 
 #include "common3d.h"
 #include "datapath.h"
@@ -463,6 +470,11 @@ static void hud_message_ex(const char *m, int ticks, int pri)
  * 1024 x 768 (MSGBARK 0x3ff0030): x 0-1022, rows 0-48. Only at the sets' own sizes (the bar as wide as the screen);
  * returns 0 otherwise (the port's stretched bar) */
 static int g_tex_kind;   /* (the look: defined below) */
+/* the C library's rand() as the simulation's frame uses it (the MASC roll, the HUD instruments' damage rolls): every call
+ * counted, so the test hash (MW2_TEST_SIMHASH) sees the generator's position. Drawing-only randomness (the TITANIUM
+ * look's missile smoke) has its own generator, so no look moves this one */
+static unsigned g_rand_n;
+static int glv_rand(void) { g_rand_n++; return rand(); }
 static int dos_msg_win(int k, int sw, int sh, int win[4])
 {
     const hud_sprite *s = &g_hs_msgbar;
@@ -621,7 +633,17 @@ static prj_archive *g_ma;
  * 640-wide reference (focal 320 x zoom) 72 / 170 / 450 m, halved with DISPLAY DETAIL low. The representations share the
  * full model's skeleton (mech3d_use_skeleton), so a level of detail is posed exactly as the full model. */
 static int g_lodq = 1;
-static float g_dos_b8;   /* the main view's +0xb8 / 65536 (0x3f9e0), set before each draw */
+static float g_dos_b8;   /* the main view's +0xb8 / 65536 (0x3f9e0), set before each draw (the DOS renderer's looks) */
+/* The look as the SIMULATION sees it: the mission's start look (3 the DOS archive - DOS / ENHANCED, 5 TITANIUM), fixed for
+ * the mission. Two look-dependent values feed the simulation: the unit placement mech3d_dos_hips (the DOS renderer's
+ * hips without their OBJ offset: every pose the shots, probes, eye and mounts use) and the levels of detail of the
+ * collision list (msim collision_lods: GBL 0x37fa0 takes the DOS view's +0xb8, the 3D engines the 640 reference) -
+ * a live switch of the look (look_rebuild) keeps both as the mission started, so the game plays on exactly as it was;
+ * the switched look draws the units at those poses and levels (MW2_TEST_SIM_LOOK=dos|titanium: TEST ONLY, a run in
+ * one look with the other's simulation - the reference of the switch's frames) */
+static int   g_sim_kind = 3;
+static float g_sim_b8;   /* g_dos_b8 for the simulation (g_sim_kind 3) */
+static Uint32 g_clock_skip;   /* ms the look switches took (SDL_GetTicks): not game time (the frame's dt, the sky drift) */
 static struct { mech3d m[4]; int ok[4], tried; char skel[17]; } g_alod[64];
 static mech3d *actor_lod(int k, const mech3d *full, const char *skel, float dist)
 {
@@ -808,22 +830,27 @@ static int ti_tip_load(const char *mission)
     }
     return 1;
 }
+/* the smoke's random offsets: a generator of its own (the Microsoft C library's rand, as the Windows engine's would be -
+ * ASSUMED, mercsw's generator not traced), so the smoke never moves the simulation's rand() (glv_rand: the MASC roll) */
+static uint32_t g_tip_seed = 1;
+static int tip_rand(void) { g_tip_seed = g_tip_seed * 214013u + 2531011u; return (int)((g_tip_seed >> 16) & 0x7fff); }
+/* stepped in every look (drawn only in TITANIUM), so a live switch to TITANIUM finds the smoke a mission started in it
+ * would have */
 static void ti_particles(glr *r, const glr_view *v, float now_ticks, const char *mission)
 {
     static float last = -1;
     static glr_particle *pp;
     static int pcap;
     int k, q, n = 0;
-    if (!c3d_ti || !g_sim_ok || getenv("MW2_NO_PARTICLES")) { glr_set_particles(r, NULL, 0, 0); g_tip_n = 0; last = -1; return; }
-    if (g_tip_state == 0) g_tip_state = ti_tip_load(mission);
-    if (g_tip_state < 0) { glr_set_particles(r, NULL, 0, 0); return; }
+    if (!g_sim_ok || getenv("MW2_NO_PARTICLES")) { glr_set_particles(r, NULL, 0, 0); g_tip_n = 0; last = -1; return; }
+    if (c3d_ti && g_tip_state == 0) g_tip_state = ti_tip_load(mission);
     if (last < 0 || now_ticks < last) last = now_ticks;
     while (now_ticks - last >= 182.0f / 30.0f) {   /* the 30 fps reference steps */
         const float dt = 182.0f / 30.0f;
         last += dt;
         for (k = 0; k < g_tip_n; k++) {
             if (last - g_tip[k].born > 90.0f) { g_tip[k--] = g_tip[--g_tip_n]; continue; }
-            g_tip[k].pos[0] += g_tip[k].v[0]; g_tip[k].pos[1] += g_tip[k].v[1] + (float)(rand() % 10); g_tip[k].pos[2] += g_tip[k].v[2];
+            g_tip[k].pos[0] += g_tip[k].v[0]; g_tip[k].pos[1] += g_tip[k].v[1] + (float)(tip_rand() % 10); g_tip[k].pos[2] += g_tip[k].v[2];
         }
         for (q = 0; q < g_sim.shot_count; q++) {
             const msim_shot *sh = &g_sim.shots[q];
@@ -838,18 +865,19 @@ static void ti_particles(glr *r, const glr_view *v, float now_ticks, const char 
             memcpy(g_tip[g_tip_n].pos, o, sizeof o);
             for (i = 0; i < 3; i++) g_tip[g_tip_n].v[i] = d[i] / 8.0f;
             for (i = 0; i < 20; i++) {
-                g_tip[g_tip_n].off[i][0] = d[0] * (float)(i + 1) / 16.0f + (float)(rand() % 10) - 5.0f;
-                g_tip[g_tip_n].off[i][1] = d[1] * (float)(i + 1) / 16.0f + (float)(rand() % 50) - 25.0f;
-                g_tip[g_tip_n].off[i][2] = d[2] * (float)(i + 1) / 16.0f + (float)(rand() % 10) - 5.0f;
+                g_tip[g_tip_n].off[i][0] = d[0] * (float)(i + 1) / 16.0f + (float)(tip_rand() % 10) - 5.0f;
+                g_tip[g_tip_n].off[i][1] = d[1] * (float)(i + 1) / 16.0f + (float)(tip_rand() % 50) - 25.0f;
+                g_tip[g_tip_n].off[i][2] = d[2] * (float)(i + 1) / 16.0f + (float)(tip_rand() % 10) - 5.0f;
             }
             g_tip[g_tip_n].born = last;
             g_tip_n++;
             {   /* (tests) */
                 static float said = -1;
-                if (said < 0 || last < said) { said = last; printf("titanium: missile smoke from %.1f s\n", (double)g_sim.now / 1000.0); }
+                if (c3d_ti && (said < 0 || last < said)) { said = last; printf("titanium: missile smoke from %.1f s\n", (double)g_sim.now / 1000.0); }
             }
         }
     }
+    if (!c3d_ti || g_tip_state < 0) { glr_set_particles(r, NULL, 0, 0); return; }
     if (pcap < g_tip_n * 20) { free(pp); pcap = g_tip_n * 20; pp = malloc((size_t)pcap * sizeof *pp); if (!pp) pcap = 0; }
     for (k = 0; pp && k < g_tip_n; k++) {
         float age = now_ticks - g_tip[k].born, dx = g_tip[k].pos[0] - v->eye[0], dy = g_tip[k].pos[1] - v->eye[1], dz = g_tip[k].pos[2] - v->eye[2];
@@ -2132,21 +2160,23 @@ static void world_fade(glr *r)
 {
     static int amp;
     static int32_t prev = -1;
+    static int tamp;
+    static int32_t tamp_t0 = -1;
+    static float tamp_from;
     int in_ph, want = g_vision == 1 && g_cockpit && g_sim_ok && g_world;
-    float k;
+    float k, ak = 0.0f;
     const float *tint = NULL;
     static const float RED[3] = {1.0f, 8.0f / 255.0f, 8.0f / 255.0f}, GREEN[3] = {0.0f, 1.0f, 8.0f / 255.0f};
+    if (g_sim_ok && g_world) {   /* TITANIUM's light amplification fade: kept in every look (a live switch to TITANIUM finds
+                                  * it as a mission started in it has it), drawn below in TITANIUM only */
+        if (tamp_t0 >= 0 && g_sim.now < tamp_t0) { tamp = 0; tamp_t0 = -1; }
+        ak = tamp_t0 < 0 ? 0.0f : tamp_from + ((tamp ? 1.0f : 0.0f) - tamp_from) * fminf(1.0f, (float)(g_sim.now - tamp_t0) * 0.182f / 0xb5);
+        if (want != tamp) { tamp_from = ak; tamp = want; tamp_t0 = g_sim.now; }
+    }
     if (g_tex_kind == 3) { glr_set_world_fade(r, NULL, 0, NULL); return; }
     if (!g_sim_ok || !g_world) { glr_set_world_fade(r, NULL, 0, NULL); return; }
     if (c3d_ti) {   /* TEXTURES TITANIUM (mercsw.dll, not traced here): as before - the palette colours faded k of the way
                      * to slot 0x11 / 0xc, the textures tinted (the flash while it fades in, light amplification at once) */
-        static int tamp;
-        static int32_t tamp_t0 = -1;
-        static float tamp_from;
-        float ak;
-        if (tamp_t0 >= 0 && g_sim.now < tamp_t0) { tamp = 0; tamp_t0 = -1; }
-        ak = tamp_t0 < 0 ? 0.0f : tamp_from + ((tamp ? 1.0f : 0.0f) - tamp_from) * fminf(1.0f, (float)(g_sim.now - tamp_t0) * 0.182f / 0xb5);
-        if (want != tamp) { tamp_from = ak; tamp = want; tamp_t0 = g_sim.now; }
         k = flash_level(g_sim.now, &in_ph);
         if (k > 0) glr_set_world_fade(r, g_scene.slot_ok[0x11] ? (const uint8_t (*)[3])g_scene.slotpal[0x11] : NULL, k, in_ph ? RED : NULL);
         else glr_set_world_fade(r, g_scene.slot_ok[0xc] ? (const uint8_t (*)[3])g_scene.slotpal[0xc] : NULL, ak, tamp ? GREEN : NULL);
@@ -3373,7 +3403,12 @@ static void dos_apply_palette(glr *r, const uint8_t *p6)
  * 17-19, night after; group -> slot {dawn 4, day 0, dusk 4, night 8} faded over {2730, 2730, 3640, 2730} ticks; the first
  * evaluation fades over 0x16c ticks from slot 0's palette. The fade is linear in the 6-bit values, truncated. */
 static int g_vision;
-static void dos_time_of_day(glr *r, int32_t now_ms)
+/* the DOS time of day's state (dos_tod_step) runs in every look - a live switch to DOS / ENHANCED finds the palette a
+ * mission started there would have (g_dos_tod_have: g_dos_cur holds one); dos_time_of_day applies it in those looks */
+static int g_dos_tod_have;
+static int dos_tod_step(int32_t now_ms);
+static void dos_time_of_day(glr *r, int32_t now_ms) { if (dos_tod_step(now_ms) && g_tex_kind == 3) dos_apply_palette(r, g_dos_cur); }
+static int dos_tod_step(int32_t now_ms)   /* 1: a new palette in g_dos_cur */
 {
     /* light amplification (0x10007a50, the DOS edition's palette): the scene palette fades to PALG slot 12 (INFRARED)
      * over 0xb5 ticks and the day / night cycle stops (DAT_1007b060 = 0); off: back to the time of day's slot over the
@@ -3389,7 +3424,7 @@ static void dos_time_of_day(glr *r, int32_t now_ms)
         if (!g_dos_evals) g_dos_evals = 1;
     }
     if (amp) g_dos_next_eval = now_ms + 0x71c * 1000 / 182;   /* the cycle frozen */
-    if (!g_dos_day && !amp && g_dos_fade_len <= 0) return;
+    if (!g_dos_day && !amp && g_dos_fade_len <= 0) return 0;
     if (g_dos_day && now_ms >= g_dos_next_eval) {
         static const int SLOT[4] = {4, 0, 4, 8}, TICKS[4] = {2730, 2730, 3640, 2730};
         int tt = (g_dos_t0 + now_ms / 1000) % g_dos_day, H = g_dos_day / 24, grp;
@@ -3409,19 +3444,26 @@ static void dos_time_of_day(glr *r, int32_t now_ms)
         int i;
         if (k >= g_dos_fade_len) { k = g_dos_fade_len; }
         for (i = 0; i < 768; i++) g_dos_cur[i] = (uint8_t)((int)g_dos_from[i] + ((int)g_dos_to[i] - (int)g_dos_from[i]) * k / g_dos_fade_len);
-        dos_apply_palette(r, g_dos_cur);
+        g_dos_tod_have = 1;
         if (k >= g_dos_fade_len) g_dos_fade_len = 0;
+        return 1;
     }
+    return 0;
 }
-static void dos_scene(glr *r, prj_archive *ma, const char *mission)
+/* the DOS renderer's mission data (every look: the time of day runs in all of them, dos_tod_step), read at the load;
+ * dos_scene applies it (the DOS and ENHANCED looks: the palette, LUMA table) */
+static int     g_dos_pal_id = -1, g_dos_have_luma;
+static uint8_t g_dos_luma[4096];
+static void dos_scene_data(prj_archive *ma, const char *mission)
 {
     bwd_mission bm;
     char name[16];
     int k, c, pal_id = -1, luma_id = 2;
-    static uint8_t luma[4096];
+    uint8_t *luma = g_dos_luma;
     int have_luma = 0;
     snprintf(name, sizeof name, "%.4sSCN1", mission);
     g_dos_day = 0; g_dos_group = -1; g_dos_evals = 0; g_dos_band = 36; g_dos_next_eval = 0; g_dos_fade_len = 0; g_dos_t0 = 0;
+    g_dos_tod_have = 0;
     g_lito_node = -1; g_lito_have_off = 0;
     if (bwd_mission_load(ma, name, &bm) == 0) {
         for (k = 0; k < bm.record_count; k++)
@@ -3474,6 +3516,22 @@ static void dos_scene(glr *r, prj_archive *ma, const char *mission)
         bwd_mission_free(&bm);
     }
     if (getenv("MW2_TEST_TOD_START")) g_dos_t0 = atoi(getenv("MW2_TEST_TOD_START"));   /* TEST ONLY: INIT +8 */
+    {
+        prj_record lr;
+        int lt = prj_find_type(ma, "LUMA");
+        if (lt >= 0 && prj_read(ma, lt, luma_id, &lr) == PRJ_OK) {
+            if (lr.size >= 4096) { memcpy(luma, lr.data + lr.size - 4096, 4096); have_luma = 1; }
+            prj_record_free(&lr);
+        }
+    }
+    g_dos_pal_id = pal_id; g_dos_have_luma = have_luma;
+    if (getenv("MW2_DEBUG_DOS")) fprintf(stderr, "dos: PAL %d, LUMA %d%s, light %.0f %.0f %.0f amb %.0f dir %.0f fog %.0f\n", pal_id, luma_id,
+                                         have_luma ? "" : " (missing)", (double)g_dos_lite[0], (double)g_dos_lite[1], (double)g_dos_lite[2],
+                                         (double)g_dos_lite[3], (double)g_dos_lite[4], (double)g_dos_lite[5]);
+}
+static void dos_scene(glr *r, prj_archive *ma)
+{
+    const int pal_id = g_dos_pal_id;
     if (pal_id >= 0) {
         prj_record pr;
         int pt = prj_find_type(ma, "PAL");
@@ -3487,20 +3545,9 @@ static void dos_scene(glr *r, prj_archive *ma, const char *mission)
             prj_record_free(&pr);
         }
     }
-    {
-        prj_record lr;
-        int lt = prj_find_type(ma, "LUMA");
-        if (lt >= 0 && prj_read(ma, lt, luma_id, &lr) == PRJ_OK) {
-            if (lr.size >= 4096) { memcpy(luma, lr.data + lr.size - 4096, 4096); have_luma = 1; }
-            prj_record_free(&lr);
-        }
-    }
-    if (getenv("MW2_DEBUG_DOS")) fprintf(stderr, "dos: PAL %d, LUMA %d%s, light %.0f %.0f %.0f amb %.0f dir %.0f fog %.0f\n", pal_id, luma_id,
-                                         have_luma ? "" : " (missing)", (double)g_dos_lite[0], (double)g_dos_lite[1], (double)g_dos_lite[2],
-                                         (double)g_dos_lite[3], (double)g_dos_lite[4], (double)g_dos_lite[5]);
     if (getenv("MW2_DEBUG_DOS")) fprintf(stderr, "dos: %d textures\n", g_scene.textures_loaded);
     if (getenv("MW2_DEBUG_DOS")) { int s2, q; for (s2 = 0; s2 < 20; s2++) if (g_dos_slot_ok[s2]) { fprintf(stderr, "slot %d:", s2); for (q = 0; q < 256; q++) if (s2 != 17 || g_dos_slotpal[s2][q * 3] != 63 || g_dos_slotpal[s2][q * 3 + 1]) fprintf(stderr, " %02x=%d,%d,%d", q, g_dos_slotpal[s2][q * 3], g_dos_slotpal[s2][q * 3 + 1], g_dos_slotpal[s2][q * 3 + 2]); fprintf(stderr, "\n"); } }
-    glr_set_dos(r, (const uint8_t (*)[3])g_scene.palette, have_luma ? luma : NULL);
+    glr_set_dos(r, (const uint8_t (*)[3])g_scene.palette, g_dos_have_luma ? g_dos_luma : NULL);
 }
 
 /* the HUD's palette (both editions): the 3D editions draw every HUD sprite and fill through the 16-bit table 0x10260324,
@@ -3702,9 +3749,9 @@ static int  g_mm_v[MV_COUNT], g_mm_old[MV_COUNT];   /* the pages' values (slider
 static int  g_mm_eds[PORTCFG_GBL_COUNT], g_mm_ned = -1;   /* the looks the Renderer item offers */
 static int  g_mm_vol[3] = {-1, -1, -1};         /* music, effects, voice in force (16.16; -1 = not read yet) */
 static int  g_mm_world_dirty, g_mm_quit;
-/* the Renderer item offers gbl's looks (portcfg.h PORTCFG_GBL_*: DOS, Enhanced, Titanium - Titanium with titanium/);
- * DOS <-> Enhanced switch at once (the same archive and renderer), a change to or from Titanium (another texture
- * archive and renderer path) is kept for the next mission (gblport.cfg renderer=) */
+/* the Renderer item offers gbl's looks (portcfg.h PORTCFG_GBL_*: DOS, Enhanced, Titanium - Titanium with titanium/); the
+ * change is made at once (look_apply: the drawing side made again, the game going on as it was) and kept for the next
+ * missions (gblport.cfg renderer=) */
 static int  g_mm_gbl_req = -1;
 static const char *const MM_GBL_TEXT[PORTCFG_GBL_COUNT] = {"DOS", "Enhanced", "Titanium"};
 static int  gbl_cur_look(void) { return g_tex_kind == 5 || (c3d_ti && g_tex_kind != 3) ? PORTCFG_GBL_TITANIUM : g_dos_tc ? PORTCFG_GBL_ENHANCED : PORTCFG_GBL_DOS; }
@@ -3753,7 +3800,6 @@ static void mm_apply_volumes(const int *mus_fx_vo)
     g_voice_off = mus_fx_vo[2] <= 0;
 }
 static int mm_value_count(int mv) { return mv == MV_VIDEO ? (g_mm_ned > 0 ? g_mm_ned : 1) : mv == MV_TEXSET ? 1 : 2; }
-static int gbl_saved_look = -1;   /* a Titanium change kept for the next mission (the menu shows it) */
 /* an item that can't change here (Textures: it follows Renderer): drawn dim, passed over by the arrows */
 static int mm_locked(const mm_item *it) { return it->type == MI_VAL && it->arg == MV_TEXSET; }
 static const char *mm_value_text(int mv)
@@ -3780,7 +3826,7 @@ static void mm_load_page(int pg)
             for (k = 0; k < PORTCFG_GBL_COUNT; k++) if (k == gbl_cur_look() || portcfg_gbl_look_ok(&pc, k)) g_mm_eds[g_mm_ned++] = k;
         }
         g_mm_v[MV_VIDEO] = 0;
-        for (k = 0; k < g_mm_ned; k++) if (g_mm_eds[k] == (gbl_saved_look >= 0 ? gbl_saved_look : gbl_cur_look())) g_mm_v[MV_VIDEO] = k;
+        for (k = 0; k < g_mm_ned; k++) if (g_mm_eds[k] == gbl_cur_look()) g_mm_v[MV_VIDEO] = k;
         g_mm_v[MV_TEXSET] = 0;   /* (Textures follows Renderer) */
         g_mm_v[MV_HUDLAYOUT] = !g_hud_wide;
     } else if (pg == MP_AUDIO) {
@@ -3978,6 +4024,81 @@ static void load_view_far(prj_archive *ma, const char *scene)
         }
     bwd_mission_free(&bm);
     if (getenv("MW2_NO_FAR_CULL")) g_view_far = 0;   /* comparison shots */
+}
+
+/* the Titanium SKYGND.PAR (TITANIUM's sky file, ENHANCED's fog): the look's (MW2_SKYGND / MW2_SKYGND_FOG), else the game
+ * folder's titanium/ (gblport.cfg). 0 if there is one */
+static int ti_sky_path(char out[PORTCFG_PATH])
+{
+    const char *e = getenv("MW2_SKYGND"), *f = getenv("MW2_SKYGND_FOG");
+    portcfg pc;
+    if (e && e[0]) { snprintf(out, PORTCFG_PATH, "%s", e); return 0; }
+    if (f && f[0]) { snprintf(out, PORTCFG_PATH, "%s", f); return 0; }
+    portcfg_load(NULL, &pc); portcfg_resolve(&pc, SDL_GetBasePath(), NULL);
+    out[0] = 0;
+    return portcfg_titanium(&pc, NULL, out) == 0 && out[0] ? 0 : -1;
+}
+/* TITANIUM's cloud drift (glr_view.ti_scroll, mercsw 0x1005580d): its rates (SKYGND.PAR skyAnim) and the drift, kept in
+ * every look so that a live switch to TITANIUM finds the clouds where a mission started in it has them */
+static float g_ti_anim[2], g_ti_scroll[2];
+
+/* a loaded mission's drawing side for its look (ati: the texture archive's kind, 3 DOS / 5 Titanium): the scene's
+ * texture table, the DOS renderer's tables, the world layer, sky, ground, fog, lights and (TITANIUM) the Titanium tables and
+ * world models - at the load (load) and again for a live switch of the look (look_rebuild, on the world mesh as it is) */
+static void look_scene(glr *r, mech3d *pm, prj_archive *ma, prj_archive *ta, int ati, const char *rec, const char *mission, int camo, int clan)
+{
+    c3d_load_scene(ma, ta, ati, mission, &g_scene);
+    glr_set_bank0(r, g_scene.bank0);   /* scrub billboards (colour type 3) */
+    if (ati == 3) dos_scene(r, ma);   /* the DOS edition: its palette, LUMA table, light and flat sky / ground */
+    else glr_set_dos(r, NULL, NULL);
+    {   /* the planet's LITE: payload {.., +8 x, +12 y, +16 z, +20 ambient level (short), +22 flag, +24 range, ..} */
+        char pn[16];
+        prj_record pr;
+        g_lite_level = 0;
+        snprintf(pn, sizeof pn, "%.4sPLT1", mission);
+        if (prj_read_named(ma, "BWD", pn, &pr) == PRJ_OK) {
+            bwd_chunk lc[64];
+            int nlc = bwd_chunks(pr.data, pr.size, lc, 64), q;
+            for (q = 0; q < nlc; q++)
+                if (strcmp(lc[q].tag, "LITE") == 0 && lc[q].size >= 22) g_lite_level = (int16_t)(lc[q].data[20] | lc[q].data[21] << 8);
+            prj_record_free(&pr);
+        }
+    }
+    glr_set_mech(r, pm, (const uint8_t (*)[3])g_scene.palette, g_scene.slot, camo, clan);
+    /* the ambient term: LITE level x 3/256 (PowerVR 0x100607d0: sgl ambient = render-config +0x2a x 0.01171875 x the
+     * light colour; the fog colour's ambient term is the same value) */
+    if (g_view && g_world && g_lite_level > 0) g_view->ambient = (float)g_lite_level * 3.0f / 256.0f;
+    if (g_view) c3d_environment(r, &g_scene, mission, g_view);
+    if (g_view && c3d_ti && ati != 3) {   /* the Titanium textures */
+        c3d_ti_environment(r, &g_scene, mission, g_view, 1);
+        printf("titanium: %d textures from the Titanium archive, %d from the mission's texture archive\n", c3d_ti_hits, c3d_ti_miss);
+        if (g_world) { ti_world_attach(pm); glr_set_mech(r, pm, (const uint8_t (*)[3])g_scene.palette, g_scene.slot, camo, clan); }
+        else {   /* the single-mech viewer: the record's Titanium model (its own meshes and skeleton offsets, the same ANIM)
+                  * - the Titanium engine has no other */
+            mech3d tm;
+            memset(&tm, 0, sizeof tm);
+            if (mech3d_ti_load(c3d_ti, rec, 0, &tm) == 0 && tm.part_count > 0) {
+                printf("titanium: viewer %s as its Titanium model (%d parts, the original %d)\n", rec, tm.part_count, pm->part_count);
+                mech3d_free(pm);
+                *pm = tm;
+                if (g_have_anim) mech3d_pose(pm, &g_anim, 0);
+                glr_set_mech(r, pm, (const uint8_t (*)[3])g_scene.palette, g_scene.slot, camo, clan);
+            } else mech3d_free(&tm);
+        }
+    }
+    if (g_view && ati == 3) {   /* DOS (MW2.EXE 0x3c000): the view split at the horizon, sky palette 0xE0 above, ground 0xEF
+                                 * below, flat and unlit; no fog colour (distance only darkens the shading) */
+        static texture skyt, gndt;
+        static uint32_t skyp, gndp;
+        skyp = (uint32_t)g_scene.palette[0xe0][0] | ((uint32_t)g_scene.palette[0xe0][1] << 8) | ((uint32_t)g_scene.palette[0xe0][2] << 16) | 0xff000000u;
+        gndp = (uint32_t)g_scene.palette[0xef][0] | ((uint32_t)g_scene.palette[0xef][1] << 8) | ((uint32_t)g_scene.palette[0xef][2] << 16) | 0xff000000u;
+        skyt.w = skyt.h = gndt.w = gndt.h = 1; skyt.rgba = &skyp; gndt.rgba = &gndp;
+        glr_set_environment(r, &gndt, &skyt, 1.0f, 1.0f);
+        g_view->sky_color[0] = g_scene.palette[0xe0][0] / 255.0f; g_view->sky_color[1] = g_scene.palette[0xe0][1] / 255.0f; g_view->sky_color[2] = g_scene.palette[0xe0][2] / 255.0f;
+        g_view->dos_lpos[0] = g_dos_lite[0]; g_view->dos_lpos[1] = g_dos_lite[1]; g_view->dos_lpos[2] = g_dos_lite[2];
+        g_view->dos_amb = g_dos_lite[3]; g_view->dos_dir = (int)g_dos_lite[4]; g_view->dos_fogdist = g_dos_lite[5];
+        g_view->dos_band = g_dos_band > 0 ? g_dos_band : 0;
+    }
 }
 
 static int load(glr *r, prj_archive *ma, prj_archive *ta, int ati, const char *rec, const char *mission, int camo, int clan)
@@ -4246,58 +4367,17 @@ static int load(glr *r, prj_archive *ma, prj_archive *ta, int ati, const char *r
             if (mech3d_default_loadout(ma, rec, lo, sizeof lo) == 0) mech3d_walk_rate(ma, &m, &g_anim, lo, &speed, &g_kps);
         }
     }
-    c3d_load_scene(ma, ta, ati, mission, &g_scene);
-    glr_set_bank0(r, g_scene.bank0);   /* scrub billboards (colour type 3) */
-    if (ati == 3) dos_scene(r, ma, mission);   /* the DOS edition: its palette, LUMA table, light and flat sky / ground */
-    else glr_set_dos(r, NULL, NULL);
-    {   /* the planet's LITE: payload {.., +8 x, +12 y, +16 z, +20 ambient level (short), +22 flag, +24 range, ..} */
-        char pn[16];
-        prj_record pr;
-        g_lite_level = 0;
-        snprintf(pn, sizeof pn, "%.4sPLT1", mission);
-        if (prj_read_named(ma, "BWD", pn, &pr) == PRJ_OK) {
-            bwd_chunk lc[64];
-            int nlc = bwd_chunks(pr.data, pr.size, lc, 64), q;
-            for (q = 0; q < nlc; q++)
-                if (strcmp(lc[q].tag, "LITE") == 0 && lc[q].size >= 22) g_lite_level = (int16_t)(lc[q].data[20] | lc[q].data[21] << 8);
-            prj_record_free(&pr);
-        }
+    dos_scene_data(ma, mission);   /* (every look: the DOS time of day runs in all of them) */
+    g_ti_anim[0] = g_ti_anim[1] = 0;   /* the Titanium cloud drift's rates (kept in every look, g_ti_scroll) */
+    g_ti_scroll[0] = g_ti_scroll[1] = 0;
+    {
+        char tsky[PORTCFG_PATH];
+        skygnd_ti st;
+        if (ti_sky_path(tsky) == 0 && skygnd_ti_lookup(tsky, mission, &st) == 0) { g_ti_anim[0] = st.anim[0]; g_ti_anim[1] = st.anim[1]; }
     }
-    glr_set_mech(r, &m, (const uint8_t (*)[3])g_scene.palette, g_scene.slot, camo, clan);
-    /* the ambient term: LITE level x 3/256 (PowerVR 0x100607d0: sgl ambient = render-config +0x2a x 0.01171875 x the
-     * light colour; the fog colour's ambient term is the same value) */
-    if (g_view && g_world && g_lite_level > 0) g_view->ambient = (float)g_lite_level * 3.0f / 256.0f;
-    if (g_view) c3d_environment(r, &g_scene, mission, g_view);
-    if (g_view && c3d_ti && ati != 3) {   /* the Titanium textures */
-        c3d_ti_environment(r, &g_scene, mission, g_view, 1);
-        printf("titanium: %d textures from the Titanium archive, %d from the mission's texture archive\n", c3d_ti_hits, c3d_ti_miss);
-        if (g_world) { ti_world_attach(&m); glr_set_mech(r, &m, (const uint8_t (*)[3])g_scene.palette, g_scene.slot, camo, clan); }
-        else {   /* the single-mech viewer: the record's Titanium model (its own meshes and skeleton offsets, the same ANIM)
-                  * - the Titanium engine has no other */
-            mech3d tm;
-            memset(&tm, 0, sizeof tm);
-            if (mech3d_ti_load(c3d_ti, rec, 0, &tm) == 0 && tm.part_count > 0) {
-                printf("titanium: viewer %s as its Titanium model (%d parts, the original %d)\n", rec, tm.part_count, m.part_count);
-                mech3d_free(&m);
-                m = tm;
-                if (g_have_anim) mech3d_pose(&m, &g_anim, 0);
-                glr_set_mech(r, &m, (const uint8_t (*)[3])g_scene.palette, g_scene.slot, camo, clan);
-            } else mech3d_free(&tm);
-        }
-    }
-    if (g_view && ati == 3) {   /* DOS (MW2.EXE 0x3c000): the view split at the horizon, sky palette 0xE0 above, ground 0xEF
-                                 * below, flat and unlit; no fog colour (distance only darkens the shading) */
-        static texture skyt, gndt;
-        static uint32_t skyp, gndp;
-        skyp = (uint32_t)g_scene.palette[0xe0][0] | ((uint32_t)g_scene.palette[0xe0][1] << 8) | ((uint32_t)g_scene.palette[0xe0][2] << 16) | 0xff000000u;
-        gndp = (uint32_t)g_scene.palette[0xef][0] | ((uint32_t)g_scene.palette[0xef][1] << 8) | ((uint32_t)g_scene.palette[0xef][2] << 16) | 0xff000000u;
-        skyt.w = skyt.h = gndt.w = gndt.h = 1; skyt.rgba = &skyp; gndt.rgba = &gndp;
-        glr_set_environment(r, &gndt, &skyt, 1.0f, 1.0f);
-        g_view->sky_color[0] = g_scene.palette[0xe0][0] / 255.0f; g_view->sky_color[1] = g_scene.palette[0xe0][1] / 255.0f; g_view->sky_color[2] = g_scene.palette[0xe0][2] / 255.0f;
-        g_view->dos_lpos[0] = g_dos_lite[0]; g_view->dos_lpos[1] = g_dos_lite[1]; g_view->dos_lpos[2] = g_dos_lite[2];
-        g_view->dos_amb = g_dos_lite[3]; g_view->dos_dir = (int)g_dos_lite[4]; g_view->dos_fogdist = g_dos_lite[5];
-        g_view->dos_band = g_dos_band > 0 ? g_dos_band : 0;
-        dos_time_of_day(r, 0);
+    look_scene(r, &m, ma, ta, ati, rec, mission, camo, clan);
+    if (dos_tod_step(0) && ati == 3) dos_apply_palette(r, g_dos_cur);   /* the time of day's first evaluation */
+    if (g_view && ati == 3) {
         g_view->dos_tc = g_dos_tc;
         if (g_dos_tc) enhanced_fog(mission, g_view);
     }
@@ -4392,36 +4472,138 @@ static int titanium_open(int on)
     c3d_ti_hits = c3d_ti_miss = 0;
     return 0;
 }
-/* the in-game Renderer (see g_mm_gbl_req): saved as gblport.cfg renderer= for the next missions; DOS <-> Enhanced at
- * once (glr_view.dos_tc and the Titanium SKYGND.PAR fog on / off); to or from Titanium from the next mission (a message) */
-static void gbl_switch_look(glr *r, glr_view *v, int look, const char *mission)
+/* ---- a live switch of the look (the in-game Renderer, g_mm_gbl_req; TEST: MW2_TEST_VIDEO / MW2_TEST_LOOKSWITCH) ----
+ * The simulation stays exactly as it is - units, damage, AI, mission nodes, timers, the random generators, sounds - and
+ * only the drawing side is made again, as a mission started in the new look has it: the look's texture archive (the DOS
+ * GBL MW2.PRJ or the Titanium one, and c3d_ti beside it), a fresh renderer (glr: every GPU texture and buffer released and
+ * made anew), the scene's texture tables, the DOS renderer's tables and palette, the world layer (as it stands now:
+ * wrecks, moved parts), sky, ground, fog, lights, the Titanium tables, world models, unit models, pool models, effect
+ * frames and the HUD's palette. The state that runs on with time in one look only is kept in every look, so a switch finds
+ * it as a mission started there would have it: the DOS time of day (dos_tod_step), TITANIUM's cloud drift (g_ti_scroll),
+ * its light amplification fade (world_fade) and missile smoke (ti_particles). What feeds the simulation keeps the start
+ * look's value (g_sim_kind). Done between two frames (look_apply at the frame's start); gblport.cfg renderer= is written
+ * too, so the next mission and the shell take the new look. */
+static prj_archive *g_ta;                   /* the look's texture archive (the command line's TEXTURES.PRJ, then the switch's) */
+static char g_models_path[PORTCFG_PATH];    /* the models archive (the DOS GBL MW2.PRJ): the DOS / ENHANCED looks' textures too */
+static int  g_look_req = -1, g_look_quiet;  /* a switch asked for (done at the next frame's start); quiet: no message (tests) */
+static int look_rebuild(glr **pr, glr_view *v, prj_archive *ma, int look, const char *mission, char *err, size_t errn)
 {
-    portcfg raw;
-    int cur = gbl_cur_look();
-    (void)r;
-    if (look < 0 || look >= PORTCFG_GBL_COUNT) return;
-    portcfg_load(NULL, &raw);   /* the file's own values (unresolved) */
-    portcfg_gbl_set_look(&raw, look);
-    portcfg_save(NULL, &raw);
-    gbl_saved_look = look == cur ? -1 : look;
-    if (cur != PORTCFG_GBL_TITANIUM && look != PORTCFG_GBL_TITANIUM) {
-        g_dos_tc = look == PORTCFG_GBL_ENHANCED;
-        v->dos_tc = g_dos_tc;
-        if (g_dos_tc) {
-            char fog[PORTCFG_PATH];
-            portcfg pc;
-            const char *bp = SDL_GetBasePath();
-            portcfg_load(NULL, &pc); portcfg_resolve(&pc, bp, NULL);
-            if (portcfg_titanium(&pc, NULL, fog) == 0 && fog[0]) setenv("MW2_SKYGND_FOG", fog, 1);
-            enhanced_fog(mission, v);
-        } else { v->ti_fog[0] = 0; v->dos_fog_g = 1; c3d_ti_sg.found = 0; }
-        setenv("MW2_EDITION", look == PORTCFG_GBL_ENHANCED ? "enhanced" : "dos", 1);
-        gbl_saved_look = -1;
-        printf("video mode: gbl %s\n", PORTCFG_GBL_NAME[look]);
-    } else {
-        hud_message_v(look == PORTCFG_GBL_TITANIUM ? "Titanium look from the next mission" : look == PORTCFG_GBL_ENHANCED ? "Enhanced look from the next mission" : "DOS look from the next mission", 0);
-        printf("video mode: gbl %s from the next mission\n", PORTCFG_GBL_NAME[look]);
+    const int ati = look == PORTCFG_GBL_TITANIUM ? 5 : 3;
+    char tprj[PORTCFG_PATH] = "", tsky[PORTCFG_PATH] = "", e2[256];
+    prj_archive *nta = NULL, *nti = NULL;
+    portcfg pc;
+    glr *r;
+    int k, q;
+    portcfg_load(NULL, &pc); portcfg_resolve(&pc, SDL_GetBasePath(), NULL);
+    if (portcfg_titanium(&pc, tprj, tsky) != 0) tprj[0] = tsky[0] = 0;
+    /* the new archives first: nothing is changed when they can't be had */
+    if (ati == 5) {
+        if (!tprj[0]) { snprintf(err, errn, "no titanium folder"); return -1; }
+        if (!(nta = prj_open(tprj, e2, sizeof e2)) || !(nti = prj_open(tprj, e2, sizeof e2))) {
+            if (nta) prj_close(nta);
+            snprintf(err, errn, "%s", e2);
+            return -1;
+        }
+    } else if (!(nta = prj_open(g_models_path, e2, sizeof e2))) { snprintf(err, errn, "%s", e2); return -1; }
+    /* the old look's drawing side away */
+    rb_finish();   /* (the GPU done with the last frame) */
+    world3d_ti_free(g_ti_world, g_ti_world_n);
+    g_ti_world = NULL; g_ti_world_n = 0; g_ti_world_for = NULL;
+    for (k = 0; k < g_mech.part_count; k++) { g_mech.parts[k].ti_model = NULL; g_mech.parts[k].ti_insignia = 0; }
+    for (k = 0; k < 65; k++) {
+        for (q = 0; q < 4; q++) if (g_tiact[k].ok[q]) mech3d_free(&g_tiact[k].m[q]);
+        memset(&g_tiact[k], 0, sizeof g_tiact[k]);
     }
+    if (g_tiproj_src) for (k = 0; k < PROJ_SLOTS; k++) wtb_free(&g_tiproj[k].model);
+    memset(g_tiproj, 0, sizeof g_tiproj);
+    g_tiproj_src = NULL;
+    g_tipl_ok = 0;
+    g_tip_state = 0;
+    for (k = 0; k < 4096; k++) if (g_fxtex[k]) { tex_free(g_fxtex[k]); free(g_fxtex[k]); g_fxtex[k] = NULL; }
+    free(g_frame_layer.parts);
+    memset(&g_frame_layer, 0, sizeof g_frame_layer);
+    if (c3d_ti_have_scene) { c3d_free_scene(&c3d_ti_scene); c3d_ti_have_scene = 0; }
+    memset(c3d_ti_draw, 0, sizeof c3d_ti_draw);
+    memset(&c3d_ti_sg, 0, sizeof c3d_ti_sg);
+    c3d_free_scene(&g_scene);
+    glr_destroy(*pr);
+    if (!(r = *pr = glr_create())) { fprintf(stderr, "look switch: no renderer\n"); exit(1); }
+    glr_set_dos_ie_triangles(r, 1);   /* DOS image enhancement as GBL 0x39573 */
+    titanium_open(0);
+    if (g_fx_ta && g_fx_ta != g_ta) prj_close(g_fx_ta);
+    if (g_ta && g_ta != ma) prj_close(g_ta);
+    /* the new look, as the shell would start it (gblshell.c sim_command: its environment) */
+    g_ta = g_fx_ta = nta; g_fx_ati = ati; g_fx_da = ma;
+    g_tex_kind = ati;
+    g_drop_dos = ati == 3;
+    g_dos_tc = look == PORTCFG_GBL_ENHANCED && !getenv("MW2_TEST_NO_TC");
+    if (ati == 5) { setenv("MW2_SKYGND", tsky, 1); unsetenv("MW2_SKYGND_FOG"); }
+    else {
+        unsetenv("MW2_SKYGND");
+        if (look == PORTCFG_GBL_ENHANCED && tsky[0]) setenv("MW2_SKYGND_FOG", tsky, 1); else unsetenv("MW2_SKYGND_FOG");
+    }
+    setenv("MW2_EDITION", look == PORTCFG_GBL_DOS ? "dos" : "enhanced", 1);
+    setenv("MW2_TEXTURES", ati == 5 ? "titanium" : "original", 1);
+    if (ati == 5) {
+        char *sl = strrchr(tprj, '/');
+        c3d_ti = nti;
+        snprintf(g_ti_dir, sizeof g_ti_dir, "%.*s", sl ? (int)(sl - tprj) : 1, sl ? tprj : ".");
+        c3d_ti_hits = c3d_ti_miss = 0;
+    }
+    if (ati != 3) g_dos_b8 = 0;   /* (the 3D engines' levels of detail: the 640 reference) */
+    {   /* the view's look-dependent terms as glr_default_view and the load leave them (the frame sets the rest) */
+        glr_view d;
+        glr_default_view(&d);
+        memcpy(v->fog_color, d.fog_color, sizeof v->fog_color); memcpy(v->sky_color, d.sky_color, sizeof v->sky_color);
+        v->ambient = g_lite_level > 0 ? (float)g_lite_level * 3.0f / 256.0f : d.ambient;
+        v->tex_min = d.tex_min; v->tex_mag = d.tex_mag; v->env_min = d.env_min; v->env_mag = d.env_mag;
+        memcpy(v->dos_lpos, d.dos_lpos, sizeof v->dos_lpos);
+        v->dos_amb = d.dos_amb; v->dos_fogdist = d.dos_fogdist; v->dos_dir = d.dos_dir; v->dos_band = d.dos_band;
+        v->dos_tc = d.dos_tc; v->dos_fog_g = d.dos_fog_g;
+        memcpy(v->ti_fog, d.ti_fog, sizeof v->ti_fog); memcpy(v->ti_scroll, d.ti_scroll, sizeof v->ti_scroll);
+        v->fx_blend = d.fx_blend; v->ti_light = d.ti_light;
+        memcpy(v->ti_amb, d.ti_amb, sizeof v->ti_amb); memcpy(v->ti_lcol, d.ti_lcol, sizeof v->ti_lcol);
+        memcpy(v->ti_lvec, d.ti_lvec, sizeof v->ti_lvec); memcpy(v->ti_gnd, d.ti_gnd, sizeof v->ti_gnd);
+        memcpy(v->ti_ltype, d.ti_ltype, sizeof v->ti_ltype); v->ti_dyn_n = 0;
+    }
+    /* the drawing side again, as the load makes it */
+    hud_mission_palette(ma, mission);   /* (the 3D looks' start time of day differs: tod3d_start) */
+    glr_set_damage_shade(r, getenv("MW2_TEST_DSIGN") ? atoi(getenv("MW2_TEST_DSIGN")) : g_plnt52);
+    look_scene(r, &g_mech, ma, nta, ati, MECHS[0], mission, g_camo, g_clan);
+    if (ati == 3) {
+        if (g_dos_tod_have) dos_apply_palette(r, g_dos_cur);   /* the time of day as it stands */
+        v->dos_tc = g_dos_tc;
+        if (g_dos_tc) enhanced_fog(mission, v);
+    }
+    glr_set_mech(r, &g_mech, (const uint8_t (*)[3])g_scene.palette, g_scene.slot, g_camo, g_clan);   /* the world as it stands */
+    edition_look(v);
+    if (c3d_ti) { v->ti_scroll[0] = g_ti_scroll[0]; v->ti_scroll[1] = g_ti_scroll[1]; }
+    return 0;
+}
+/* the in-game Renderer's choice (and the tests'): the switch, then gblport.cfg renderer= for the next missions and the
+ * shell; on failure the look stays and says why */
+static void look_apply(glr **pr, glr_view *v, prj_archive *ma, int look, const char *mission)
+{
+    static const char *const SAID[PORTCFG_GBL_COUNT] = {"DOS look", "Enhanced look", "Titanium look"};
+    char err[300] = "";
+    Uint32 t0 = g_auto_on ? 0 : SDL_GetTicks();
+    if (look < 0 || look >= PORTCFG_GBL_COUNT || look == gbl_cur_look()) return;
+    if (look_rebuild(pr, v, ma, look, mission, err, sizeof err) != 0) {
+        char m[96];
+        snprintf(m, sizeof m, "%s not available", SAID[look]);
+        if (!g_look_quiet) hud_message_v(m, 0);
+        printf("video mode: gbl %s not available (%s) - %s kept\n", PORTCFG_GBL_NAME[look], err, PORTCFG_GBL_NAME[gbl_cur_look()]);
+        return;
+    }
+    {
+        portcfg raw;
+        portcfg_load(NULL, &raw);   /* the file's own values (unresolved) */
+        portcfg_gbl_set_look(&raw, look);
+        portcfg_save(NULL, &raw);
+    }
+    if (!g_look_quiet) hud_message_v(SAID[look], 0);
+    printf("video mode: gbl %s\n", PORTCFG_GBL_NAME[look]);
+    if (!g_auto_on) g_clock_skip += SDL_GetTicks() - t0;   /* the pause is not game time */
 }
 
 /* ---- TEST ONLY (tools/sweep_walk.py): MW2_WALK_TRACE - why the player's step was refused, and what it stands on ---- */
@@ -4732,7 +4914,7 @@ static void inst_update(int aux_on, int tgt_on)
     int q, k;
     while (g_last_display_hits < pu->display_hits || g_last_display_hits5 < pu->display_hits5) {
         int lim = g_last_display_hits < pu->display_hits ? 2 : 5;
-        for (q = 0; q < 26; q++) if (rand() % 10 < lim) g_inst_lvl[q]++;
+        for (q = 0; q < 26; q++) if (glv_rand() % 10 < lim) g_inst_lvl[q]++;
         if (lim == 2) g_last_display_hits++; else g_last_display_hits5++;
     }
     if (g_snow_step < 0 || g_sim.now - g_snow_step > 1000) g_snow_step = g_sim.now - 34;
@@ -4743,8 +4925,8 @@ static void inst_update(int aux_on, int tgt_on)
             if (!on) continue;                                          /* the draw routine returns before the roll */
             if (lvl == 1) {
                 g_snow_show[k] = g_snow_flag[k];
-                if (g_snow_flag[k]) { if (rand() % 10 < 7) g_snow_flag[k] = 0; }
-                else if (rand() % 10 < 3) g_snow_flag[k] = 1;
+                if (g_snow_flag[k]) { if (glv_rand() % 10 < 7) g_snow_flag[k] = 0; }
+                else if (glv_rand() % 10 < 3) g_snow_flag[k] = 1;
             } else g_snow_show[k] = lvl >= 3;
             {   /* TEST counters (tests/sequences) */
                 static int prev[2];
@@ -5088,8 +5270,78 @@ static void test_dump(const char *tag)
     printf("\n");
     fflush(stdout);
 }
+/* TEST ONLY (tools/audit/lookswitch.py): MW2_TEST_SIMHASH=1 - each frame one line "SIMHASH <ms> <hash>" over the
+ * simulation's state (the units, the player's mech and controls, projectiles, debris, effects' damage, nav points, the
+ * mission nodes, structures, the collision list's levels of detail and order clock, both random generators' positions):
+ * equal lines = the same game. Not hashed: pointers, the drawing side */
+static uint64_t sh_fnv(uint64_t h, const void *p, size_t n)
+{
+    const unsigned char *b = p;
+    while (n--) { h ^= *b++; h *= 0x100000001b3ull; }
+    return h;
+}
+static void test_simhash(void)
+{
+    uint64_t h = 0xcbf29ce484222325ull;
+    int k;
+    if (!getenv("MW2_TEST_SIMHASH") || !g_sim_ok) return;
+    const int dbg = atoi(getenv("MW2_TEST_SIMHASH")) == 2;
+#define SHN(p, n) do { h = sh_fnv(h, p, n); if (dbg) printf("SHC %s %016llx\n", #p, (unsigned long long)h); } while (0)
+#define SH(x) SHN(&(x), sizeof (x))
+    SH(g_sim.now); SH(g_sim.shot_ticks); SH(g_sim.rng); SH(g_sim.player); SH(g_sim.player_facing); SH(g_sim.player_unit);
+    SH(g_sim.outcome); SH(g_sim.ending); SH(g_sim.over); SH(g_sim.ending_at); SH(g_sim.hits); SH(g_sim.misses);
+    SH(g_sim.clist_next); SH(g_sim.player_lock); SH(g_sim.player_eye); SH(g_sim.reticle_actor); SH(g_sim.reticle_bld);
+    SH(g_sim.cam_a0); SH(g_sim.star_post); SH(g_sim.player_victim); SH(g_sim.buildings_destroyed); SH(g_sim.area_count);
+    SHN(g_sim.navs, sizeof g_sim.navs[0] * (size_t)g_sim.nav_count);
+    SHN(g_sim.shots, sizeof g_sim.shots[0] * (size_t)g_sim.shot_count);
+    SHN(g_sim.debris, sizeof g_sim.debris[0] * (size_t)g_sim.debris_count);
+    SHN(g_sim.area, sizeof g_sim.area[0] * (size_t)g_sim.area_count);
+    SH(g_sim.logic.state); SH(g_sim.logic.started); SH(g_sim.logic.ended); SH(g_sim.logic.result); SH(g_sim.logic.current); SH(g_sim.logic.announced);
+    for (k = 0; k < g_sim.actor_count; k++) {
+        const mech3d *m = &g_sim.actors[k].mech;
+        SHN(&g_sim.units[k], sizeof g_sim.units[k]);
+        SH(m->origin); SH(m->heading); SH(m->twist); SH(m->tilt); SH(m->pose_t);
+        if (g_sim.minds) {   /* (not its man_table pointer) */
+            const ai_mind *am = &g_sim.minds[k];
+            SHN(am, offsetof(ai_mind, man_table));
+            SH(am->man_rows); SH(am->man_first); SH(am->mech_rules); SH(am->engage_range);
+        }
+        if (g_sim.col_repr) SH(g_sim.col_repr[k]);
+    }
+    for (k = 0; k < g_sim.bld_count; k++) { SH(g_sim.bld[k].hp); SH(g_sim.bld[k].intact); SH(g_sim.bld[k].destroyed); }
+    for (k = 0; k < g_mech.part_count; k++) if (g_mech.parts[k].moving) { SH(g_mech.parts[k].pos); SH(g_mech.parts[k].hidden); }
+    SH(g_pl.origin); SH(g_pl.heading); SH(g_pl.twist); SH(g_pitch); SH(g_throttle); SH(g_pl_speed); SH(g_rand_n); SH(g_masc);
+#undef SH
+#undef SHN
+    printf("SIMHASH %d %016llx\n", (int)g_sim.now, (unsigned long long)h);
+}
+/* TEST ONLY: after a look switch (MW2_TEST_LOOKSWITCH / MW2_TEST_VIDEO, with MW2_TEST_SIMHASH): the look, the backend's
+ * live textures / buffers / GPU objects and the heap in use */
+static void test_lookswitch_report(int look)
+{
+    long c[3];
+    long heap = -1;
+    if (!getenv("MW2_TEST_SIMHASH")) return;
+    rb_test_counts(c);
+#if defined(__GLIBC__) && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 33))
+    { struct mallinfo2 mi = mallinfo2(); heap = (long)mi.uordblks; }
+#endif
+#if !defined(_WIN32)
+    {   /* the heap by module, when tools/audit/lookswitch.py preloads its tracker (ltrack_dump: stderr LTRACK lines) */
+        void *self = dlopen(NULL, RTLD_LAZY);
+        void (*dump)(const char *) = self ? (void (*)(const char *))(uintptr_t)dlsym(self, "ltrack_dump") : NULL;
+        char tg[32];
+        snprintf(tg, sizeof tg, "%d", (int)g_sim.now);
+        if (dump) dump(tg);
+        if (self) dlclose(self);
+    }
+#endif
+    printf("LOOKSWITCH %d asked %s now %s textures %ld buffers %ld gpu %ld heap %ld\n", (int)g_sim.now, PORTCFG_GBL_NAME[look],
+           PORTCFG_GBL_NAME[gbl_cur_look()], c[0], c[1], c[2], heap);
+}
 static void test_frame(int w, int h)
 {
+    test_simhash();
     static int d_phit, d_heat, d_thing, d_bld, d_shot, dump_idx, d_node;
     static float next_every = -1;
     const char *sd = getenv("MW2_STATE_DUMP"), *sh = getenv("MW2_SHOT");
@@ -5393,12 +5645,17 @@ int main(int argc, char **argv)
 
     if (argc < 4 || (strcmp(argv[3], "dos") != 0 && strcmp(argv[3], "titanium") != 0)) { fprintf(stderr, "usage: %s MW2.PRJ TEXTURES.PRJ dos|titanium [RECORD MISSION]\n", argv[0]); return 2; }
     if (!(ma = prj_open(argv[1], err, sizeof err)) || !(ta = prj_open(argv[2], err, sizeof err))) { fprintf(stderr, "%s\n", err); return 1; }
+    g_ta = ta;
+    snprintf(g_models_path, sizeof g_models_path, "%s", argv[1]);
     /* the texture archive's kind: 3 DOS (the DOS GBL MW2.PRJ: the DOS and ENHANCED looks), 5 Titanium (the TITANIUM look:
      * the Titanium archive's textures) - the shell passes the look's */
     ati = strcmp(argv[3], "dos") == 0 ? 3 : 5;
     g_drop_dos = ati == 3;
     g_tex_kind = ati;
-    mech3d_dos_hips = ati == 3;   /* the DOS edition's unit placement (the DOS and ENHANCED looks: GBL's DOS renderer) */
+    g_sim_kind = 3;   /* the DOS game decides all behaviour: every look simulates with the DOS renderer's placement and levels */
+    if (getenv("MW2_TEST_SIM_LOOK")) g_sim_kind = strcmp(getenv("MW2_TEST_SIM_LOOK"), "titanium") == 0 ? 5 : 3;   /* TEST ONLY */
+    mech3d_dos_hips = g_sim_kind == 3;   /* the DOS edition's unit placement (the DOS and ENHANCED looks: GBL's DOS renderer) -
+                                          * the simulation's, kept through a look switch (g_sim_kind) */
 
     if (!SDL_Init(SDL_INIT_VIDEO)) { fprintf(stderr, "SDL: %s\n", SDL_GetError()); return 1; }
     if (!SDL_InitSubSystem(SDL_INIT_AUDIO)) fprintf(stderr, "audio unavailable: %s\n", SDL_GetError());
@@ -5609,6 +5866,13 @@ int main(int argc, char **argv)
         SDL_Event e;
         int reload = 0;
         perf_frame_start();
+        if (g_look_req >= 0) {   /* the Renderer's change (look_apply), between two frames */
+            int lk = g_look_req;
+            g_look_req = -1;
+            if (g_world) look_apply(&r, &v, ma, lk, mission);
+            g_look_quiet = 0;
+            test_lookswitch_report(lk);   /* TEST hook */
+        }
         if (g_drop_tex) {   /* hold the drop screen until 2 s after launch (user choice; was 5 s); the mission waits. Then
                              * as the original: the mission's CD track starts and the drop screen fades to black over 0.86 s
                              * before the first mission frame (DOSBox YELLSCN1 / TNJ1SCN1: the music from the start of the
@@ -6034,7 +6298,7 @@ int main(int argc, char **argv)
                 else if (k == SDLK_M && !g_world) { msaa = !msaa; rb_samples(msaa ? g_aa : 1); }
             }
         }
-        if (reload) load(r, ma, ta, ati, rec, mission, camo, clan);
+        if (reload) load(r, ma, g_ta, g_tex_kind, rec, mission, camo, clan);
         if (g_have_anim && g_walk && !g_world) {
             /* walk sequence 0 on a loop. Key duration is provisional: ~6 keys/s scaled by
              * the mech's TSK rate (70 = Timber Wolf); the engine ties it to ground speed. */
@@ -6045,9 +6309,11 @@ int main(int argc, char **argv)
         }
         if (g_world && g_actors) {
             /* actors: animate (walking only while P is on), move along their heading */
-            static Uint32 aprev;
+            static Uint32 aprev, skip_seen;
             Uint32 now = SDL_GetTicks();
-            float dt = aprev ? (float)(now - aprev) / 1000.0f : 0;
+            float dt;
+            if (skip_seen != g_clock_skip) { if (aprev) aprev += g_clock_skip - skip_seen; skip_seen = g_clock_skip; }   /* (a look switch's pause: not game time) */
+            dt = aprev ? (float)(now - aprev) / 1000.0f : 0;
             if (g_auto_on) dt = g_auto_dt;
             else {   /* the game speed (gblport.cfg speed=, default 0.85): the original ran slower than real time on its
                       * period hardware (a Pentium MMX), and the port's pace felt quick */
@@ -6159,7 +6425,7 @@ int main(int argc, char **argv)
                     masc_t += dt * 182.0f;
                     if (masc_now && g_sim_ok && masc_t > 182.0f) {
                         masc_t = 0;
-                        if (rand() % 60 == 12 && !g_sim.player_unit.invulnerable && !g_sim.player_unit.shutdown) {
+                        if (glv_rand() % 60 == 12 && !g_sim.player_unit.invulnerable && !g_sim.player_unit.shutdown) {
                             g_masc = 0; if (g_sfx) sfx_play(g_sfx, 0xc9, SFX_V64, 0.0f);   /* 0x1001a9de: (0xc9, 0x64, 0x40, 5, 0x50) */ hud_message_v("MASC malfunction.", 0);
                             if (!g_sim.player_unit.no_heat) {   /* straight into the heat, not the frame's gain */
                                 float add = g_sim.player_unit.heat * 0.25f;
@@ -7030,7 +7296,7 @@ int main(int argc, char **argv)
                 /* the levels of detail are the simulation's (msim collision_lods: GBL 0x37fa0, base DOS 0x37580 - a unit is hit
                  * as it is drawn): this frame's camera for its next step */
                 memcpy(g_sim.cam_eye, v.eye, sizeof g_sim.cam_eye);
-                g_sim.cam_a0 = g_dos_b8 > 0 ? g_dos_b8 : 2.0f * (g_zoom > 1 ? g_zoom : 1.0f) / (float)g_lodq;   /* (the last frame's view; before the first, the 640 reference) */
+                g_sim.cam_a0 = g_sim_b8 > 0 ? g_sim_b8 : 2.0f * (g_zoom > 1 ? g_zoom : 1.0f) / (float)g_lodq;   /* (the last frame's view; before the first, the 640 reference) */
                 g_sim.cam_ok = 1;
                 for (k = 0; k < g_actor_count; k++) total += g_actors[k].mech.part_count;
                 if (show_pl || (g_cockpit && g_pl_ok)) total += g_pl.part_count + (g_plpit_ok ? g_plpit.part_count : 0);
@@ -7312,20 +7578,23 @@ int main(int argc, char **argv)
             if (ks[SDL_SCANCODE_Q] && v.eye[1] - sp > 50) v.eye[1] -= sp;
         }
         {   /* sky drift: the engine adds tile_sky*anim_rate per frame; normalised here to 30 fps */
-            static Uint32 last;
+            static Uint32 last, skip_seen;
             Uint32 now = SDL_GetTicks();
             skygnd sg;
+            int k2;
+            if (skip_seen != g_clock_skip) { if (last) last += g_clock_skip - skip_seen; skip_seen = g_clock_skip; }   /* (a look switch's pause) */
             skygnd_defaults(&sg);
             skygnd_lookup(getenv("MW2_SKYGND"), mission, &sg);
             if (last && !g_mm_depth && !g_paused) v.sky_scroll += sg.tile_sky * sg.anim_rate * (float)(now - last) * 0.03f;   /* held while paused */
-            if (c3d_ti) {   /* Titanium (mercsw 0x1005580d): each tick adds skyAnim / 181 to the clouds' U and V, wrapped
-                             * past 1; the camera-height fog terms (with a renderer that fogs) */
-                int k2;
-                if (last && !g_mm_depth && !g_paused)
-                    for (k2 = 0; k2 < 2; k2++) {
-                        v.ti_scroll[k2] += c3d_ti_sg.anim[k2] * (float)(now - last) * 0.182f;
-                        v.ti_scroll[k2] -= floorf(v.ti_scroll[k2]);
-                    }
+            /* Titanium (mercsw 0x1005580d): each tick adds skyAnim / 181 to the clouds' U and V, wrapped past 1 - in every
+             * look (g_ti_scroll), shown in TITANIUM */
+            if (last && !g_mm_depth && !g_paused)
+                for (k2 = 0; k2 < 2; k2++) {
+                    g_ti_scroll[k2] += g_ti_anim[k2] * (float)(now - last) * 0.182f;
+                    g_ti_scroll[k2] -= floorf(g_ti_scroll[k2]);
+                }
+            if (c3d_ti) {   /* the clouds' drift; the camera-height fog terms (with a renderer that fogs) */
+                v.ti_scroll[0] = g_ti_scroll[0]; v.ti_scroll[1] = g_ti_scroll[1];
                 c3d_ti_frame(&v, v.free_cam ? v.eye[1] : 1000.0f);
             } else if (g_dos_tc) {   /* gbl ENHANCED: the Titanium fog's camera-height terms (light amplification: no fog -
                                       * the fog colours belong to the day palette, ASSUMED) */
@@ -7373,7 +7642,30 @@ int main(int argc, char **argv)
                 if (q) q++;
             }
         }
-        if (g_mm_gbl_req >= 0) { gbl_switch_look(r, &v, g_mm_gbl_req, mission); g_mm_gbl_req = -1; }   /* the Renderer */
+        {   /* TEST ONLY: MW2_TEST_LOOKSWITCH=t:look[,t:look ...] (dos, enhanced, titanium) - the look switched at t autopilot
+             * seconds as the Renderer does it, without its message; with MW2_TEST_SIMHASH the GPU's live textures / buffers
+             * and the heap after each switch (tools/audit/lookswitch.py) */
+            static int ldone;
+            const char *q = getenv("MW2_TEST_LOOKSWITCH");
+            int idx = 0;
+            while (q && *q && idx < 64) {
+                char nm[32] = "";
+                float t = (float)atof(q);
+                const char *c2 = strchr(q, ':');
+                if (!c2) break;
+                sscanf(c2 + 1, "%31[^,]", nm);
+                if (idx == ldone && g_auto_on && g_auto_elapsed >= t) {
+                    int k;
+                    ldone++;
+                    for (k = 0; k < PORTCFG_GBL_COUNT; k++) if (strcmp(nm, PORTCFG_GBL_NAME[k]) == 0) { g_mm_gbl_req = k; g_look_quiet = 1; }
+                    break;
+                }
+                idx++;
+                q = strchr(c2, ',');
+                if (q) q++;
+            }
+        }
+        if (g_mm_gbl_req >= 0) { g_look_req = g_mm_gbl_req; g_mm_gbl_req = -1; }   /* the Renderer: at the next frame's start */
         if (g_mm_world_dirty) {   /* OBJECT DENSITY changed: the world layer again */
             glr_set_mech(r, &g_mech, (const uint8_t (*)[3])g_scene.palette, g_scene.slot, g_camo, g_clan);
             g_mm_world_dirty = 0;
@@ -7812,7 +8104,7 @@ int main(int argc, char **argv)
         world_fade(r);
         if (g_world) scrub_follow(r, v.free_cam ? v.eye[0] : (float)g_pl.origin[0], v.free_cam ? v.eye[2] : (float)g_pl.origin[2]);
         if (g_world) scene_anim(r);
-        if (v.free_cam && w > 1 && h > 0 && v.vfov > 0 && g_tex_kind == 3) {
+        if (v.free_cam && w > 1 && h > 0 && v.vfov > 0 && (g_tex_kind == 3 || g_sim_kind == 3)) {
             /* the view's +0xb8 for the levels of detail (GBL MW2.EXE 0x3f9e0: zoom 16.16 (clamped 0x8000..0x100000) x half
              * the width, / (DISPLAY DETAIL's quality x 160)): 0x37fa0 (msim collision_lods) takes 3600 / 8500 / 22500 x it -
              * 72 / 170 / 450 m at 640 wide, 115 / 272 / 720 m at 1024. The DOS renderer's looks only: TITANIUM keeps the 3D
@@ -7821,7 +8113,9 @@ int main(int argc, char **argv)
             int64_t z16 = (int64_t)(zoom + 0.5);
             if (z16 > 0x100000) z16 = 0x100000;
             if (z16 < 0x8000) z16 = 0x8000;
-            g_dos_b8 = (float)((z16 * (int64_t)(w >> 1)) / (int64_t)(g_lodq * 160)) / 65536.0f;
+            const float b8 = (float)((z16 * (int64_t)(w >> 1)) / (int64_t)(g_lodq * 160)) / 65536.0f;
+            if (g_tex_kind == 3) g_dos_b8 = b8;   /* the drawn levels of detail (actor_lod): the look's */
+            if (g_sim_kind == 3) g_sim_b8 = b8;   /* the simulation's (collision_lods): the mission's start look's */
         }
         if (getenv("MW2_TEST_SPARSE") && g_auto_on) {   /* TEST ONLY: draw the pixels only of the frames MW2_SHOT / the autopilot write */
             const char *q = getenv("MW2_SHOT");
@@ -9247,9 +9541,10 @@ int main(int argc, char **argv)
     rb_quit();
     SDL_DestroyWindow(win);
     SDL_Quit();
-    if (g_fx_ta && g_fx_ta != ta) prj_close(g_fx_ta);   /* the mission's first texture archive, after a Video mode change */
+    if (g_fx_ta && g_fx_ta != g_ta) prj_close(g_fx_ta);
     titanium_open(0);
-    prj_close(ma); prj_close(ta);
+    if (g_ta != ma) prj_close(g_ta);   /* (the look's: the command line's, or a switch's) */
+    prj_close(ma);
     return exit_code;   /* 42: Flee to Windows (the shell leaves too) */
 }
 
