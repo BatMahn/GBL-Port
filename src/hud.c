@@ -166,7 +166,7 @@ int hud_sprite_load_remap(hud *h, prj_archive *a, const char *name, int frame, i
     out->tex = rb_tex_new();
     upload_sprite(h, f.pix, f.mask, f.w, f.h, from, to, out->tex);
     rb_tex_filter(out->tex, RB_NEAREST, RB_NEAREST);
-    rb_tex_wrap(out->tex, RB_REPEAT, RB_CLAMP_TO_EDGE);
+    rb_tex_wrap(out->tex, RB_CLAMP_TO_EDGE, RB_CLAMP_TO_EDGE);
     out->w = f.w; out->h = f.h; out->left = f.left; out->top = f.top;
     if (g_src_n == g_src_cap) {
         hud_src *g = realloc(g_src, (size_t)(g_src_cap ? g_src_cap * 2 : 64) * sizeof *g);
@@ -294,6 +294,10 @@ static void bind_sprite(const hud *h, const hud_sprite *s, float scale)
     int f = s->smooth || scale * h->n > 1.01f ? RB_LINEAR : RB_NEAREST;
     rb_texture(0, s->tex);
     rb_tex_filter(s->tex, f, f);
+    /* clamped at its edges: the original blits a sprite's own rectangle (GBL 0x55ae4) - filtered linearly (drawn larger),
+     * a wrapping texture had sampled its opposite edge into the first and last columns (a coloured line beside the
+     * target brackets); only the compass tape (hud_draw_window) wraps across */
+    rb_tex_wrap(s->tex, RB_CLAMP_TO_EDGE, RB_CLAMP_TO_EDGE);
 }
 
 void hud_draw(hud *h, const hud_sprite *s, float x, float y, const float tint[4])
@@ -377,6 +381,7 @@ void hud_draw_window(hud *h, const hud_sprite *s, float u0, float width, float x
     static const float one[4] = {1, 1, 1, 1};
     if (!s->tex || s->w <= 0) return;
     bind_sprite(h, s, 1.0f);
+    rb_tex_wrap(s->tex, RB_REPEAT, RB_CLAMP_TO_EDGE);   /* (the tape's columns wrap round) */
     h->U.u_textured = 1;
     h->U.u_smooth = s->smooth;
     memcpy(h->U.u_tint, tint ? tint : one, sizeof h->U.u_tint);
@@ -384,6 +389,18 @@ void hud_draw_window(hud *h, const hud_sprite *s, float u0, float width, float x
         float X = sx_(h, x) - floorf(width * 0.5f) * (float)h->n, Y = sy_(h, y);
         quad_px(h, X, Y, X + width * (float)h->n, Y + (float)s->h * h->n, u0 / (float)s->w, 0, (u0 + width) / (float)s->w, 1);
     }
+}
+
+void hud_image_px(hud *h, unsigned tex, float x0, float y0, float x1, float y1)
+{
+    static const float one[4] = {1, 1, 1, 1};
+    if (!tex) return;
+    rb_texture(0, tex);
+    rb_tex_filter(tex, RB_NEAREST, RB_NEAREST);
+    h->U.u_textured = 1;
+    h->U.u_smooth = 0;
+    memcpy(h->U.u_tint, one, sizeof h->U.u_tint);
+    quad_px(h, x0, y0, x1, y1, 0, 0, 1, 1);
 }
 
 void hud_rect(hud *h, float x, float y, float w, float hg, const float rgba[4])

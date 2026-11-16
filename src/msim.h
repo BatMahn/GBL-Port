@@ -161,7 +161,8 @@ typedef struct {
     int          no_player_muzzle;   /* the viewer's cockpit: the player's own flashes would fill the view */
     void        *shot_user;
     unsigned     player_class;   /* USERSTAR GPS +0x18: UserStar's class for the objective nodes */
-    char         player_skel[17], player_loadout[17];   /* from USERSTAR.BWD (shell), else Timber Wolf */
+    char         player_skel[17], player_loadout[17];
+    char         player_rec[17];   /* the record holding the player's GPS (USERSTAR; a trial's AMY_STAR, training's TNx#USS1) */   /* from USERSTAR.BWD (shell), else Timber Wolf */
     int32_t      now;            /* ms */
     int32_t      shot_ticks;     /* GBL 0x15820 / 0x51660: the timer ticks (182 a second) the projectiles have been flown to -
                                   * each step flies them once by the whole ticks since (DAT_000a5c48) */
@@ -317,6 +318,8 @@ int  msim_point_status(const msim *s, int point);
 /* Change Formation (engine 0x10064540 -> 0x10018c70): 0 echelon left, 1 echelon right, 2 line abreast,
  * 3 line astern, 4 vee, 5 wedge (FORMATNS FTBL echelonl .. wedge). Returns 0 on success. */
 int  msim_set_formation(msim *s, int formation);
+/* a node target naming the player: the record holding its GPS (USERSTAR, a trial's AMY_STAR, training's TNx#USS1) */
+int  msim_is_player_rec(const msim *s, const char *t);
 /* INSPECT_TARGET (engine action 0x12 -> input +0x3a, handled at 0x1001d5xx): the player's side inspects the target -
  * a mech (actor >= 0) or a structure (thing >= 0, index into bld) - when within its radius + 200 m; marks it for the
  * scan objectives (MTBL_K_SCAN). Returns 1 "Inspection successful", 2 "Target is beyond inspection radius", 0 nothing

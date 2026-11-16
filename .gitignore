@@ -18,3 +18,5 @@ dist/
 *.app
 *.o
 .DS_Store
+/audit_missions
+__pycache__/

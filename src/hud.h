@@ -86,6 +86,8 @@ void hud_tint(hud *h, int w, int hp, const float mul[3], const float add[3]);
 void hud_set_flash(hud *h, float r, float g, float b, float k);   /* takes effect at once (the HUD's program) */
 float hud_flash_level(const hud *h);
 void hud_rect(hud *h, float x, float y, float w, float hgt, const float rgba[4]);
+/* an RGBA texture over the window-pixel rectangle (x0, y0)-(x1, y1) (top-left origin), point-sampled (the satellite map) */
+void hud_image_px(hud *h, unsigned tex, float x0, float y0, float x1, float y1);
 /* a filled convex polygon of n virtual points {x, y} */
 void hud_poly(hud *h, const float *xy, int n, const float rgba[4]);
 /* Clip the HUD drawing that follows to the virtual rectangle (x, y, w, hgt) (scissor; empty: nothing drawn), until

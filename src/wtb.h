@@ -60,6 +60,9 @@ typedef struct {
 typedef struct {
     char        name[17];
     uint16_t    flags;
+    uint32_t    lod;       /* DOS layout: the u32 at +4 - the object's level-of-detail distance (cm x the view's +0xb8 scale):
+                            * a record's objects are its levels of detail, the walk (GBL 0x3d830) takes the next one while
+                            * this one's distance is reached (ASSUMED: the +4 word is the level record's [0]) */
     wtb_vertex *verts;
     int         vert_count;
     wtb_poly   *polys;

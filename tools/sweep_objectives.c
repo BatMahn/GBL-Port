@@ -99,7 +99,7 @@ static void resolve(const msim *s, const bwd_mission *bm, const char *t, unsigne
     memset(ti, 0, sizeof *ti);
     ti->nav = -1;
     if (!t || !t[0]) return;
-    ti->user = strcasecmp(t, "UserStar") == 0;
+    ti->user = msim_is_player_rec(s, t);
     ti->nav = nav_index(s, t);
     for (i = 0; i < s->actor_count; i++)
         if (strcasecmp(s->actors[i].group, t) == 0) { ti->actors++; if (s->armed[i]) ti->armed++; }

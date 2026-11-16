@@ -268,6 +268,7 @@ typedef struct {
     int coll;
     int objtype;
     int sortkey;
+    int waits;    /* 1 a GT entry's destroyed variant, 2 under one: hidden until the swap */
     int32_t scale[3], rot[3];
 } wnode;
 
@@ -318,6 +319,24 @@ int world3d_append(prj_archive *a, const char *record, int with_damaged, mech3d 
         memcpy(nodes[o.index].scale, o.scale, sizeof o.scale);
         memcpy(nodes[o.index].rot, o.rotation, sizeof o.rotation);
     }
+    {   /* a destructible thing's destroyed variant (GT +2) and everything under it wait for the swap, whatever their
+         * models are called (the engine creates no destroyed variant until its thing is destroyed: flagged 0x800 in the
+         * thing table, 0x10024fe0 -> 0x10025450). Followed by OBJ index through the parent links, so a child of a dummy
+         * node (no part of its own) waits too. GBL: BRANARE1's reactors (VA1RMCR*), FRANARE1's aerofighters, JEEH's
+         * dropships, ZACKARE2's carrier were drawn and collided from the start, inside their intact objects */
+        int q, d2;
+        for (k = 0; k < n; k++)
+            if (strcmp(chunks[k].tag, "GT") == 0 && chunks[k].size >= 4) {
+                int b = (int16_t)(chunks[k].data[2] | chunks[k].data[3] << 8);
+                if (b >= 0 && b < max && nodes[b].present) nodes[b].waits = 1;
+            }
+        for (q = 0; q < max; q++) {
+            int j = q;
+            if (!nodes[q].present || nodes[q].waits) continue;
+            for (d2 = 0; d2 < 64 && j >= 0 && j < max && nodes[j].present; d2++, j = nodes[j].parent)
+                if (nodes[j].waits) { nodes[q].waits = 2; break; }
+        }
+    }
     {   /* SCRG {i16 object}: the record's scrub patch (engine 0x1003e693 -> 0x100113f0, DOS 0x4ed5b -> 0x1f120) */
         int sc = -1;
         for (k = 0; k < n; k++) if (strcmp(chunks[k].tag, "SCRG") == 0 && chunks[k].size >= 2) sc = (int16_t)(chunks[k].data[0] | chunks[k].data[1] << 8);
@@ -343,7 +362,7 @@ int world3d_append(prj_archive *a, const char *record, int with_damaged, mech3d 
                     marker = 1;
         }
         if (((strcasecmp(mr.name, "DUMMY") == 0 || strncasecmp(mr.name, "S_1DUMMY", 8) == 0) && !marker) || mr.size == 0 ||
-            (!with_damaged && strncasecmp(mr.name, "SA", 2) == 0)) { prj_record_free(&mr); continue; }
+            (!with_damaged && (strncasecmp(mr.name, "SA", 2) == 0 || nodes[i].waits))) { prj_record_free(&mr); continue; }
         if (wpos(nodes, i, pos, &yaw, 0) != 0) { prj_record_free(&mr); continue; }
         p = realloc(out->parts, (size_t)(out->part_count + 1) * sizeof *p);
         if (!p) { prj_record_free(&mr); goto done; }
@@ -360,7 +379,7 @@ int world3d_append(prj_archive *a, const char *record, int with_damaged, mech3d 
         snprintf(p->rec, sizeof p->rec, "%.10s", record);
         p->obj_index = i;
         p->parent_obj = nodes[i].parent;
-        p->hidden = with_damaged && strncasecmp(mr.name, "SA", 2) == 0;   /* destroyed variants wait (GT B) */
+        p->hidden = with_damaged && (strncasecmp(mr.name, "SA", 2) == 0 || nodes[i].waits);   /* destroyed variants wait (GT B) */
         /* the projectile / effect pool (MW2_SHT1: lasers, bullets, explosion and PPC cards at 0,0,0) is never linked into
          * the world until used (the front end draws shots and effects itself): its cards were drawn at the map origin */
         if (strncasecmp(record, "MW2_SHT", 7) == 0) p->hidden = 1;
@@ -565,26 +584,36 @@ int world3d_mission(prj_archive *a, const char *scene, int with_damaged, mech3d 
     return used;
 }
 
-/* Formation member offsets (FTBL chunk): char name[24], i32 leader yaw (16.16 deg),
- * then per follower { i32 x, i32 z, i32 yaw 16.16 }. Looked up by name in the
+/* Formation member offsets (FTBL chunk): char name[16], the leader's slot { i32 x, i32 z, i32 yaw 16.16 }, then per
+ * follower { i32 x, i32 z, i32 yaw 16.16 } (made relative to the leader's slot). Looked up by name in the
  * mission's records first, then the shared FORMATNS record. */
 typedef struct { int found; float leader_yaw; int count; int32_t x[16], z[16]; float yaw[16]; } formation;
 
 static int ftbl_match(const bwd_chunk *c, const char *name, formation *f)
 {
-    char nm[25];
+    char nm[17];
     size_t k, n;
     if (strcmp(c->tag, "FTBL") != 0 || c->size < 28) return 0;
-    memcpy(nm, c->data, 24); nm[24] = '\0';
+    memcpy(nm, c->data, 16); nm[16] = '\0';
     if (strcasecmp(nm, name) != 0) return 0;
     f->found = 1;
     f->leader_yaw = (float)(int32_t)((uint32_t)c->data[24] | ((uint32_t)c->data[25] << 8) | ((uint32_t)c->data[26] << 16) | ((uint32_t)c->data[27] << 24)) / 65536.0f;
     n = (c->size - 28) / 12;
     if (n > 16) n = 16;
+    {   /* bytes 16..27 are the leader's own slot {x, z, heading}; GBL 0x2b2d0 subtracts the leader slot's x / z from
+         * every slot, so a formation stored in map coordinates (BROW's turret, GOLD's Block, GREY's greytur1) is
+         * relative to the leader - FORMATNS's stock ones have the leader at 0, 0 */
+        const uint8_t *q0 = c->data + 16;
+        int32_t lx = (int32_t)((uint32_t)q0[0] | ((uint32_t)q0[1] << 8) | ((uint32_t)q0[2] << 16) | ((uint32_t)q0[3] << 24));
+        int32_t lz = (int32_t)((uint32_t)q0[4] | ((uint32_t)q0[5] << 8) | ((uint32_t)q0[6] << 16) | ((uint32_t)q0[7] << 24));
+        for (k = 0; k < n; k++) {
+            const uint8_t *q = c->data + 28 + k * 12;
+            f->x[k] = (int32_t)((uint32_t)q[0] | ((uint32_t)q[1] << 8) | ((uint32_t)q[2] << 16) | ((uint32_t)q[3] << 24)) - lx;
+            f->z[k] = (int32_t)((uint32_t)q[4] | ((uint32_t)q[5] << 8) | ((uint32_t)q[6] << 16) | ((uint32_t)q[7] << 24)) - lz;
+        }
+    }
     for (k = 0; k < n; k++) {
         const uint8_t *q = c->data + 28 + k * 12;
-        f->x[k] = (int32_t)((uint32_t)q[0] | ((uint32_t)q[1] << 8) | ((uint32_t)q[2] << 16) | ((uint32_t)q[3] << 24));
-        f->z[k] = (int32_t)((uint32_t)q[4] | ((uint32_t)q[5] << 8) | ((uint32_t)q[6] << 16) | ((uint32_t)q[7] << 24));
         f->yaw[k] = (float)(int32_t)((uint32_t)q[8] | ((uint32_t)q[9] << 8) | ((uint32_t)q[10] << 16) | ((uint32_t)q[11] << 24)) / 65536.0f;
     }
     f->count = (int)n;
@@ -631,7 +660,7 @@ int world3d_actors(prj_archive *a, const char *scene, world_actor **actors, int 
     *count = 0;
     bwd_mission m;
     const bwd_record *scn = NULL;
-    const bwd_chunk *tables[64];
+    const bwd_chunk *tables[64] = {0};
     int ntables = 0, i, k, per_table[64], bwd_type = prj_find_type(a, "BWD");
 
     if (bwd_mission_load(a, scene, &m) != 0) return -1;
@@ -643,7 +672,13 @@ int world3d_actors(prj_archive *a, const char *scene, world_actor **actors, int 
     memset(star_tex, 0, sizeof star_tex);
     if (scn)
         for (k = 0; k < scn->chunk_count; k++) {
-            if (strcmp(scn->chunks[k].tag, "MTBL") == 0 && ntables < 64) tables[ntables++] = &scn->chunks[k];
+            if (strcmp(scn->chunks[k].tag, "MTBL") == 0 && scn->chunks[k].size >= 4) {
+                /* by the table number at +0 (what a unit's GPS table names, as mtbl_logic_init does), not by the chunk's
+                 * place in the record: SABLSCN1 stores table 6 second, so every later group took the table before it */
+                uint32_t tn = (uint32_t)scn->chunks[k].data[0] | (uint32_t)scn->chunks[k].data[1] << 8 |
+                              (uint32_t)scn->chunks[k].data[2] << 16 | (uint32_t)scn->chunks[k].data[3] << 24;
+                if (tn < 64) { tables[tn] = &scn->chunks[k]; if ((int)tn + 1 > ntables) ntables = (int)tn + 1; }
+            }
             /* STAR: per state table, 24-byte entries { u32, u32, char formation[16] } */
             if (strcmp(scn->chunks[k].tag, "STAR") == 0) {
                 size_t e;
@@ -675,7 +710,7 @@ int world3d_actors(prj_archive *a, const char *scene, world_actor **actors, int 
                 if (g.table >= 0 && g.table < 64) per_table[g.table]++;
                 continue;
             }
-            if (g.table < 0 || g.table >= ntables || tables[g.table]->size < 106) continue;
+            if (g.table < 0 || g.table >= ntables || !tables[g.table] || tables[g.table]->size < 106) continue;
             start_id = (uint16_t)(tables[g.table]->data[102] | (tables[g.table]->data[103] << 8));
             start_name = prj_symbol_name(a, bwd_type, -1); /* placeholder, resolved below */
             start_name = NULL;

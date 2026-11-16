@@ -536,7 +536,8 @@ static int set_layer(glr *r, int li, const mech3d *m, const uint8_t palette[256]
         if (pm->object_count <= 0) continue;   /* (a Titanium object with no model) */
         o = &pm->objects[0];
         for (k = 0; k < o->poly_count; k++)
-            if (o->polys[k].n >= 3) cap += (size_t)(o->polys[k].n - 2) * 3 + (((o->polys[k].color >> 12) & 7) == 3 ? 6 : 0);
+            if (o->polys[k].n >= 3) cap += (size_t)(o->polys[k].n - 2) * 3 + (((o->polys[k].color >> 12) & 7) == 3 ? 6 : 0)
+                                          + (((o->polys[k].color >> 12) & 7) == 2 ? 6 * (size_t)o->polys[k].n : 0);   /* (type 2: its outline's line boxes) */
             else if (o->polys[k].n <= 2) cap += 6;   /* (a point: the DOS look's one pixel; a line: its box) */
     }
     buf = malloc((cap ? cap : 1) * FLOATS_PER_VERTEX * sizeof *buf);
@@ -648,6 +649,44 @@ static int set_layer(glr *r, int li, const mech3d *m, const uint8_t palette[256]
                         for (c0 = 0; c0 < 3; c0++) { if (f[c0] < mn[c0]) mn[c0] = f[c0]; if (f[c0] > mx[c0]) mx[c0] = f[c0]; }
                         pos[GLR_SLOTS]++;
                         n++;
+                    }
+                    continue;
+                }
+                if (q->n >= 3 && r->dos && !model->extended && !part->dos_pit && !part->shadow && ((q->color >> 12) & 7) == 2) {
+                    /* colour type 2 (the shield domes, hex glass, lattices): its outline. GBL 0x39570 returns ((w & 0xff0) >> 4)
+                     * | 0x2000 for it, and 0x3d780 -> 0x3c610 draws a 0x2000 polygon as lines (0x54fa9) from each record back to
+                     * the one before, then from record 0 to the last, in the word's low byte (w >> 4) & 0xff, unshaded - the
+                     * port had filled it. One line box per edge as the two-corner lines above (world.frag keeps 0x54fa9's
+                     * pixels), all of them at the polygon's place in the draw list (listed as any polygon: one-sided, cut at
+                     * the near plane). ASSUMED: an edge through the near plane cut on its own (the original's records there
+                     * add the near plane's segment between the two cut points, not drawn here) */
+                    float wv[WTB_MAX_POLY_VERTS][3];
+                    int e2, ln;
+                    const int nq = q->n > WTB_MAX_POLY_VERTS ? WTB_MAX_POLY_VERTS : q->n;
+                    if (pass == 0) { count[GLR_SLOTS] += 6 * (size_t)nq; continue; }
+                    for (e2 = 0; e2 < nq; e2++) {
+                        const wtb_vertex *pv = &o->verts[q->idx[e2]];
+                        if (part->has_rot) { const float *R = part->rot; int c3; for (c3 = 0; c3 < 3; c3++) wv[e2][c3] = R[c3 * 3] * (float)pv->x + R[c3 * 3 + 1] * (float)pv->y + R[c3 * 3 + 2] * (float)pv->z + (float)part->pos[c3]; }
+                        else { float cy = cosf(part->yaw * 3.14159265f / 180.0f), sy = sinf(part->yaw * 3.14159265f / 180.0f);
+                               wv[e2][0] = cy * (float)pv->x + sy * (float)pv->z + (float)part->pos[0]; wv[e2][1] = (float)(pv->y + part->pos[1]); wv[e2][2] = -sy * (float)pv->x + cy * (float)pv->z + (float)part->pos[2]; }
+                    }
+                    for (ln = 1; ln <= nq; ln++) {   /* record ln -> ln - 1, then record 0 -> the last */
+                        const int sa = ln < nq ? ln : 0, sb = ln < nq ? ln - 1 : nq - 1;
+                        pfirst = pos[GLR_SLOTS];
+                        for (a = 0; a < 6; a++) {
+                            float *f = buf + pos[GLR_SLOTS] * FLOATS_PER_VERTEX;
+                            memset(f, 0, FLOATS_PER_VERTEX * sizeof *f);
+                            memcpy(sph + pos[GLR_SLOTS] * 4, psph, sizeof psph);
+                            f[0] = wv[sa][0]; f[1] = wv[sa][1]; f[2] = -wv[sa][2];
+                            f[3] = wv[sb][0]; f[4] = wv[sb][1]; f[5] = -wv[sb][2];
+                            f[8] = 5.0f; f[9] = (float)((q->color >> 4) & 0xff);
+                            f[11] = (float)(pfirst + 1);
+                            f[12] = (float)(65536 * (410 + a));
+                            if (dlp >= 0) tic[pos[GLR_SLOTS] * 4] = (float)(dlp + k + 1);
+                            for (c0 = 0; c0 < 3; c0++) { if (f[c0] < mn[c0]) mn[c0] = f[c0]; if (f[c0] > mx[c0]) mx[c0] = f[c0]; }
+                            pos[GLR_SLOTS]++;
+                            n++;
+                        }
                     }
                     continue;
                 }
@@ -1686,6 +1725,9 @@ static void dos_cam_rows(float yaw_deg, float pitch_deg, float roll_deg, int64_t
     }
     for (i = 0; i < 3; i++) { rows[i][0] = m[i]; rows[i][1] = m[3 + i]; rows[i][2] = m[6 + i]; }   /* the transpose */
 }
+void glr_dos_cam_rows(float yaw_deg, float pitch_deg, float roll_deg, int64_t rows[3][3]) { dos_cam_rows(yaw_deg, pitch_deg, roll_deg, rows); }
+void glr_dos_vertex(const mech3d_part *p, const wtb_vertex *v, int32_t out[3]) { dl_vertex(p, v, out); }
+void glr_dos_normal_corners(const wtb_object *o, const wtb_poly *q, int *a, int *b, int *c) { dos_normal_corners(o, q, a, b, c); }
 static int64_t dos_round16(int64_t v) { return (v >> 16) + ((v >> 15) & 1); }
 
 static int64_t dos_rdiv(int64_t n, int64_t d) { int64_t q = (n < 0 ? -n : n) / (d < 0 ? -d : d); return (n < 0) != (d < 0) ? -q : q; }

@@ -37,6 +37,7 @@ static int parse_object(const uint8_t *d, size_t len, size_t *off, wtb_object *o
     o->vert_count = rd16(d + p + 0x18);
     o->poly_count = rd16(d + p + 0x1A);
     o->flags = rd16(d + p + 0x1C);
+    o->lod = rd32(d + p + 4);
     p += 0x20;
 
     if ((size_t)o->vert_count * vsize > len - p) return -1;

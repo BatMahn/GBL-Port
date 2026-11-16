@@ -113,7 +113,7 @@ HDRS = $(wildcard src/*.h tools/*.h)
 # the renderer: the world (glr.c), the HUD (hud.c) and the render backend - on SDL_GPU (rb_gpu.c; the shaders compiled
 # for Vulkan, Direct3D 12 and Metal in rb_shaders.c - generated, checked in: "make shaders" remakes it; SDL loads the GPU
 # API at run time: nothing graphics-specific to link), or RB=gl12 (OpenGL 1.2, linked: RB_LIBS)
-GL3D_SRC = $(RB_SRC) src/hud.c src/shp.c src/glr.c src/skygnd.c src/anim.c src/mek.c src/mtbl.c src/msim.c src/fx.c src/combat.c src/ai.c src/mech3d.c src/render.c src/tex.c src/wtb.c src/bwd.c src/prj.c src/datapath.c
+GL3D_SRC = $(RB_SRC) src/hud.c src/shp.c src/glr.c src/satmap.c src/skygnd.c src/anim.c src/mek.c src/mtbl.c src/msim.c src/fx.c src/combat.c src/ai.c src/mech3d.c src/render.c src/tex.c src/wtb.c src/bwd.c src/prj.c src/datapath.c
 
 missionsim: tools/missionsim.c src/msim.c src/fx.c src/ai.c src/combat.c src/mtbl.c src/anim.c src/mek.c src/mech3d.c src/wtb.c src/bwd.c src/prj.c src/datapath.c $(HDRS)
 	$(CC) $(CFLAGS) -Wno-conversion -Isrc $(filter %.c,$^) -o $@ -lm
@@ -202,6 +202,9 @@ dist: gbl
 
 # The objective sweep: every mission run headless by a perfect player (tools/sweep_objectives.c).
 # make sweep GBL=/path/to/install   (SWEEP_ARGS="-v BASSSCN1" for one scene, verbose)
+AUDIT_SRC = tools/audit_missions.c src/lance.c src/msim.c src/fx.c src/ai.c src/combat.c src/mtbl.c src/anim.c src/mek.c src/mech3d.c src/wtb.c src/bwd.c src/prj.c src/datapath.c
+audit_missions: $(AUDIT_SRC) $(HDRS)
+	$(CC) $(CFLAGS) -Wno-conversion -Isrc $(AUDIT_SRC) -o $@ -lm
 SWEEP_SRC = tools/sweep_objectives.c src/lance.c src/msim.c src/fx.c src/ai.c src/combat.c src/mtbl.c src/anim.c src/mek.c src/mech3d.c src/wtb.c src/bwd.c src/prj.c src/datapath.c
 sweep_objectives: $(SWEEP_SRC) $(HDRS)
 	$(CC) $(CFLAGS) -Wno-conversion -Isrc $(SWEEP_SRC) -o $@ -lm

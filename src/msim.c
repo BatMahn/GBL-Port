@@ -181,6 +181,16 @@ int msim_set_formation(msim *s, int formation)
     return 0;
 }
 
+/* a node target naming the player: the record that holds the player's GPS (engine: the mission tree's GPS with
+ * +0x0e == 0) - USERSTAR in the campaign and Instant Action, the trials' own AMY_STAR / JENNSTAR / CINDUSER ...,
+ * training's TNx#USS1 - not the name "UserStar" (the trials' and training's player-target nodes never matched) */
+int msim_is_player_rec(const msim *s, const char *t)
+{
+    if (!t || !t[0]) return 0;
+    if (s->player_rec[0]) return strcasecmp(t, s->player_rec) == 0;
+    return strcasecmp(t, "UserStar") == 0;
+}
+
 /* position of a named target: nav point, a group (by its spawn record), or the player */
 static int target_pos(msim *s, const char *name, float *x, float *z, float *radius)
 {
@@ -188,7 +198,7 @@ static int target_pos(msim *s, const char *name, float *x, float *z, float *radi
     int i;
     *radius = 20000.0f;
     /* objects and groups: 200 m (engine 0x10009b80 compares squared distance with 4e8) */
-    if (strcasecmp(name, "UserStar") == 0) { *x = s->player[0]; *z = s->player[2]; *radius = 20000.0f; return 0; }
+    if (msim_is_player_rec(s, name)) { *x = s->player[0]; *z = s->player[2]; *radius = 20000.0f; return 0; }
     if (n) { *x = n->x; *z = n->z; *radius = n->radius; return 0; }
     for (i = 0; i < s->actor_count; i++)
         if (s->actors[i].leader && strcasecmp(s->actors[i].group, name) == 0) {
@@ -262,7 +272,7 @@ static int cb_targets(void *u, int table, int node, uint32_t kind, const char *t
     (void)node;
     *n_ok = 0;
     if (!t) return 0;
-    if (strcasecmp(t, "UserStar") == 0 && (class_widen(s->player_class) & kind)) { n++; ok += tgt_test(s, table, kind, 2, -1); }
+    if (msim_is_player_rec(s, t) && (class_widen(s->player_class) & kind)) { n++; ok += tgt_test(s, table, kind, 2, -1); }
     for (i = 0; i < s->actor_count; i++)
         if (strcasecmp(s->actors[i].group, t) == 0 && (class_widen(s->actors[i].obj_class) & kind)) { if (n < 16) { n++; ok += tgt_test(s, table, kind, 2, i); } else over++; }
     for (i = 0; i < s->nav_count; i++)
@@ -438,6 +448,7 @@ int msim_init(msim *s, prj_archive *a, const char *scene, world_actor *actors, i
                         for (k = 0; s->player_skel[k]; k++) s->player_skel[k] = (char)toupper((unsigned char)s->player_skel[k]);
                         for (k = 0; s->player_loadout[k]; k++) s->player_loadout[k] = (char)toupper((unsigned char)s->player_loadout[k]);
                         from_tree = 1;
+                        snprintf(s->player_rec, sizeof s->player_rec, "%s", pm.records[r].name);
                     }
                 bwd_mission_free(&pm);
             }
@@ -1068,7 +1079,7 @@ static int node_target_list(const msim *s, const mtbl_node *n, int *code, int ma
     int i, c = 0;
     const char *t = n->target;
     if (!t[0] || strcasecmp(t, "NULL") == 0) return 0;
-    if (strcasecmp(t, "UserStar") == 0 && (class_widen(s->player_class) & n->kind) && c < max) code[c++] = 0x20000;
+    if (msim_is_player_rec(s, t) && (class_widen(s->player_class) & n->kind) && c < max) code[c++] = 0x20000;
     for (i = 0; i < s->actor_count && c < max; i++)
         if (strcasecmp(s->actors[i].group, t) == 0 && (class_widen(s->actors[i].obj_class) & n->kind)) code[c++] = 0x20000 | (i + 1);
     for (i = 0; i < s->nav_count && c < max; i++)
@@ -2068,7 +2079,7 @@ void msim_step(msim *s, int32_t dt_ms)
         } else if (cur >= 0) {
             const mtbl_node *n = &s->logic.tables[ac->table].nodes[cur];
             float tx, tz, r;
-            if (strcasecmp(n->target, "UserStar") == 0 && !s->player_unit.destroyed) {
+            if (msim_is_player_rec(s, n->target) && !s->player_unit.destroyed) {
                 /* attack order: the goal is the player */
                 v.has_goal = 1; v.goal_radius = 10000.0f; v.goal_dist = v.enemy_dist; v.goal_bearing = v.enemy_bearing;
             } else if (target_pos(s, n->target, &tx, &tz, &r) == 0) {
@@ -3102,7 +3113,7 @@ static int order_attacks_player(const msim *s, int i)
     const mtbl_node *n;
     if (cur < 0) return 0;
     n = &s->logic.tables[s->actors[i].table].nodes[cur];
-    return (n->kind == MTBL_K_DESTROY1 || n->kind == MTBL_K_DESTROY2) && strcasecmp(n->target, "UserStar") == 0;
+    return (n->kind == MTBL_K_DESTROY1 || n->kind == MTBL_K_DESTROY2) && msim_is_player_rec(s, n->target);
 }
 
 /* world part q is the intact object of a destroyed thing: its object entry carries 0x200 (0x10025180: +0xc |= 0xa00),
@@ -3802,7 +3813,7 @@ static void combat_step(msim *s, float dt)
                 if (MSIM_IS_THING(tg) && thing_point(s, MSIM_THING_OF(tg), tq)) {
                     /* a thing (+0x34 == 0x400): its object (0x10025780) takes the hit there - a thing's object (+2 flags
                      * 0x200) the damage (0x10046c20) at the projectile's point */
-                    int ft = fx_impact_type(combat_weapon_visual(sh->weapon), FX_HIT_GROUND);
+                    int ft = fx_impact_type(combat_weapon_visual(sh->weapon), FX_HIT_STRUCT);   /* (its object 0x200: flags 2) */
                     float hp3[3] = {sh->x, sh->y, sh->z};
                     if (ft >= 0) effect(s, ft, hp3, missile_fx(sh->weapon));
                     building_damage(s, MSIM_THING_OF(tg), combat_weapon_damage(sh->weapon), sh->owner, hp3);
@@ -3846,7 +3857,12 @@ static void combat_step(msim *s, float dt)
                                                                          * unit's piece wins */
                     hit_unit = -2;
                     float hp3[3] = {o[0] + dv[0] * tb, o[1] + dv[1] * tb, o[2] + dv[2] * tb};
-                    int ft = fx_impact_type(combat_weapon_visual(sh->weapon), FX_HIT_GROUND), b2 = shot_thing(s, part);
+                    /* the hit flags (GBL 0x516b0, the projectile's +9): a unit's object (type 0x100) 1, a thing's (0x200 -
+                     * every GT's intact or destroyed object, indestructible ones too) or a projectile's (0x400) 2, any other
+                     * object 4 - mapped to the effect by 0x52040 as 0x200 (the structure hit: missiles 0x13 / 0x14, lasers,
+                     * bullets and the PPC their own) or 0x400 (the ground's). The port had taken every object as ground */
+                    const int sf = part >= 0 && part < s->world->part_count && s->world->parts[part].gt_side > 0 ? FX_HIT_STRUCT : FX_HIT_GROUND;
+                    int ft = fx_impact_type(combat_weapon_visual(sh->weapon), sf), b2 = shot_thing(s, part);
                     if (ft >= 0) effect(s, ft, hp3, missile_fx(sh->weapon));
                     if (b2 >= 0) building_damage(s, b2, combat_weapon_damage(sh->weapon), sh->owner, hp3);
                     if (sh->owner == -1 && sh->homing != -2 && getenv("MW2_MISSILE_TRACE"))   /* TEST ONLY: a guided shot's end */
@@ -5418,6 +5434,9 @@ static void buildings_init(msim *s, const mech3d *w)
                 if (strcmp(c[k].tag, "AFFL") == 0 && c[k].size >= 4) { affl = (int32_t)((uint32_t)d[0] | (uint32_t)d[1] << 8 | (uint32_t)d[2] << 16 | (uint32_t)d[3] << 24); continue; }
                 if (strcmp(c[k].tag, "GT") != 0 || c[k].size < 68) continue;
                 a = (int16_t)(d[0] | d[1] << 8); b = (int16_t)(d[2] | d[3] << 8); hp = (int16_t)(d[16] | d[17] << 8);
+                for (q = 0; q < w->part_count; q++)   /* (every thing's objects for the satellite map's colours: 0x2b5e0) */
+                    if ((w->parts[q].obj_index == a || (b >= 0 && w->parts[q].obj_index == b)) && strcmp(w->parts[q].rec, w->parts[i].rec) == 0)
+                        w->parts[q].gt_side = 1 + (affl < 0 || affl >= 64 ? 2 : team_all[affl]);
                 if (((d[20] | d[21] << 8) & 0x8000) && (d[18] & 0xf0) != 0x70)   /* a debris node (0x10025450 / 0x10015530) */
                     for (q = 0; q < w->part_count; q++)
                         if (w->parts[q].obj_index == a && strcmp(w->parts[q].rec, w->parts[i].rec) == 0) w->parts[q].gt_debris = 1;

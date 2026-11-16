@@ -343,6 +343,10 @@ static int gl_lab_dump(const char *list)
 static void gl_ed_masses(const medit *e, mek_mass *m)   /* = ed_masses on gl_masses */
 {
     gl_masses(&e->d, m);
+    /* Endo-steel chosen counts at once, its 7 criticals placed or still unassigned: the shell's toggle 0x32900 flips
+     * the flag 0xabe98 that the masses read (0x34b30 sets it only when loading a design, from a placed 8001) */
+    m->endo = ed_endo(e); m->ferro = ed_ferro(e);
+    m->internal = m->endo ? e->d.tonnage / 20.0 : e->d.tonnage / 10.0;
     m->dbl = e->dbl; m->nsinks = e->dbl ? m->dissip / 2 : m->dissip; m->sinks = m->nsinks > 10 ? m->nsinks - 10 : 0;
     m->armor = e->halftons * 0.5;
     m->equip = e->masc;

@@ -1,5 +1,34 @@
 # Changelog
 
+## 1.0.2 (2026-11-16)
+
+- **Satellite map (F3):** now drawn the way the original draws it - the ground shaded by height, 'Mechs, vehicles and
+  buildings black with an outline in their side's colour, shots as small marks, the field-of-view wedge running out to
+  the window's edge, and the nav and target markers placed by the map itself (a target off the map is shown at the
+  map's edge). The aiming reticle and the target bracket are hidden while the map is up, as in the original. The zoom
+  steps match the original's. The map looks the same in the DOS, ENHANCED and TITANIUM looks.
+- **Hex glass and shield domes:** the glass panels of the trial arenas and the shield domes are drawn as the original
+  draws them, as outlines and not as solid panels (DOS and ENHANCED looks; the TITANIUM look is unchanged).
+- **Hits on buildings and other things:** shots hitting a building or another "thing" (including indestructible ones
+  and wrecks) now show the structure impact effect, as in the original; before, they showed the ground impact.
+- **HUD pictures:** when the HUD's small pictures are drawn enlarged, they no longer show a thin line from their
+  opposite edge along one side.
+- **Wrecks hidden until something is destroyed:** wrecks that sat inside their intact objects from the start of a
+  mission - the reactors (BRAN), the aerofighters (FRAN), the dropships (JEEH) and the carrier (ZACK) - are no
+  longer drawn or solid until the object is actually destroyed. Shots no longer stop on them.
+- **Formations:** units in formation now stand around their leader as the original places them. Before, some turrets
+  and blocks (BROW, GOLD, GREY) stood up to a few kilometres away from where they belong.
+- **Group start points:** in the SABL mission each enemy group now starts at its own start point; before, every group
+  after the first took the start point meant for the group before it.
+- **Trials and training:** objectives in the trials and training missions that name the player are now recognised,
+  so they complete as in the original.
+- **Weapon list:** a weapon destroyed by a critical hit is shown dark, as in the original, not red.
+- **Mech Lab:** choosing Endo-steel saves its mass at once, as in the original.
+- **Mission data check (for developers):** a new tool, `make audit_missions`, loads every mission without drawing and
+  reports units outside the mission area, far from their leader, floating or sunk, overlapping, wrongly shown or hidden
+  objects and stray objects at the map's centre. Every finding in the shipped missions is how the original's data has
+  it; they are listed in docs/gbl/audit_missions.md.
+
 ## 1.0.1 (2026-11-10)
 
 - **Change the look during a mission:** choosing another look in the in-game menu (Graphics, Renderer) now changes it

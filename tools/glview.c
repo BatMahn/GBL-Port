@@ -52,6 +52,7 @@
 #include "msim.h"
 #include "fx.h"
 #include "glr.h"
+#include "satmap.h"
 #include "hud.h"
 #include "portcfg.h"
 #include "shp.h"
@@ -241,6 +242,17 @@ static int       g_group_fire, g_cur_group, g_htal;   /* F6: TOGGLE_HTAL */
 static int       g_pit_first = -1;   /* this frame: index of the first cockpit-piece part in the actor layer */
 static mech3d    g_frame_layer;     /* this frame's actor layer, kept for the viewport pass */
 static int       g_sat_i;   /* satellite map range 1000 m / 2^i full width (descriptor 4: 100000 .. 6250 cm) */
+/* the satellite map's picture (src/satmap.c: GBL 0x11910 mode 4 in place of the 3D view, in every look): the planet's
+ * height range for its shading (DAT_000a59e0 / 59e4: PLNT +40 / +36 when either is set, else 0 / 6400; 0x115e0 at the
+ * mission's start lowers the minimum 10 m), the walk, its 8-bit picture and the texture it is shown with */
+static int32_t   g_sat_hmin = 0, g_sat_hmax = 6400;
+static satmap   *g_sat;
+static int       g_sat_drawn;   /* the map was drawn this frame (its projection for the nav / target sprites) */
+static uint8_t  *g_sat_pix, *g_sat_rgba;
+static size_t    g_sat_cap;
+static rb_tex    g_sat_tex;
+static const glr_sprite *g_sat_spr;   /* this frame's effect cards (fire, explosions, smoke): drawn on the map too */
+static int       g_sat_nspr;
 static int       g_radar_big, g_satmap;   /* F2 NEXT_RADAR_MODE (small / large centred), F3 RADAR_MAP_TOGGLE */
 /* the radar range per radar mode (index into RADAR_CM): each mode descriptor keeps its own (+0x18: small 1 and large 2 both
  * {range 200000, reset 200000, min 50000, max 400000} - the label shows half: 1.0 km), all reset once at the mission's
@@ -644,14 +656,14 @@ static float g_dos_b8;   /* the main view's +0xb8 / 65536 (0x3f9e0), set before 
 static int   g_sim_kind = 3;
 static float g_sim_b8;   /* g_dos_b8 for the simulation (g_sim_kind 3) */
 static Uint32 g_clock_skip;   /* ms the look switches took (SDL_GetTicks): not game time (the frame's dt, the sky drift) */
-static struct { mech3d m[4]; int ok[4], tried; char skel[17]; } g_alod[64];
+static struct { mech3d m[4]; int ok[4], tried; char skel[17]; } g_alod[65];   /* [64]: the player (the satellite map) */
 static mech3d *actor_lod(int k, const mech3d *full, const char *skel, float dist)
 {
     float a0 = g_dos_b8 > 0 ? g_dos_b8 : 2.0f * (g_zoom > 1 ? g_zoom : 1.0f) / (float)g_lodq;
     int r = dist < 0 ? (int)-dist : dist < a0 * 3600.0f ? 0 : dist < a0 * 8500.0f ? 1 : dist < a0 * 22500.0f ? 2 : 3;   /* dist -r: representation r */
     mech3d *m;
     if (getenv("MW2_NO_LOD") && dist >= 0) r = 0;
-    if (r == 0 || k < 0 || k >= 64 || !g_ma) return NULL;
+    if (r == 0 || k < 0 || k > 64 || !g_ma) return NULL;
     if (!g_alod[k].tried || strcmp(g_alod[k].skel, skel) != 0) {
         int q;
         for (q = 1; q < 4; q++) if (g_alod[k].ok[q]) { mech3d_free(&g_alod[k].m[q]); g_alod[k].ok[q] = 0; }
@@ -1653,6 +1665,166 @@ static int thing_targetable(int b, float *dist)
  * t cycles Nova, Jenner, Firemoth - the resting Firemoth (table 2, "rest", 1.40 km) never; TNJ1SCN1: t takes the
  * (neutral) Instructor only, not the resting Timber Wolf. dist: the range (3D) */
 static int unit_side(int q) { return g_actors[q].friendly ? 0 : g_actors[q].alliance; }
+
+/* the satellite map (F3, radar mode 4): GBL 0x118e0 -> 0x11910 draws it in place of the 3D view (src/satmap.c) - every
+ * object of the original's list as the map's hooks colour it, the field-of-view wedge over it - into the w x h frame;
+ * the HUD follows as in the cockpit (the nav and target sprites by the map's projection: g_sat_drawn). The same in every
+ * look (the original's map; TITANIUM's and ENHANCED's renderers have none of their own in GBL - the DOS models, the
+ * mission's palette) */
+/* the units' levels of detail as 0x11910 has them picked for the map (0x37fa0 with DISPLAY DETAIL 6: the player's unit
+ * ranked too, not held at its cockpit set): from the map's camera (cam: x, the range's height, z) against +0xb8 x 3600
+ * / 8500 / 22500 (b8: 16.16); the nearest by level distance 0 within the first, the next two 1 within the second, else
+ * 2 / 3; a destroyed unit 1 (the player 0). out[k] for actor k, out[64] the player (the order of the unit table: the
+ * player first - ASSUMED) */
+static void sat_lods(const float cam[3], float b8, int out[65])
+{
+    int k, n1 = -1, n2 = -1, n3 = -1, cnt = 0, pend[65];
+    const int32_t t0 = (int32_t)(b8 * 3600.0f), t1 = (int32_t)(b8 * 8500.0f), t2 = (int32_t)(b8 * 22500.0f);
+    float hmin = (float)t0, dd[65];
+    for (k = -1; k < g_actor_count && k < 64; k++) {
+        const int i = k < 0 ? 64 : k;
+        const float ux = k < 0 ? (float)g_pl.origin[0] : (float)g_actors[k].mech.origin[0], uz = k < 0 ? (float)g_pl.origin[2] : (float)g_actors[k].mech.origin[2];
+        const float uy = k < 0 ? g_sim.player_unit.y : (k < g_sim.actor_count ? g_sim.units[k].y : (float)g_actors[k].mech.origin[1]);
+        const int dead = k < 0 ? g_sim.player_unit.destroyed : g_sim.armed[k] && g_sim.units[k].destroyed;
+        const float dx = ux - cam[0], dy = uy - cam[1], dz = uz - cam[2], hl = sqrtf(dx * dx + dz * dz);
+        pend[i] = 0;
+        if (dead) { out[i] = k < 0 ? 0 : 1; continue; }
+        pend[i] = 1; dd[i] = sqrtf(dx * dx + dy * dy + dz * dz);
+        if (hl < hmin) { hmin = hl; n3 = n2; n2 = n1; n1 = i; }
+    }
+    for (k = -1; k < g_actor_count && k < 64; k++) {
+        const int i = k < 0 ? 64 : k;
+        const int32_t d = (int32_t)dd[i];
+        if (!pend[i]) continue;
+        if (i == n1 && d < t0) out[i] = 0;
+        else if (i == n2 || (i == n3 && d < t1)) { out[i] = 1; cnt++; }
+        else if ((n2 < 0 || n3 < 0) && d < t1 && cnt < 3) { out[i] = 1; cnt++; }
+        else out[i] = d >= t2 ? 3 : 2;
+    }
+}
+static void sat_draw(int w, int h)
+{
+    const int mw = (int64_t)w * 3 > (int64_t)h * 4 ? h * 4 / 3 : w;   /* the 4:3 part of a wider window (ASSUMED: the map
+                                                                        * at the same scale, wider) */
+    const uint32_t zoom = (uint32_t)lrintf((g_zoom > 1 ? g_zoom : 1.0f) * 65536.0f);
+    const size_t np = (size_t)w * (size_t)h;
+    const float px = g_sim.player_eye_ok ? g_sim.player_eye[0] : (float)g_pl.origin[0], pz = g_sim.player_eye_ok ? g_sim.player_eye[2] : (float)g_pl.origin[2];
+    const combat_unit *pu = &g_sim.player_unit;
+    const int pl_out = pu->destroyed || pu->shutdown;   /* player +0x14 & 0x16: no wedge, its mech left out (0x124a0) */
+    int k, q, lod[65];
+    g_sat_drawn = 0;
+    if (w < 2 || h < 2 || !g_sim_ok || !g_pl_ok) return;
+    if (!g_sat && !(g_sat = satmap_new())) return;
+    if (g_sat_cap < np) {
+        free(g_sat_pix); free(g_sat_rgba);
+        g_sat_pix = malloc(np); g_sat_rgba = malloc(np * 4);
+        if (!g_sat_pix || !g_sat_rgba) { free(g_sat_pix); free(g_sat_rgba); g_sat_pix = g_sat_rgba = NULL; g_sat_cap = 0; return; }
+        g_sat_cap = np;
+    }
+    satmap_view(g_sat, w, h, mw, (int32_t)lrintf(px), (int32_t)lrintf(pz), 100000 >> g_sat_i, zoom, g_lodq,
+                g_sat_hmin - 1000, g_sat_hmax - (g_sat_hmin - 1000));
+    {
+        const float cam[3] = {px, (float)(100000 >> g_sat_i), pz};
+        const uint32_t zc = zoom > 0x100000u ? 0x100000u : zoom < 0x8000u ? 0x8000u : zoom;
+        sat_lods(cam, (float)(((int64_t)zc * (w >> 1)) / (int64_t)(g_lodq * 160)) / 65536.0f, lod);
+    }
+    if (g_sim.world) {   /* the world's objects: a thing's (GT) intact / destroyed object as type 0x200 of its side (gt_side) -
+                          * that object only, every GT whatever its hit points (DOSBox HOFFSCN1: the dropship's hull
+                          * outlined in 0x0f, its jet flame - a child object - shaded by height) */
+        const mech3d *wm = g_sim.world;
+        for (q = 0; q < wm->part_count; q++) {
+            const mech3d_part *p = &wm->parts[q];
+            const int b = p->gt_side - 1;
+            if (p->hidden || p->dos_sky || p->dos_pit || p->shadow || (p->sparse && world3d_density_low)) continue;
+            if (b >= 0) satmap_part(g_sat, p, SATMAP_THING, b, dos_link_world(q));
+            else satmap_part(g_sat, p, SATMAP_WORLD, 2, dos_link_world(q));
+        }
+    }
+    for (k = 0; k < g_actor_count; k++) {   /* the units (0x124a0: none with flags & 0x16 - destroyed, shut down, held) */
+        const mech3d *src = &g_actors[k].mech, *lm;
+        const int sd = g_actors[k].friendly ? 0 : g_actors[k].alliance == 2 ? 2 : 1;
+        if (g_sim.scattered && g_sim.scattered[k]) continue;
+        if (g_sim.armed[k] && (g_sim.units[k].destroyed || g_sim.units[k].shutdown || (g_sim.powered_down && g_sim.powered_down[k]))) continue;
+        lm = actor_lod(k, src, g_actors[k].skel, k < 64 ? -(float)lod[k] : 0.0f);
+        if (lm) src = lm;
+        for (q = 0; q < src->part_count; q++) {
+            const unsigned fly = g_sim.armed[k] ? mech3d_fly_mask(g_sim.units[k].loc_gone) : 0;
+            if (mech3d_fly_loc(src, q, fly)) continue;
+            satmap_part(g_sat, &src->parts[q], SATMAP_UNIT, sd, (k < 64 ? g_ulink[k] << 8 : 0) + q);
+        }
+    }
+    if (!pl_out) {   /* the player's own mech, at its level for the map */
+        const unsigned fly = mech3d_fly_mask(pu->loc_gone);
+        const mech3d *pm = actor_lod(64, &g_pl, g_sim.player_skel, -(float)lod[64]);
+        if (!pm) pm = &g_pl;
+        for (q = 0; q < pm->part_count; q++)
+            if (!mech3d_fly_loc(pm, q, fly)) satmap_part(g_sat, &pm->parts[q], SATMAP_UNIT, 0, (g_ulink_pl << 8) + q);
+    }
+    {   /* the shots in flight (their pool objects, type 0x400) */
+        static mech3d_part *pp;
+        static int ppcap;
+        if (ppcap < g_sim.shot_count) { free(pp); ppcap = g_sim.shot_count + 64; if (!(pp = malloc((size_t)ppcap * sizeof *pp))) ppcap = 0; }
+        for (k = 0; pp && g_proj_ok && k < g_sim.shot_count && k < ppcap; k++) {
+            const msim_shot *sh = &g_sim.shots[k];
+            const int ps = proj_slot_w(sh->weapon);
+            float hv, yw, pt, cy, sy, cp, sp;
+            int c3;
+            if (ps < 0 || g_proj[ps].model.object_count < 1) continue;
+            pp[k] = g_proj[ps];
+            hv = sqrtf(sh->vx * sh->vx + sh->vz * sh->vz); yw = atan2f(sh->vx, sh->vz); pt = atan2f(sh->vy, hv);
+            cy = cosf(yw); sy = sinf(yw); cp = cosf(pt); sp = sinf(pt);
+            pp[k].pos[0] = (int32_t)sh->x; pp[k].pos[1] = (int32_t)sh->y; pp[k].pos[2] = (int32_t)sh->z;
+            pp[k].has_rot = 1;   /* (as the 3D view's: Ryaw Rpitch, the pool object's OBJ scale) */
+            pp[k].rot[0] = cy;  pp[k].rot[1] = -sy * sp; pp[k].rot[2] = sy * cp;
+            pp[k].rot[3] = 0;   pp[k].rot[4] = cp;       pp[k].rot[5] = sp;
+            pp[k].rot[6] = -sy; pp[k].rot[7] = -cy * sp; pp[k].rot[8] = cy * cp;
+            for (c3 = 0; c3 < 3; c3++) { pp[k].rot[c3 * 3] *= g_proj_scale[ps][0]; pp[k].rot[c3 * 3 + 1] *= g_proj_scale[ps][1]; pp[k].rot[c3 * 3 + 2] *= g_proj_scale[ps][2]; }
+            pp[k].objtype = 0x400;
+            satmap_part(g_sat, &pp[k], SATMAP_SHOT, 2, ((int64_t)2 << 40) + ((int64_t)sh->id << 8));
+        }
+        satmap_paint(g_sat, g_sat_pix, 0xef);   /* the window in DAT_000a77ec's colour (the ground: 0xEF, as the horizon fill) */
+    }
+    if (!pl_out)   /* 0x120c0: the wedge at the torso's bearing (heading + twist), colour [11] = 1 */
+        satmap_wedge(g_sat, g_sat_pix, (int32_t)lrintf((g_pl.heading + g_pl.twist) * 65536.0f), zoom, 1);
+    for (k = 0; k < (int)np; k++) {   /* the picture through the palette the HUD is drawn in (the time of day, the flash) */
+        const float *c = HP(g_sat_pix[k]);
+        g_sat_rgba[4 * k] = (uint8_t)lrintf(c[0] * 255.0f); g_sat_rgba[4 * k + 1] = (uint8_t)lrintf(c[1] * 255.0f);
+        g_sat_rgba[4 * k + 2] = (uint8_t)lrintf(c[2] * 255.0f); g_sat_rgba[4 * k + 3] = 255;
+    }
+    for (k = 0; g_sat_spr && k < g_sat_nspr; k++) {
+        /* the effect cards (class 0x10 / 0x60 objects of colour type 3 in the original: 0x12690 -> 0x3c420 with its map
+         * flag, a square bitmap about the card's corner, half its width across - the cards turned to yaw 180, pitch -45
+         * by 0x3aa30 while the map is up): the port's cards as squares half their width across about their centre,
+         * point-sampled, over everything else (ASSUMED: the size, the centre and the order - they are not in the walk) */
+        const glr_sprite *sp = &g_sat_spr[k];
+        const texture *t = sp->tex;
+        float c3[3];
+        int sx, sy, a, x, y, c;
+        if (!t || !t->rgba || t->w < 1 || t->h < 1 || sp->wire_code == 2) continue;   /* (not the shots' cards: their pool
+                                                                                  * objects are in the walk) */
+        for (c = 0; c < 3; c++) c3[c] = sp->bb ? 0.5f * (sp->pos[c] + sp->top[c]) : sp->pos[c];
+        satmap_point(g_sat, c3, &sx, &sy);
+        a = (int)lrintf(sp->half_w * (float)mw / (float)(100000 >> g_sat_i));
+        if (a < 1) a = 1;
+        for (y = sy - a; y < sy + a; y++) {
+            if (y < 0 || y >= h) continue;
+            for (x = sx - a; x < sx + a; x++) {
+                uint32_t tx;
+                if (x < 0 || x >= w) continue;
+                tx = t->rgba[(size_t)((y - (sy - a)) * t->h / (2 * a)) * (size_t)t->w + (size_t)((x - (sx - a)) * t->w / (2 * a))];
+                if ((tx >> 24) < 128) continue;
+                memcpy(&g_sat_rgba[4 * ((size_t)y * (size_t)w + (size_t)x)], &tx, 3);
+                g_sat_rgba[4 * ((size_t)y * (size_t)w + (size_t)x) + 3] = 255;
+            }
+        }
+    }
+    if (!g_sat_tex) { g_sat_tex = rb_tex_new(); rb_tex_filter(g_sat_tex, RB_NEAREST, RB_NEAREST); rb_tex_wrap(g_sat_tex, RB_CLAMP_TO_EDGE, RB_CLAMP_TO_EDGE); }
+    rb_tex_image(g_sat_tex, w, h, g_sat_rgba, 0);
+    hud_begin(g_hud, w, h);
+    hud_image_px(g_hud, g_sat_tex, 0, 0, (float)w, (float)h);
+    hud_end(g_hud);
+    g_sat_drawn = 1;
+}
 static int unit_targetable(int q, int side, float *dist)
 {
     float dx, dy, dz, d;
@@ -3614,6 +3786,7 @@ static void hud_mission_palette(prj_archive *ma, const char *mission)
     int k, c, q, slot = 0, t0 = 0, day = 0;
     memset(g_pal_slot_ok, 0, sizeof g_pal_slot_ok);
     g_plnt52 = 0;
+    g_sat_hmin = 0; g_sat_hmax = 6400;   /* (the satellite map's defaults: DAT_000a59e0 / 59e4) */
     snprintf(name, sizeof name, "%.4sSCN1", mission);
     if (mission && bwd_mission_load(ma, name, &bm) == 0) {
         for (k = 0; k < bm.record_count; k++)
@@ -3632,6 +3805,11 @@ static void hud_mission_palette(prj_archive *ma, const char *mission)
                 else if (strcmp(ch->tag, "INIT") == 0 && ch->size >= 12) t0 = (int32_t)(ch->data[8] | ch->data[9] << 8 | ch->data[10] << 16 | (uint32_t)ch->data[11] << 24);
                 else if (strcmp(ch->tag, "PLNT") == 0 && ch->size >= 16) {
                     day = (int32_t)(ch->data[12] | ch->data[13] << 8 | ch->data[14] << 16 | (uint32_t)ch->data[15] << 24);
+                    if (ch->size >= 44) {   /* (the satellite map's shading range: GBL 0x4f8xx PLNT handler, payload +36 / +40) */
+                        const int32_t hx = (int32_t)(ch->data[36] | ch->data[37] << 8 | ch->data[38] << 16 | (uint32_t)ch->data[39] << 24);
+                        const int32_t hn = (int32_t)(ch->data[40] | ch->data[41] << 8 | ch->data[42] << 16 | (uint32_t)ch->data[43] << 24);
+                        if (hx || hn) { g_sat_hmax = hx; g_sat_hmin = hn; }
+                    }
                     if (ch->size >= 56) g_plnt52 = (int32_t)(ch->data[52] | ch->data[53] << 8 | ch->data[54] << 16 | (uint32_t)ch->data[55] << 24);
                 }
             }
@@ -7923,6 +8101,7 @@ int main(int argc, char **argv)
                     }
                 }
             }
+            g_sat_spr = spr; g_sat_nspr = n;   /* (the satellite map's cards: sat_draw) */
             glr_set_sprites(r, spr, n);
             ti_particles(r, &v, (float)((double)g_sim.now * 182.0 / 1000.0), mission);
             {   /* engine 0x10045d00 (3Dfx; the PowerVR edition the same at 0x1003e770): an effect whose type lights takes the
@@ -8050,14 +8229,14 @@ int main(int argc, char **argv)
             last_zoom = zoom;
         }
         v.ortho_w = 0;
-        if (g_world && g_satmap && g_pl_ok) {   /* F3, radar mode 4 (0x100267d0): straight down, NORTH up, the window's width =
-                                                * the range (1 km, halved by the zoom down to 62.5 m), orthographic as the engine's */
-            float range = 100000.0f / (float)(1 << g_sat_i);
-            v.free_cam = 1;
-            v.eye[0] = (float)g_pl.origin[0]; v.eye[2] = (float)g_pl.origin[2];
-            v.eye[1] = g_sim.player_unit.y + 500000.0f;
-            v.look_yaw = 0.0f; v.look_pitch = -89.9f;
-            v.ortho_w = range * (float)w / ((float)h * 4.0f / 3.0f);   /* the 4:3 area's width = the range */
+        if (g_world && g_satmap && g_pl_ok && g_sim_ok) {
+            /* F3, radar mode 4: the 3D view is not drawn (sat_draw); the units' levels of detail are picked from the map's
+             * camera - GBL 0x11910 runs 0x37fa0 after its view 0x12c30: straight down from the range's height (absolute
+             * cm) over the player, the same +0xb8 - for the simulation's next step (msim collision_lods) */
+            g_sim.cam_eye[0] = g_sim.player_eye_ok ? g_sim.player_eye[0] : (float)g_pl.origin[0];
+            g_sim.cam_eye[1] = (float)(100000 >> g_sat_i);
+            g_sim.cam_eye[2] = g_sim.player_eye_ok ? g_sim.player_eye[2] : (float)g_pl.origin[2];
+            g_sim.cam_ok = 1;
         }
         if (getenv("MW2_VPORT") && g_vport == 0) g_vport = atoi(getenv("MW2_VPORT"));   /* tests: start with a viewport open */
         if (getenv("MW2_VISION")) g_vision = atoi(getenv("MW2_VISION"));   /* tests */
@@ -8130,7 +8309,15 @@ int main(int argc, char **argv)
         }
         if (getenv("MW2_TEST_NOHUD")) g_hud_off = 1;   /* TEST ONLY: the 3D picture without the HUD (masks for frame comparisons) */
         perf_mark(0);
-        glr_draw(r, &v, w, h);
+        if (g_world && g_satmap && g_pl_ok && g_sim_ok) {   /* F3: the map in place of the 3D view (GBL 0x118e0) */
+            static const float black[4] = {0, 0, 0, 1};
+            rb_viewport(0, 0, w, h);
+            rb_clear(black, 1, 1);
+            sat_draw(w, h);
+        } else {
+            g_sat_drawn = 0;
+            glr_draw(r, &v, w, h);
+        }
         perf_mark(1);
         if (getenv("MW2_DOS_DEBUG")) {   /* (MW2_DOS_DEBUG: the DOS-vs-GL corner offsets over a 16 x 12 grid, every 2 s) */
             static Uint32 dbg_last;
@@ -8510,6 +8697,9 @@ int main(int argc, char **argv)
                  * sets (3Dfx 0x1002e750 / 0x1002dca5); the external orbit, ordnance and ejection cameras clear it. Base
                  * DOSBox YELLSCN1 'c': the HUD without the reticle */
                 if (g_camode != 0) { static const hud_sprite no_reticle; rs = &no_reticle; }
+                /* the satellite map: entering mode 4 saves and clears DAT_000a6700 / 6704 (GBL 0x116d0 case 4; restored
+                 * leaving it) - the reticle (0x296e0) and the target bracket / nav marker (0x297f0) are not drawn */
+                if (g_satmap) { static const hud_sprite no_reticle2; rs = &no_reticle2; }
                 /* the aim point (0x29be0: a point ahead on the torso's line, 0x545e0 / 0x54560 / 0x1dcf0) is at the full tilt,
                  * the view at half of it (0x3a060 / 0x26d05): the reticle sits that much above (below) the centre -
                  * DOSBox JESSSCN1, Down held: 296 px up at 1024 x 768. In the DOS look through the frame's integers
@@ -8582,6 +8772,7 @@ int main(int argc, char **argv)
                     }
                 }
                 g_bracket = 0;
+                if (g_satmap) have = 0;   /* (0x297f0 off with the satellite map: DAT_000a6704, above) */
                 if (have && g_tex_kind == 3 && dos_hud_mark(r, w, h, wp, isnav, isthing, side, isthing ? thr : g_sim.radius ? g_sim.radius[tgt] : 545.0f)) {
                     /* the DOS look: MW2.EXE's integers (dos_hud_mark) */
                 } else if (have) {
@@ -8687,7 +8878,8 @@ int main(int argc, char **argv)
                         float ang = tw + cone * (float)sd;
                         px_line(&rw, rcx, rcy, rcx + (int)-floorf(-rim * sinf(ang)), rcy - (int)floorf(rim * cosf(ang)), HP(1));
                     }
-                } else {   /* the view cone's sides end at the circle (DOS / PowerVR footage) */
+                } else if (!g_satmap) {   /* the view cone's sides end at the circle (DOS / PowerVR footage); the satellite
+                                           * map's wedge is in its picture (sat_draw: 0x120c0) */
                     int sd;
                     for (sd = -1; sd <= 1; sd += 2) {
                         float dx2 = sinf(tw + cone * (float)sd), dy2 = -cosf(tw + cone * (float)sd), ox = px - cx, oy = py - cy;
@@ -8698,6 +8890,46 @@ int main(int argc, char **argv)
                     }
                 }
                 if (!g_satmap) { if (g_hs_ruser.tex) hud_draw(g_hud, &g_hs_ruser, px, py, NULL); else hud_rect(g_hud, px - 4.0f, py - 1.0f, 8.0f, 4.0f, green); }
+                if (g_satmap && g_sat_drawn) {   /* the satellite map's sprites (GBL 0x11b10 in mode 4: no unit or thing blips):
+                    * 0x11f60 - every nav point of the player's side shown, at its map pixel when below the camera and inside
+                    * the window (0x13140), RNP (sprite table +0x30) or, reached (nav flag 0x20), RRNP (+0x34); then 0x11d80 -
+                    * the target's (the table's row by kind: a nav point RTGTNP / RRTGTNP, a unit RTGTGP, a thing RTGTGP or
+                    * without 0x1400 RTGTGT, by side), off the map at the window's edge toward it (+0x84 = 0x14130) as
+                    * RTGTOF (a nav point's column 0) */
+                    const float kk = (int64_t)w * 3 > (int64_t)h * 4 ? (float)h * 4.0f / 3.0f / 640.0f : (float)w / 640.0f, ox = ((float)w - 640.0f * kk) * 0.5f;
+                    int nv, sx2, sy2, ins, nvt2 = tgt < 0 && g_tgt_thing < 0 ? current_nav(NULL) : -1;
+                    for (nv = 0; nv < g_sim.nav_count; nv++) {
+                        const float np3[3] = {g_sim.navs[nv].x, g_sim.navs[nv].y, g_sim.navs[nv].z};
+                        const hud_sprite *sp = &g_hs_rnp[nv < 256 && g_nav_seen[nv]];
+                        if (!g_sim.navs[nv].selectable || !satmap_point(g_sat, np3, &sx2, &sy2)) continue;
+                        if (sp->tex) hud_draw(g_hud, sp, ((float)sx2 - ox) / kk, (float)sy2 / kk, NULL);
+                    }
+                    {
+                        float tp3[3];
+                        int have = 0, nvq = -1, sd = 1, set3 = 0;
+                        if (tgt >= 0) {
+                            tp3[0] = (float)g_actors[tgt].mech.origin[0]; tp3[1] = tgt < g_sim.actor_count ? g_sim.units[tgt].y : (float)g_actors[tgt].mech.origin[1];
+                            tp3[2] = (float)g_actors[tgt].mech.origin[2];
+                            sd = g_actors[tgt].friendly ? 0 : g_actors[tgt].alliance == 2 ? 2 : 1;
+                            have = 1;
+                        } else if (g_tgt_thing >= 0 && g_tgt_thing < g_sim.bld_count && g_sim.bld[g_tgt_thing].hp > 0 && msim_thing_point(&g_sim, g_tgt_thing, tp3)) {
+                            sd = g_sim.bld[g_tgt_thing].side >= 0 && g_sim.bld[g_tgt_thing].side <= 2 ? g_sim.bld[g_tgt_thing].side : 2;
+                            set3 = !(g_sim.bld[g_tgt_thing].flags & 0x1400);
+                            have = 1;
+                        } else if (nvt2 >= 0) {
+                            tp3[0] = g_sim.navs[nvt2].x; tp3[1] = g_sim.navs[nvt2].y; tp3[2] = g_sim.navs[nvt2].z;
+                            nvq = nvt2; have = 1;
+                        }
+                        if (have) {
+                            const hud_sprite *sp;
+                            ins = satmap_point(g_sat, tp3, &sx2, &sy2);
+                            if (!ins) { satmap_edge(g_sat, sx2, sy2, &sx2, &sy2); sp = &g_hs_rtof[nvq >= 0 ? 0 : sd]; }
+                            else if (nvq >= 0) sp = &g_hs_rtnp[nvq < 256 && g_nav_seen[nvq]];
+                            else sp = set3 ? &g_hs_rtgt[sd] : &g_hs_rtgp[sd];
+                            if (sp->tex) hud_draw(g_hud, sp, ((float)sx2 - ox) / kk, (float)sy2 / kk, NULL);
+                        }
+                    }
+                }
                 {   /* blips (0x10003830): nav points (0x10003c10) RNP (RRNP once reached), the targeted one RTGTNP /
                      * RRTGTNP; then 0x10003960: every unit but the player with +0x14 & 0x1400 and none of 0x4816 - so not
                      * destroyed (2 / 4) and not powered down (0x10: shut down, resting / held by a node) - and every thing
@@ -8709,7 +8941,7 @@ int main(int argc, char **argv)
                     float ly = g_satmap ? 0.0f : g_pl.heading * 3.14159265f / 180.0f;
                     float rcm = g_satmap ? 50000.0f / (float)(1 << g_sat_i) : RADAR_CM[g_radar_i], rr2 = g_satmap ? 320.0f : rad;
                     int nvt = tgt < 0 ? current_nav(NULL) : -1;
-                    for (q = -1 - g_sim.nav_count; q < g_actor_count + g_sim.bld_count; q++) {
+                    for (q = -1 - g_sim.nav_count; !(g_satmap && g_sat_drawn) && q < g_actor_count + g_sim.bld_count; q++) {
                         float wx, wz, ddx, ddz, ax, ay, bx, by, dd2;
                         int sd = 1, istgt, nvq = -1, set3 = 0;
                         const hud_sprite *sp;
@@ -8858,7 +9090,9 @@ int main(int argc, char **argv)
                     const float *wdark = HP(8), *wred = HP(0xb), *wgreen = HP(14), *wwhite = HP(0xfe), *wyellow = HP(3);   /* the mission
                                        * palette (0x10260324); the 0xe green drawn as 14 here (as before) */
                     (void)grey; (void)white;
-                    if (cw->ammo == 0 || pu->loc_gone[cw->location]) col = wdark;
+                    /* (GBL 0x235xx switches on the state alone: -1 dark - a weapon a critical hit destroyed has rounds left
+                     * and its location standing, and had fallen through to red) */
+                    if (cw->state < 0 || cw->ammo == 0 || pu->loc_gone[cw->location]) col = wdark;
                     else if (cw->state == CW_FIRING) col = wgreen;
                     else if (cw->state != CW_READY) col = wred;
                     else if (g_groups[1] & (1u << wi)) col = wwhite;

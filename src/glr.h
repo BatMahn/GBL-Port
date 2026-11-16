@@ -197,6 +197,12 @@ int glr_dos_project(const glr *r, const float p[3], int *sx, int *sy, int *sz);
 int32_t glr_dos_sin(int32_t a);
 int32_t glr_dos_cos(int32_t a);
 int32_t glr_dos_atan2(int32_t a, int32_t b);
+/* the DOS renderer's integers for other drawers (src/satmap.c): a camera's 2.29 rows (GBL 0x3bfb2 as glr builds them:
+ * yaw, pitch - negative down - and roll in degrees), a model vertex placed as the original's integers (whole cm), and the
+ * corners its polygon normal is made from (0x38183 / 0x3821d) */
+void glr_dos_cam_rows(float yaw_deg, float pitch_deg, float roll_deg, int64_t rows[3][3]);
+void glr_dos_vertex(const mech3d_part *p, const wtb_vertex *v, int32_t out[3]);
+void glr_dos_normal_corners(const wtb_object *o, const wtb_poly *q, int *a, int *b, int *c);
 /* that frame's zoom (16.16) x half width (the view's +0x94) and the view's size */
 void glr_dos_view(const glr *r, uint32_t *zhw, int *w, int *h);
 /* The DOS look's draw list (GBL 0x3d9c0, glr.c glr_dos_list): the static (world) layer's objects' places in the original's
