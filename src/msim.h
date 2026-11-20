@@ -471,4 +471,6 @@ float msim_throttle_preset(int n);
  * walking speed (cm/s) in; drag per tick = S x (k S + B) for the drift speed S (cm/tick) */
 void msim_jet_drag(float thrust, float top_cm_s, float *k, float *B);
 
+void msim_cheat_kill(msim *s, int i);   /* the "palex" cheat: unit i dies at once (GBL 0x25680) */
+
 #endif

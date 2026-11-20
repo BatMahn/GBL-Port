@@ -153,6 +153,7 @@ typedef struct {
     int           immobile;         /* lost a leg */
     float         speed_gain;       /* engine c[0x2c]: 1.0, -0.1 per leg actuator/hip/engine/gyro critical, floor 0.4 */
     int           no_jump;          /* gyro critical */
+    int           inf_jets;         /* GBL 0xa667c (the "crillion" cheat, the player's only): the tank does not drain */
     /* jump jets (engine 0x10041410 / 0x1001a180 / 0x10019310) */
     int           tons;             /* MEK tonnage (controller +0xe4) */
     uint16_t      rating;           /* loadout rating, object +0x150 (0x10041c80; group member choice 0x10014920) */

@@ -44,6 +44,17 @@
 #define PORTCFG_H
 #include <stddef.h>
 #define PORTCFG_PATH 1024
+/* the system the port runs on, for the menus' "Flee to ..." (the DOS game said DOS) */
+#if defined(_WIN32)
+#define PORTCFG_OS_NAME "Windows"
+#define PORTCFG_OS_UPPER "WINDOWS"
+#elif defined(__APPLE__)
+#define PORTCFG_OS_NAME "macOS"
+#define PORTCFG_OS_UPPER "MACOS"
+#else
+#define PORTCFG_OS_NAME "Linux"
+#define PORTCFG_OS_UPPER "LINUX"
+#endif
 typedef struct {
     int mode;        /* 0 desktop fullscreen, 1 windowed, 2 exclusive fullscreen at w x h */
     int w, h;
@@ -126,4 +137,7 @@ int  portcfg_game_in(const char *dir, char *out, size_t n);
 int  portcfg_app_folder(const char *exe_dir, char *out, size_t n);
 /* exe_dir is a macOS App Translocation copy (a quarantined download run in place: a random read-only path) */
 int  portcfg_translocated(const char *exe_dir);
+/* name in dir in any letter case (exact, upper, lower, then a scan): its path in out, 1; else 0 */
+int portcfg_find_ci(const char *dir, const char *name, char *out, size_t outlen);
+
 #endif

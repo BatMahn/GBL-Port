@@ -6,7 +6,7 @@ or Vulkan on Windows, Vulkan on Linux, Metal on macOS); builds on macOS, Linux a
 
 As on DOS, Ghost Bear's Legacy is its own program: `gbl`.
 
-## Status (1.0.2, 2026-11-16)
+## Status (1.0.3, 2026-11-20)
 Complete and playable from start to finish: all 22 campaign missions, the Combat Simulator and the Mech Lab. Tagged
 releases (`v*`) are built by GitHub Actions: a macOS app (Apple Silicon), a Debian / Ubuntu package, a Fedora RPM, a
 Windows zip and a Windows legacy zip (32-bit, Windows XP and newer, OpenGL 1.2 - see "The legacy build"). Or build from
@@ -183,8 +183,15 @@ file:
 
 The same choices are in the game: the global menu (Esc or the right mouse button) -> COMBAT VARIABLES. Controls follow
 the install's GAMEKEY.MAP / INPUT.MAP; set them up in COCKPIT CONTROLS, as in the original. In a mission, Esc opens the
-original's main menu and pauses the game. The `MW2_*` and `GBL_*` environment variables are for development and tests
+original's main menu and pauses the game; its Flee sets off your 'Mech's self-destruct, and the game closes once the
+mission has ended, as in the original. The `MW2_*` and `GBL_*` environment variables are for development and tests
 only.
+
+The original's mission cheats work: hold Ctrl, Alt and Shift and type the code. `kent` invulnerability, `thundros`
+unlimited ammunition, `burr` heat tracking (each on / off), `palex` destroys your target, `putz` completes the mission,
+`crillion` infinite jump jets, `merlock` time expansion (quarter speed), `gonzales` makes Ctrl+Alt+F a time compression
+key (8x), `voyeur` turns the rear view forward. `jumbo`, `dorcs`, `kaboom`, `tik`, `drone` and `clark` give only their
+messages (or nothing): their other effects are not reproduced.
 If the game runs slowly, start it with `MW2_PERF=1` and it prints the frame rate every 2 seconds, with where each
 frame's time goes (simulation, world, HUD, buffer swap). `MW2_PERF=2` also times the GPU.
 

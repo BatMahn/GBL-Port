@@ -41,6 +41,15 @@ static FILE *gbl_dp_fopen(const char *name, const char *mode);
 #else
 #include <SDL3/SDL_main.h>
 #endif
+/* the menus' picture scaled up: SDL 3.4's pixel-art mode (nearest sampling with the pixel edges blended, so a fractional
+ * scale - 1080 lines: 2.25 - keeps every pixel the same size); older SDL (SDL2 in the legacy build): nearest */
+#if defined(MW2_SDL2)
+#define GBL_SHELL_SCALEMODE SDL_SCALEMODE_NEAREST
+#elif SDL_VERSION_ATLEAST(3, 4, 0)
+#define GBL_SHELL_SCALEMODE SDL_SCALEMODE_PIXELART
+#else
+#define GBL_SHELL_SCALEMODE SDL_SCALEMODE_NEAREST
+#endif
 static FILE *gbl_dp_fopen(const char *name, const char *mode)
 {
     char path[1400], alt[64];
@@ -268,7 +277,7 @@ static void gbl_present_video(SDL_Texture *t)
         d.x = (float)((ow - dw) / 2); d.y = (float)((oh - dh) / 2); d.w = (float)dw; d.h = (float)dh;
         SDL_RenderTexture(g_grd, t, &src, &d);
     } else SDL_RenderTexture(g_grd, t, &src, NULL);
-    if (t == g_gtx) SDL_SetTextureScaleMode(t, getenv("MW2_TEXT_SMOOTH") ? SDL_SCALEMODE_LINEAR : SDL_SCALEMODE_NEAREST);
+    if (t == g_gtx) SDL_SetTextureScaleMode(t, getenv("MW2_TEXT_SMOOTH") ? SDL_SCALEMODE_LINEAR : GBL_SHELL_SCALEMODE);
     gbl_logical(g_grd, 1);
 }
 static void gbl_present(void)
@@ -313,6 +322,24 @@ static gbl_input *gbl_frame(void)
         if (getenv("GBL_MAX_FRAMES") && g_frame_no > atol(getenv("GBL_MAX_FRAMES"))) { in->quit = 1; g_quit_all = 1; }
         return in;
     }
+#ifndef MW2_SDL2
+    if (g_win && g_grd) {   /* full screen: the pointer kept on the picture, not behind the bars beside it (SDL3 only) */
+        static SDL_Rect last;
+        SDL_Rect want = {0, 0, 0, 0};
+        if (SDL_GetWindowFlags(g_win) & SDL_WINDOW_FULLSCREEN) {
+            SDL_FRect pr;
+            int ww = 0, wh = 0, pw = 0, ph = 0;
+            SDL_GetWindowSize(g_win, &ww, &wh);
+            SDL_GetWindowSizeInPixels(g_win, &pw, &ph);
+            if (SDL_GetRenderLogicalPresentationRect(g_grd, &pr) && pr.w > 0 && pw > 0 && ph > 0) {
+                const float sx = (float)ww / (float)pw, sy = (float)wh / (float)ph;
+                want.x = (int)ceilf(pr.x * sx); want.y = (int)ceilf(pr.y * sy);
+                want.w = (int)floorf(pr.w * sx); want.h = (int)floorf(pr.h * sy);
+            }
+        }
+        if (memcmp(&want, &last, sizeof want) != 0) { SDL_SetWindowMouseRect(g_win, want.w > 0 ? &want : NULL); last = want; }
+    }
+#endif
     {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
@@ -1354,7 +1381,7 @@ int main(int argc, char **argv)
         gbl_logical(g_grd, 1);
         g_gtx = SDL_CreateTexture(g_grd, SDL_PIXELFORMAT_RGB24, SDL_TEXTUREACCESS_STREAMING, W, H);
         if (!g_gtx) { fprintf(stderr, "SDL: the menus' picture: %s\n", SDL_GetError()); return 1; }
-        SDL_SetTextureScaleMode(g_gtx, SDL_SCALEMODE_NEAREST);   /* (SDL2's default; SDL3's is linear) */
+        SDL_SetTextureScaleMode(g_gtx, getenv("MW2_TEXT_SMOOTH") ? SDL_SCALEMODE_LINEAR : GBL_SHELL_SCALEMODE);   /* (SDL3's default is linear) */
         g_text_hires = 1;
     }
     { bp = SDL_GetBasePath(); ttext_init(bp); }

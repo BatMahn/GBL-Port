@@ -56,6 +56,7 @@ Only `cd/` is required (and an `install/` folder, which may be empty). Add `musi
   look: its 16-bit MW2.PRJ carries textured models for all of GBL) need the `titanium/` files.
 - There is no CD check: the port never asks for the disc. (The original's check looked for the disc's hidden
   `OLD_HERC.DRV` at start-up.)
+- The folder names may be in any letter case (`Install/`, `CD/`, `Music/` from a copy made on Windows work too).
 - The game folder is found on first run (the command line `gbl /path/to/GBL-game`, the current folder, next to the
   program, one level up, or `~/GBL-game`) and remembered in its own settings file
   (`~/Library/Application Support/gblport/gblport.cfg` on macOS, `~/.config/gblport/gblport.cfg` on Linux,
@@ -69,4 +70,3 @@ Only `cd/` is required (and an `install/` folder, which may be empty). Add `musi
 | The Titanium Edition disc in `cd/` | `cd/` is the 1995 DOS / Windows 95 GBL disc; Titanium goes in `titanium/`, only those 3 files |
 | Titanium files from `INSTALL\8BIT\` | Use `INSTALL\16BIT\` |
 | `GBL-game/GBL-game/cd/...` (nested by unzipping) | `GBL-game/cd/...` |
-| `Music/`, `CD/`, `Install/` | the folder names exactly as shown: `music/`, `cd/`, `install/` |

@@ -1510,7 +1510,7 @@ static void gbl_the_keshik(void)
  * clips of the screen under it stand still meanwhile. */
 static int gbl_global_menu(void)
 {
-    static const char *const ITEM[6] = {"NEW MECHWARRIOR", "COMBAT VARIABLES", "COCKPIT CONTROLS", "HALL OF HONOR", "THE KESHIK", "FLEE TO DOS"};
+    static const char *const ITEM[6] = {"NEW MECHWARRIOR", "COMBAT VARIABLES", "COCKPIT CONTROLS", "HALL OF HONOR", "THE KESHIK", "FLEE TO " PORTCFG_OS_UPPER};   /* FLEE TO DOS: the system it runs on */
     gbl_frame_screen sv;
     int result = -1, done = 0;
     Uint32 t_in = g_now;

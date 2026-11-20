@@ -166,6 +166,8 @@ static void cache_reset(void)
 
 /* ---- device */
 const char *rb_backend_name(void) { return g_ctx ? "OpenGL" : "none"; }
+int  rb_prewarm_count(void) { return 0; }   /* (fixed function: nothing to build ahead) */
+void rb_prewarm(int i) { (void)i; }
 int rb_backend(void) { return RB_GPU_OPENGL; }
 const char *rb_device_name(void) { return g_devname; }
 /* (MW2_GL_CHECK: OpenGL's error flags, cleared once read) */

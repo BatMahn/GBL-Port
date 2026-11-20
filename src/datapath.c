@@ -208,8 +208,10 @@ void dp_add_roots_from_env(void)
     const char *cd = getenv("MW2_CD_DIR");
     dp_add_root(getenv("MW2_INSTALL_DIR"));
     if (cd) {
-        char sub[1100];
-        snprintf(sub, sizeof sub, "%s/%s", cd, getenv("MW2_CD_DATA") ? getenv("MW2_CD_DATA") : "MECH2");
+        char sub[1100], hit[256];
+        const char *data = getenv("MW2_CD_DATA") ? getenv("MW2_CD_DATA") : "MECH2";
+        /* (in any letter case: a disc copy made on Windows may hold "Gbl") */
+        snprintf(sub, sizeof sub, "%s/%s", cd, match_entry(cd, data, hit, sizeof hit) == 0 ? hit : data);
         dp_add_root(sub);      /* game files live in \\MECH2 on the disc */
         dp_add_root(cd);
     }

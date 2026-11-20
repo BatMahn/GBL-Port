@@ -62,12 +62,16 @@ ifeq ($(WINDOWS),1)
   WINSRC = src/wincompat.c
   WINLIBS = -lole32 -lshell32 -mwindows   # system DLLs: the folder picker (wincompat.c mw2_pick_folder); a GUI program
   WINRES = build/gblres.o
+  # the released gbl.exe stripped: no COFF symbol table appended after the sections (antivirus heuristics read such a
+  # tail as an "overlay"; Microsoft Defender's machine-learning verdicts trip on new unsigned programs that carry one)
+  WINSTRIP = -s
   WINDRES ?= $(patsubst %gcc,%windres,$(CC))
 else
   DLLIB = -ldl
   WINSRC =
   WINRES =
   WINLIBS =
+  WINSTRIP =
 endif
 ifeq ($(UNAME_S),Linux)
   LDLIBS += -ldl
@@ -127,7 +131,7 @@ gbl: $(WINRES) $(GBL_SHELL_SRC) tools/glview.c src/shelldb.c src/smk.c src/vidfx
 	@mkdir -p build
 	$(CC) $(CFLAGS) -Wno-conversion -Isrc -Ithird_party $(SDL_CFLAGS) -DSDL_MAIN_HANDLED -c tools/glview.c -Dmain=glview_main -o build/glview_sim.o
 	$(CC) $(CFLAGS) -Wno-conversion -Isrc -Ithird_party -Itools -c tools/gblshell.c $(SDL_CFLAGS) -o build/gblshell_one.o
-	$(CC) $(CFLAGS) -Wno-conversion -Isrc -Ithird_party $(SDL_CFLAGS) build/gblshell_one.o build/glview_sim.o $(sort $(filter src/%.c,$^)) build/miniaudio.o $(WINRES) -o $@ $(LDFLAGS) $(SDL_LIBS) $(RB_LIBS) -lm -lpthread $(DLLIB) $(WINLIBS)
+	$(CC) $(CFLAGS) -Wno-conversion -Isrc -Ithird_party $(SDL_CFLAGS) build/gblshell_one.o build/glview_sim.o $(sort $(filter src/%.c,$^)) build/miniaudio.o $(WINRES) $(WINSTRIP) -o $@ $(LDFLAGS) $(SDL_LIBS) $(RB_LIBS) -lm -lpthread $(DLLIB) $(WINLIBS)
 
 glview: tools/glview.c src/sfx.c src/portcfg.c src/cdaudio.c build/miniaudio.o $(GL3D_SRC) $(HDRS)
 	$(SDL_CHECK)

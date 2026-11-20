@@ -66,6 +66,10 @@ int  rb_error(char *msg, size_t n);
 /* the window's picture: its size in pixels this frame, and multisampling (samples 1: off) */
 void rb_frame(int w, int h);
 void rb_samples(int samples);
+/* the pipelines a mission uses, built ahead of it one at a time (the drop screen redrawn between them): their count, and
+ * build the i-th (SDL_GPU; OpenGL 1.2: none) */
+int  rb_prewarm_count(void);
+void rb_prewarm(int i);
 /* an off-screen target (colour, with a depth buffer if depth), usable as a texture */
 rb_tex rb_target_new(int w, int h, int depth);
 void rb_target(rb_tex t);                /* draw into t (0: the window's picture) */

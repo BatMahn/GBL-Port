@@ -38,10 +38,12 @@
 #define H 480
 /* the 640x480 menus through the renderer's logical presentation: whole-number scaling (MW2_TEXT_SMOOTH: letterboxed,
  * any scale) - SDL2's SDL_RenderSetLogicalSize + SDL_RenderSetIntegerScale; off (0) for a full-screen video */
+/* the 640 x 480 screen as large as the window allows at 4:3, centred (it was scaled by whole numbers only, which left
+ * black bars on all four sides wherever the height is not a multiple of 480 - 1920 x 1080: 1280 x 960); sharp through
+ * GBL_SHELL_SCALEMODE */
 static void gbl_logical(SDL_Renderer *rd, int on)
 {
-    SDL_SetRenderLogicalPresentation(rd, on ? W : 0, on ? H : 0, !on ? SDL_LOGICAL_PRESENTATION_DISABLED
-                                     : getenv("MW2_TEXT_SMOOTH") ? SDL_LOGICAL_PRESENTATION_LETTERBOX : SDL_LOGICAL_PRESENTATION_INTEGER_SCALE);
+    SDL_SetRenderLogicalPresentation(rd, on ? W : 0, on ? H : 0, !on ? SDL_LOGICAL_PRESENTATION_DISABLED : SDL_LOGICAL_PRESENTATION_LETTERBOX);
 }
 /* the output pixels per logical pixel (what SDL2's SDL_RenderGetScale gave with a logical size); 1, 1 without one */
 static void gbl_render_scale(SDL_Renderer *rd, float *sx, float *sy)

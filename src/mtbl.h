@@ -122,6 +122,7 @@ typedef struct {
      * reached -> 4 */
     int        result[MTBL_MAX_TABLES];
     int32_t    result_time[MTBL_MAX_TABLES];
+    int        force_win;                                  /* GBL 0xa5cc4 (the "putz" cheat): every table still running succeeds */
     int        current[MTBL_MAX_TABLES];                   /* the group's current order node, -1 (0 at load) */
     /* radio announce flags, per node INDEX (DAT_000b6fe0 - one array, the player's table only speaks): a node's success /
      * failure line plays once (0x164f0); nothing clears them (RESET and RE-ARM leave them) */

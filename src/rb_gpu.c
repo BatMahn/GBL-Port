@@ -490,6 +490,9 @@ static SDL_GPUGraphicsPipeline *pipeline(int prog, int has_depth, int samples, i
         fprintf(stderr, "rb: pipeline (program %d): %s\n", prog, SDL_GetError()); exit(1);
     }
     g_npipes++;
+    if (getenv("MW2_PIPE_LOG") && !g_probing)   /* TEST ONLY: each pipeline as it is made - the prewarm table's source */
+        fprintf(stderr, "PIPE {%d,%d,%d,%d,%d,%d,%g,%g,%d,%d,%d}\n", prog, e->blend, e->dtest, e->dwrite, e->dfunc, e->bias,
+                (double)e->slope, (double)e->units, cmask & 31, cfmt == g_win_fmt && samples == g_win_samples, has_depth != 0);
     return e->p;
 }
 
@@ -777,6 +780,30 @@ void rb_viewport(int x, int y, int w, int h) { S.vp[0] = x; S.vp[1] = y; S.vp[2]
 int rb_test_tiny;
 static SDL_Rect tiny(SDL_Rect r) { if (rb_test_tiny) { if (r.w > 1) r.w = 1; if (r.h > 1) r.h = 1; } return r; }
 void rb_scissor(int on, int x, int y, int w, int h) { S.sc_on = on; S.sc[0] = x; S.sc[1] = y; S.sc[2] = w; S.sc[3] = h; }
+/* The pipelines a mission makes, built ahead of it (rb_prewarm, behind the drop screen): every one the game made in a
+ * sweep of the looks (DOS, ENHANCED, TITANIUM), anti-aliasing on and off, the window's and the original resolutions,
+ * the HUD displays, the satellite map, the menus and the rear / down / weapon views (MW2_PIPE_LOG). A driver compiles
+ * each pipeline when it is made - on a new install or after a driver update that can take a long time (Direct3D 12),
+ * and the mission's first frames would stall on it. {prog, blend, depth test, depth write, depth func, bias, colour
+ * mask (16: the clear's depth), the window's target (1) or an off-screen one (0), depth buffer} */
+static const struct { int prog, blend, dtest, dwrite, dfunc, bias, cmask, win, depth; } PREWARM[] = {
+    {0,0,1,0,0,0,15,1,1}, {0,0,1,1,0,0,15,1,1}, {0,1,0,0,0,0,15,1,1}, {0,1,1,0,0,0,15,1,1},
+    {0,0,1,0,0,0,15,0,1}, {0,0,1,1,0,0,15,0,1}, {0,1,0,0,0,0,15,0,1}, {0,1,1,0,0,0,15,0,1},
+    {1,0,0,0,0,0,15,1,1}, {1,0,1,1,0,0,15,1,1}, {1,1,1,1,0,0,15,1,1}, {1,0,1,1,0,0,15,0,1}, {1,1,1,1,0,0,15,0,1},
+    {2,1,0,0,0,0,15,1,1}, {2,2,0,0,0,0,15,1,1}, {2,3,0,0,0,0,15,1,1}, {2,1,0,0,0,0,15,0,1}, {2,1,0,0,0,0,15,0,0},
+    {PROG_CLEAR,0,0,0,0,0,15 | 16,1,1}, {PROG_CLEAR,0,0,0,0,0,15,1,1}};
+int rb_prewarm_count(void) { return (int)(sizeof PREWARM / sizeof PREWARM[0]); }
+void rb_prewarm(int i)
+{
+    const int blend = S.blend, dtest = S.dtest, dwrite = S.dwrite, dfunc = S.dfunc, bias = S.bias;
+    if (!g_dev || i < 0 || i >= rb_prewarm_count()) return;
+    S.blend = PREWARM[i].blend; S.dtest = PREWARM[i].dtest; S.dwrite = PREWARM[i].dwrite; S.dfunc = PREWARM[i].dfunc;
+    S.bias = PREWARM[i].bias;
+    pipeline(PREWARM[i].prog, PREWARM[i].depth && g_depth_fmt != SDL_GPU_TEXTUREFORMAT_INVALID, PREWARM[i].win ? g_win_samples : 1,
+             PREWARM[i].cmask, PREWARM[i].win ? g_win_fmt : COLOR_FMT);
+    S.blend = blend; S.dtest = dtest; S.dwrite = dwrite; S.dfunc = dfunc; S.bias = bias;
+}
+
 void rb_blend(int mode) { S.blend = mode; }
 void rb_depth_test(int on) { S.dtest = on; }
 void rb_depth_write(int on) { S.dwrite = on; }

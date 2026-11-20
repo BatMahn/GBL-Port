@@ -788,6 +788,11 @@ int world3d_actors(prj_archive *a, const char *scene, world_actor **actors, int 
                      * targeting rules (GBL 0x2a... target test: +0x15 & 0x14, & 8, & 0x10; the GBL loader's copy ASSUMED) */
                     ac->unit_flags = m.records[i].chunks[k].size >= 28 ? (unsigned)(m.records[i].chunks[k].data[26] | m.records[i].chunks[k].data[27] << 8) : 0x400u;
                     ac->tex_offset = g.table >= 0 && g.table < 64 && star_tex[g.table] >= 0 && star_tex[g.table] < 16 ? star_tex[g.table] : 0;
+                    {   /* and on its own parts: its levels of detail (glview actor_lod, ti_actor) copy it from them - left 0, a
+                         * unit drawn by a lower level wore star 0's camouflage and crest in the ENHANCED / TITANIUM looks */
+                        int q;
+                        for (q = 0; q < ac->mech.part_count; q++) ac->mech.parts[q].tex_offset = ac->tex_offset;
+                    }
                     ac->ai_level = g.pilot_level;
                     {   int q; for (q = 0; q < 3; q++) ac->ai_range[q] = (float)(g.ranges[q] ? g.ranges[q] : 250) * 100.0f; }
                     snprintf(ac->loadout, sizeof ac->loadout, "%s", g.loadout);

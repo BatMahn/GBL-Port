@@ -810,7 +810,7 @@ int combat_jets(combat_unit *u, int jetting, float dt, unsigned *rng)
     u->landed_vy = 0;
     if (u->jets > 0 && u->jet_fuel >= 0) {
         if (held) {
-            u->jet_fuel -= ticks;
+            if (!u->inf_jets) u->jet_fuel -= ticks;   /* (0x27f55: not with infinite jump jets) */
             if (u->jet_fuel <= 0) u->jet_fuel = 0;
         } else {   /* DOS 0x27c57..0x27c7d: below the full tank c[0x30] += the frame's whole ticks >> 2 (no cap that frame),
                     * else = full - at the agreed 30 fps: 182 / 30 = 6.07 ticks a frame, the clock's whole ticks 6 or 7,

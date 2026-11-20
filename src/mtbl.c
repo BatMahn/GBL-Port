@@ -268,7 +268,7 @@ void mtbl_logic_step(mtbl_logic *ml, int32_t now, const mtbl_world *w)
                 if (st == MTBL_FAILED || st == MTBL_PENDING) { all = 0; failed = 1; }
                 else if (st != MTBL_OK) all = 0;
             }
-            if (all) ml->result[t] = 2;
+            if (all || ml->force_win) ml->result[t] = 2;   /* 0x17153: all done, or the cheat flag 0xa5cc4 */
             else if (failed) ml->result[t] = 3;
             else if ((int32_t)ml->tables[t].time_limit > 0 && (int64_t)(now / 1000) >= (int64_t)(int32_t)ml->tables[t].time_limit) ml->result[t] = 4;
             if (ml->result[t]) ml->result_time[t] = now;

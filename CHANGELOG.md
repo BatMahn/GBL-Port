@@ -1,5 +1,46 @@
 # Changelog
 
+## 1.0.3 (2026-11-20)
+
+- **Levels of detail at large window sizes:** the distances at which 'Mechs and objects switch to their simpler models
+  grew with the window's width. They now stop growing at the original's widest mode, 1024 x 768, so a big window no
+  longer keeps distant 'Mechs at a finer model than the original shows. Smaller windows still scale down as before.
+- **Enemies no longer shoot through hills.** The enemy's line-of-fire test only checked buildings and other units, not
+  the large terrain pieces (mesas, ridges, ice shelves). The original checks everything in its collision list, so an
+  enemy now holds its fire when a hillside is in the way.
+- **A near miss no longer wakes a unit.** The game treated you as attacking whatever you had targeted as soon as you
+  fired. In the original you only count as attacking a unit once one of your shots hits it, or when you run into an
+  enemy. Resting units therefore stay asleep when your missiles fly past them.
+- **"Enemy power-up detected" only for 'Mechs and vehicles.** Turrets power up silently in the original (they have no
+  start-up sound and post no message); the port had announced them too.
+- **The missile camera (F10, and the F9 weapon view) follows your newest missile**, as in the original. Before, any shot
+  counted, so after firing a laser or a machine gun F10 had nothing to follow.
+- **Mission cheats:** hold Ctrl, Alt and Shift and type the code, as in the original. `kent` invulnerability,
+  `thundros` unlimited ammunition, `burr` heat tracking, `palex` destroys your target, `putz` wins the mission,
+  `crillion` infinite jump jets, `merlock` time expansion, `gonzales` makes Ctrl+Alt+F a time compression key, and
+  `voyeur` turns the rear view forward. `jumbo`, `dorcs`, `tik`, `drone` and `clark` show their messages only, and
+  `kaboom` does nothing yet.
+- **Flee from the in-mission menu** now sets off your 'Mech's self-destruct, as in the original; the game closes once the
+  mission has ended. Before, it closed at once. The menu item, and the shell's FLEE TO DOS, now name the system you run
+  the port on (Windows, macOS or Linux).
+- **COMMAND COMPUTER:** after you give an order or pick a formation on a page you opened from the main COMMAND COMPUTER
+  page, the menu goes back to that page instead of closing, as in the original. A page opened with its own key
+  (Ctrl+F2 / Ctrl+F3) still closes.
+- **Leaving a mission:** the HUD now fades to black with the view, as in the original; only the message bar stays lit.
+- **Mission start at high frame rates:** the fade from black at the start of a mission lasts its full 2 seconds at any
+  frame rate (on a fast PC it was over almost at once), and slow first frames no longer make the start-up jump ahead.
+- **No more stall on a new install's first mission (Windows, Linux):** the graphics driver builds the game's shaders while
+  the drop screen is still up, instead of during the mission's first frames.
+- **Light amplification:** better frame rate - the colour table is no longer sent to the graphics card every frame.
+- **ENHANCED / TITANIUM looks:** distant 'Mechs no longer switch to the first star's camouflage and crest when they drop
+  to a simpler model.
+- **Menus at 1920 x 1080:** the menus now fill the screen's height (4:3, centred), instead of a smaller picture with
+  black bars on all four sides; in full screen the mouse pointer stays on the picture.
+- **Game folder copied from Windows:** the folders inside it (`install`, `cd`, `music`, `titanium` and the disc's `GBL`)
+  are now found in any letter case on Linux and macOS.
+- **Windows:** `gbl.exe` is now stripped of its debugging data (smaller, and less likely to be flagged by antivirus
+  heuristics).
+
 ## 1.0.2 (2026-11-16)
 
 - **Satellite map (F3):** now drawn the way the original draws it - the ground shaded by height, 'Mechs, vehicles and

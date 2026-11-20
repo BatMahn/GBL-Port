@@ -805,8 +805,8 @@ static int ti_tip_load(const char *mission)
     FILE *f;
     uint8_t pal[256][3];
     int k, w, h;
-    snprintf(path, sizeof path, "%s/particle.PID", g_ti_dir);
-    if (!(f = fopen(path, "rb"))) { snprintf(path, sizeof path, "%s/PARTICLE.PID", g_ti_dir); f = fopen(path, "rb"); }
+    if (!portcfg_find_ci(g_ti_dir, "particle.PID", path, sizeof path)) snprintf(path, sizeof path, "%s/particle.PID", g_ti_dir);
+    f = fopen(path, "rb");
     if (!f) { printf("titanium: no particle.PID in %s: no missile smoke\n", g_ti_dir); return -1; }
     len = fread(buf, 1, sizeof buf, f);
     fclose(f);
@@ -1726,7 +1726,7 @@ static void sat_draw(int w, int h)
     {
         const float cam[3] = {px, (float)(100000 >> g_sat_i), pz};
         const uint32_t zc = zoom > 0x100000u ? 0x100000u : zoom < 0x8000u ? 0x8000u : zoom;
-        sat_lods(cam, (float)(((int64_t)zc * (w >> 1)) / (int64_t)(g_lodq * 160)) / 65536.0f, lod);
+        sat_lods(cam, (float)(((int64_t)zc * ((w >> 1) < 512 ? (w >> 1) : 512)) / (int64_t)(g_lodq * 160)) / 65536.0f, lod);   /* (capped at 1024 wide, as the view's) */
     }
     if (g_sim.world) {   /* the world's objects: a thing's (GT) intact / destroyed object as type 0x200 of its side (gt_side) -
                           * that object only, every GT whatever its hit points (DOSBox HOFFSCN1: the dropship's hull
@@ -2204,6 +2204,15 @@ static float exit_fade_level(int *red)
     k = (float)(g_sim.now - g_exit_fade_t0) / 1290.0f;
     return k < 0 ? 0 : k > 1 ? 1 : k;
 }
+static int   g_exit_tint_due, g_exit_tint_red;   /* this frame's exit fade, still to be laid over the picture and HUD */
+static float g_exit_tint_k;
+static void exit_tint(int w, int h)   /* inside a HUD pass, after the HUD and before the message lines */
+{
+    const float k = g_exit_tint_k, mul[3] = {1.0f - k, 1.0f - k, 1.0f - k}, add[3] = {g_exit_tint_red ? k : 0.0f, 0, 0};
+    if (!g_exit_tint_due) return;
+    g_exit_tint_due = 0;
+    hud_tint(g_hud, w, h, mul, add);
+}
 static int32_t g_dos_fade_len;          /* (the DOS time-of-day / light amplification fade, dos_time_of_day) */
 static int32_t g_amp_fade_end = -1;      /* the 3D editions' light amplification fade (0x1002b090(.., 0xb5)): its end, sim ms */
 static int fade_running(int32_t now)     /* DAT_1024e470 / DAT_000970b8 > 0 */
@@ -2211,6 +2220,53 @@ static int fade_running(int32_t now)     /* DAT_1024e470 / DAT_000970b8 > 0 */
     if (g_flash_t0 >= 0 && (float)(now - g_flash_t0) * 0.182f < g_flash_in + g_flash_back) return 1;
     if (g_tex_kind == 3) return g_dos_fade_len > 0;
     return g_amp_fade_end >= 0 && now < g_amp_fade_end;
+}
+/* The mission cheats (GBL MW2.EXE 0x46530): with Ctrl, Alt and Shift held (the key's modifier byte 0x07) the typed letters
+ * collect in a buffer (0x1647d4, the last 14), compared after each with the codes (table 0xa8c48, 12 bytes an entry: the
+ * code and its ON / OFF messages, stored XOR 0x0a, decoded once by 0x464b0), each message for 0x16c ticks at priority
+ * 0x32 (0x11020). Done: kent (invulnerability, MW2DIF +1), thundros (unlimited ammunition, +0), burr (heat tracking, +4),
+ * jumbo (its message only: the flag 0xa8dbc it sets is read nowhere), voyeur (the rear view looks forward, 0x10fa30),
+ * palex (the target dies, 0x25680), putz (every star's result successful, 0xa5cc4 -> 0x17153), gonzales (CRACK_MODE
+ * becomes the time compression key: the frame's ticks x 8, 0x4754d -> 0x1591c), crillion (infinite jump jets, 0xa667c
+ * -> 0x27f55), merlock (time expansion: the frame's ticks / 4, 0xa5c5c -> 0x1593c). Not reproduced (messages only):
+ * dorcs (0x1aa50 swaps the main view's drawer for 0x1a170), kaboom (0x53010: a nuclear blast at the target), tik
+ * (bounding spheres, 0xa70d8 / 0xa5908), drone (the free-eye camera, 0x39e90), clark (x-ray vision, 0xa7994 = 2). The
+ * table's other words (dei, fuck, hangaround, idkfa, lairdo, shit) are decoded but never compared */
+static char g_cheat_buf[16];
+static int  g_cheat_front, g_cheat_tc, g_time_comp, g_time_exp;
+static void hud_message_ex(const char *m, int ticks, int pri);
+static int cheat_ends(const char *code)
+{
+    size_t n = strlen(g_cheat_buf), c = strlen(code);
+    return n >= c && strcmp(g_cheat_buf + n - c, code) == 0;
+}
+static void cheat_key(char ch)
+{
+    size_t n = strlen(g_cheat_buf);
+    combat_unit *pu = &g_sim.player_unit;
+    if (n >= sizeof g_cheat_buf - 1) { memmove(g_cheat_buf, g_cheat_buf + 1, n); n--; }
+    g_cheat_buf[n] = ch; g_cheat_buf[n + 1] = 0;
+#define CHEAT_MSG(m) hud_message_ex(m, 0x16c, 0x32)
+    if (cheat_ends("kent")) { pu->invulnerable = !pu->invulnerable; CHEAT_MSG(pu->invulnerable ? "Invulnerbility ON." : "Invulnerbility OFF."); }
+    else if (cheat_ends("thundros")) { pu->unlimited_ammo = !pu->unlimited_ammo; CHEAT_MSG(pu->unlimited_ammo ? "Unlimited Ammo ON." : "Unlimited Ammo OFF."); }
+    else if (cheat_ends("burr")) { pu->no_heat = !pu->no_heat; CHEAT_MSG(pu->no_heat ? "Heat tracking OFF." : "Heat tracking ON."); }
+    else if (cheat_ends("dorcs")) CHEAT_MSG("You asked for it.");
+    else if (cheat_ends("kaboom")) { }
+    else if (cheat_ends("jumbo")) CHEAT_MSG("jumpjets");
+    else if (cheat_ends("voyeur")) { g_cheat_front = !g_cheat_front; CHEAT_MSG(g_cheat_front ? "Forward view instead of rear ON." : "Forward view instead of rear OFF."); }
+    else if (cheat_ends("palex")) { if (g_tgt_sel >= 0) msim_cheat_kill(&g_sim, g_tgt_sel); }
+    else if (cheat_ends("putz")) g_sim.logic.force_win = 1;
+    else if (cheat_ends("gonzales")) {
+        g_cheat_tc = !g_cheat_tc;
+        if (!g_cheat_tc) g_time_comp = 0;
+        hud_message_ex(g_cheat_tc ? "Time compression key enabled." : "Time compression key disabled.", 0xb6, 0x32);
+    }
+    else if (cheat_ends("tik")) CHEAT_MSG("Bounding spheres.");
+    else if (cheat_ends("crillion")) { pu->inf_jets = !pu->inf_jets; CHEAT_MSG(pu->inf_jets ? "Infinite jumpjets ON." : "Infinite jumpjets OFF."); }
+    else if (cheat_ends("drone")) CHEAT_MSG("free-eye mode on.");
+    else if (cheat_ends("clark")) CHEAT_MSG("x-ray vision enabled.");
+    else if (cheat_ends("merlock")) { g_time_exp = !g_time_exp; CHEAT_MSG(g_time_exp ? "time expansion enabled." : "time expansion disabled."); }
+#undef CHEAT_MSG
 }
 static void red_flash(int dur, int32_t now)
 {
@@ -3905,7 +3961,7 @@ typedef struct { int type; const char *text; int arg; } mm_item;
 typedef struct { const char *title; int n; mm_item it[6]; } mm_page;
 static const mm_page MM_PAGE[MP_COUNT] = {
     {"MAIN MENU", 6, {{MI_SUB, "Abort Mission", MP_ABORT}, {MI_SUB, "Graphics", MP_GRAPHICS}, {MI_SUB, "Audio Ctrl", MP_AUDIO},
-                      {MI_SUB, "Combat Variables", MP_COMBAT}, {MI_SUB, "Flee to Windows", MP_FLEE}, {MI_ACCEPT, "Accept (Esc to cancel)", 0}}},
+                      {MI_SUB, "Combat Variables", MP_COMBAT}, {MI_SUB, "Flee to " PORTCFG_OS_NAME, MP_FLEE}, {MI_ACCEPT, "Accept (Esc to cancel)", 0}}},
     {"ABORT MISSION", 2, {{MI_LABEL, "Confirmation requested", 0}, {MI_CONFIRM, "Accept (Esc to cancel)", 0}}},
     {"GRAPHICS", 6, {{MI_VAL, "Textured Sky", MV_SKY}, {MI_VAL, "Textured Ground", MV_GROUND}, {MI_VAL, "Renderer", MV_VIDEO},
                      {MI_VAL, "Textures", MV_TEXSET}, {MI_VAL, "HUD layout", MV_HUDLAYOUT}, {MI_ACCEPT, "Accept (Esc to cancel)", 0}}},
@@ -3913,7 +3969,7 @@ static const mm_page MM_PAGE[MP_COUNT] = {
                              {MI_ACCEPT, "Accept (Esc to cancel)", 0}}},
     {"COMBAT VARIABLES", 6, {{MI_VAL, "Object textmaps", MV_OBJTEX}, {MI_VAL, "Terrain textmaps", MV_TERTEX}, {MI_VAL, "Display detail", MV_DETAIL},
                              {MI_VAL, "Object density", MV_DENSITY}, {MI_VAL, "Explosion chunks", MV_CHUNKS}, {MI_ACCEPT, "Accept (Esc to cancel)", 0}}},
-    {"FLEE TO WINDOWS", 2, {{MI_LABEL, "Confirm your cowardice", 0}, {MI_CONFIRM, "Accept (Esc to cancel)", 1}}},
+    {"FLEE TO " PORTCFG_OS_UPPER, 2, {{MI_LABEL, "Confirm your cowardice", 0}, {MI_CONFIRM, "Accept (Esc to cancel)", 1}}},
     {"GRAPHICS", 6, {{MI_VAL, "DOS shading", MV_DOSSKY}, {MI_VAL, "Textured Ground", MV_GROUND}, {MI_VAL, "Renderer", MV_VIDEO},   /* a DOS mission's */
                      {MI_VAL, "Textures", MV_TEXSET}, {MI_VAL, "HUD layout", MV_HUDLAYOUT}, {MI_ACCEPT, "Accept (Esc to cancel)", 0}}},
 };
@@ -3926,7 +3982,18 @@ static int  g_mm_sel;                           /* the chosen item of the top pa
 static int  g_mm_v[MV_COUNT], g_mm_old[MV_COUNT];   /* the pages' values (sliders 0..0x10000), as opened */
 static int  g_mm_eds[PORTCFG_GBL_COUNT], g_mm_ned = -1;   /* the looks the Renderer item offers */
 static int  g_mm_vol[3] = {-1, -1, -1};         /* music, effects, voice in force (16.16; -1 = not read yet) */
-static int  g_mm_world_dirty, g_mm_quit;
+static int  g_mm_world_dirty, g_mm_quit, g_mm_flee;   /* g_mm_flee: leaving once the self-destruct has ended the mission */
+static void player_eject(int voluntary);
+static void hud_message_v(const char *m, int voice);
+/* SELF_DESTRUCT: only with the mech up (controller state 2); 1 when it went off */
+static int player_self_destruct(void)
+{
+    const combat_unit *pu2 = &g_sim.player_unit;
+    if (pu2->destroyed || pu2->shutdown || (g_sim.now < g_sim.player_online_at && !getenv("MW2_NO_STARTUP"))) return 0;
+    hud_message_v("Self-destruct sequence initiated", 16);   /* message 4 */
+    player_eject(0); g_sim.player_unit.down_in_update = 1;   /* DOS: at once, inside the unit's update (its case 4 at once: msim on_player_down) */
+    return 1;
+}
 /* the Renderer item offers gbl's looks (portcfg.h PORTCFG_GBL_*: DOS, Enhanced, Titanium - Titanium with titanium/); the
  * change is made at once (look_apply: the drawing side made again, the game going on as it was) and kept for the next
  * missions (gblport.cfg renderer=) */
@@ -4111,6 +4178,11 @@ static void mm_activate(int k)
     } else if (it->type == MI_ACCEPT) { mm_commit_page(pg); mm_pop(); }
     else if (it->type == MI_CONFIRM) {
         mm_close_all();
+        /* Flee in a mission: the self-destruct sequence, as the key's, and the game leaves once the mission has ended (its
+         * death sequence, "Press any key to exit...", the exit fade). DOSBox BASSSCN1: MAIN MENU, 5 Flee to DOS, 1 Accept -
+         * the mech blows up, the mission ends as after the key, and MW2.EXE exits with status 255 (0 after Ctrl+Q or the
+         * self-destruct key), which ends the game. With the mech not up, the game leaves at once (as before) */
+        if (it->arg && g_sim_ok && g_world && !g_sim.over && !g_sim.ending && player_self_destruct()) { g_mm_flee = 1; return; }
         if (it->arg) g_mm_quit = 1;                                          /* Flee: leave the game */
         if (g_sim_ok && g_world && !g_sim.over) msim_end_now(&g_sim);         /* Abort: as EXIT_SIM (action 0x3b) */
     }
@@ -4927,6 +4999,9 @@ static int pl_move(float dt, float top)
                 /* the second try (GBL 0x27479, base DOS 0x27109): refused by rounding, the velocity doubled (msim_contact_retest) */
                 const float vx2 = msim_contact_retest(p0, p1, c, rr) ? 2.0f : 1.0f;
                 touched = 1;
+                /* GBL 0x21a80: the player in contact (+0xa8) with an enemy unit (+0x7c, alliance 1 by 0x2b5c0) is recorded
+                 * as attacking it (0x23970) - as a hit is */
+                if (hit < g_actor_count && !g_actors[hit].friendly && g_actors[hit].alliance == 1) g_sim.player_victim = hit;
                 /* the engine's speeds (0x1000ba20 copies the other's z velocity over its own): damage at
                  * |(dvx, dvy)|, bounce at half |(dvx, dvy, the other's vz)|, at least 1 cm/tick */
                 float dvx = sv[0] - ov[0], dvy = sv[1] - ov[1], sp = msim_dos_len(dvx, dvy, 0.0f), bs = 0.5f * sqrtf(dvx * dvx + dvy * dvy + ov[2] * ov[2]);   /* damage: GBL 0x20ae0's DOS length */
@@ -6059,6 +6134,14 @@ int main(int argc, char **argv)
             Uint32 el = SDL_GetTicks() - g_drop_t0;
             static int music_on;
             if (el >= 2000 && !music_on) { music_on = 1; if (g_world && g_sim_ok) music_start(g_sim.music_track); }
+            {   /* the pipelines the mission will use, built behind the drop screen, one a frame (rb_prewarm); the screen
+                 * holds until they are done */
+                static int pw;
+                if (pw < rb_prewarm_count()) {
+                    rb_prewarm(pw++);
+                    if (el > 1900) { g_drop_t0 = SDL_GetTicks() - 1900; el = 1900; }
+                }
+            }
             if (el < 2000 + 860) {
                 g_drop_level = el <= 2000 ? 1.0f : 1.0f - (float)(el - 2000) / 860.0f;
                 while (SDL_PollEvent(&e)) if (e.type == SDL_EVENT_QUIT) running = 0;
@@ -6184,6 +6267,11 @@ int main(int argc, char **argv)
                 if (e.key.mod & SDL_KMOD_GUI) continue;   /* Cmd+key belongs to macOS (Cmd+Tab, screenshots), never the game */
 #endif
                 if (g_mm_depth) { mm_key(k, e.key.mod); continue; }   /* the MAIN MENU has the keys while open */
+                if (g_world && g_sim_ok && !g_paused && !g_sim.over && k >= SDLK_A && k <= SDLK_Z &&
+                    (e.key.mod & SDL_KMOD_CTRL) && (e.key.mod & SDL_KMOD_ALT) && (e.key.mod & SDL_KMOD_SHIFT)) {   /* 0x46530 */
+                    cheat_key((char)('a' + (k - SDLK_A)));
+                    continue;
+                }
                 if (g_paused) {   /* 0x10009740: paused, the next key (DAT_10159e64, a character) ends the pause; nothing else */
                     if (k != SDLK_LSHIFT && k != SDLK_RSHIFT && k != SDLK_LCTRL && k != SDLK_RCTRL && k != SDLK_LALT && k != SDLK_RALT &&
                         k != SDLK_LGUI && k != SDLK_RGUI && k != SDLK_CAPSLOCK) {
@@ -6217,10 +6305,14 @@ int main(int argc, char **argv)
                             hud_message_ex(combat_auto_eject() ? "Automatic ejection ON" : "Automatic ejection OFF", 0x16c, 0x32);
                         }
                     }
-                    else if (act < 0 && g_cc_page == 1) { if (msim_set_formation(&g_sim, -act - 1) == 0) g_cc_page = -1; }
+                    /* an order or a formation: a page opened from the root goes back to the root, one opened by its own key
+                     * (Ctrl+F2 / Ctrl+F3) closes. DOSBox BASSSCN1 with two starmates: b, 1 CHANGE FORMATION, 1 Echelon Left
+                     * -> COMMAND COMPUTER again (showing Echelon Left); b, 2, 2 -> COMMAND COMPUTER; Ctrl+F2, 3 Join
+                     * Formation -> closed. The port had closed the menu after every order */
+                    else if (act < 0 && g_cc_page == 1) { if (msim_set_formation(&g_sim, -act - 1) == 0) g_cc_page = g_cc_from_root ? 0 : -1; }
                     else if (act < 0) {
-                        msim_command(&g_sim, g_cc_page - 2, CC_ORDER[-act - 1], g_tgt_sel);   /* the menu closes (0x100659a0) */
-                        g_cc_page = -1;
+                        msim_command(&g_sim, g_cc_page - 2, CC_ORDER[-act - 1], g_tgt_sel);
+                        g_cc_page = g_cc_from_root ? 0 : -1;
                     }
                     continue;
                 }
@@ -6367,13 +6459,7 @@ int main(int argc, char **argv)
                     g_paused = 1;
                     if (g_sfx) sfx_pause(g_sfx, 1);
                 }
-                else if (g_world && g_sim_ok && A("SELF_DESTRUCT")) {   /* 0x57: input +0x43, taken by 0x1001a180 in state 2 */
-                    const combat_unit *pu2 = &g_sim.player_unit;
-                    if (!pu2->destroyed && !pu2->shutdown && !(g_sim.now < g_sim.player_online_at && !getenv("MW2_NO_STARTUP"))) {
-                        hud_message_v("Self-destruct sequence initiated", 16);   /* message 4 */
-                        player_eject(0); g_sim.player_unit.down_in_update = 1;   /* DOS: at once, inside the unit's update (its case 4 at once: msim on_player_down) */
-                    }
-                }
+                else if (g_world && g_sim_ok && A("SELF_DESTRUCT")) player_self_destruct();   /* 0x57: input +0x43, taken by 0x1001a180 in state 2 */
                 else if (g_world && g_sim_ok && A("EJECT")) player_eject(1);   /* 0x3b: 0x100174f0(c, 1) */
                 else if (g_world && g_sim_ok && A("TOGGLE_AUTOEJECT")) {   /* 0x3c: only with the mech up (+0x15 & 0x20) */
                     const combat_unit *pu2 = &g_sim.player_unit;
@@ -6409,6 +6495,10 @@ int main(int argc, char **argv)
                         if (g_camode != 3) { g_cam_prev = g_camode; g_cam_zoom = 2.0f; }
                         g_camode = 3;
                     }
+                }
+                else if (g_world && g_sim_ok && g_cheat_tc && A("CRACK_MODE")) {   /* 0x4754d: live only after "gonzales" */
+                    g_time_comp = !g_time_comp;
+                    hud_message_ex(g_time_comp ? "Time compression enabled" : "Time compression disabled", 0xb6, 0x32);
                 }
                 else if (g_world && g_sim_ok && A("TOGGLE_MASC")) {
                     /* engine 0x1001aef0: not fitted -> the message (0x16a ticks at 0x32); else MASC off: MECBMAOF 0xca and
@@ -6504,10 +6594,17 @@ int main(int argc, char **argv)
                 }
                 dt *= speed;
             }
+            /* the opening (the first 4 s of the mission, its fade from black included): a frame counts for at most 1/20 s,
+             * so the first frames' cost (the GPU driver building shaders, the mission's first draw) does not jump the
+             * start-up and the fade forward. Port choice: the original's first frames ran on its own clock */
+            if (!g_auto_on && g_sim_ok && g_sim.now < 4000 && dt > 0.05f) dt = 0.05f;
             if (g_mm_depth || g_paused) dt = 0;   /* the MAIN MENU (and PAUSE_GAME) pauses the game (WinMain 0x10009770: "pause timer TRUE") */
             mech3d all;
             int i;
             aprev = now;
+            /* the cheats' clock (0x1591c / 0x1593c: the frame's ticks x 8 with time compression, else / 4 with time expansion) */
+            if (g_time_comp) dt *= 8.0f;
+            else if (g_time_exp) dt *= 0.25f;
             (void)i;
             if (g_sim_ok) g_sim.player_nav = g_nav_sel;   /* Disengage goes to the player's selected nav point */
             if (g_sim_ok && getenv("MW2_KILL_ACTOR")) {   /* tests: "k,secs" - stand 60 m from actor k facing it; destroy it at secs */
@@ -7855,6 +7952,7 @@ int main(int argc, char **argv)
             test_dump("over");   /* TEST hook */
             write_results();
             running = 0;
+            if (g_mm_flee) exit_code = 42;   /* Flee, after its self-destruct: the shell leaves too */
         }
         if (g_world && g_sim_ok && getenv("MW2_DEBUG_KILL") && g_sim.now >= 1000) {   /* test: destroy actor n at 1 s */
             int q = atoi(getenv("MW2_DEBUG_KILL"));
@@ -8292,7 +8390,11 @@ int main(int argc, char **argv)
             int64_t z16 = (int64_t)(zoom + 0.5);
             if (z16 > 0x100000) z16 = 0x100000;
             if (z16 < 0x8000) z16 = 0x8000;
-            const float b8 = (float)((z16 * (int64_t)(w >> 1)) / (int64_t)(g_lodq * 160)) / 65536.0f;
+            /* the half width capped at the original's widest mode (1024 x 768: 512), as the near plane is (glr.c u_dos_near):
+             * beyond it the distances kept growing (2560 wide: a mech's second model out to 680 m where DOS at 1024
+             * shows its third from 720 m), and the collision list's levels with them */
+            const int64_t hw = (w >> 1) < 512 ? (w >> 1) : 512;
+            const float b8 = (float)((z16 * hw) / (int64_t)(g_lodq * 160)) / 65536.0f;
             if (g_tex_kind == 3) g_dos_b8 = b8;   /* the drawn levels of detail (actor_lod): the look's */
             if (g_sim_kind == 3) g_sim_b8 = b8;   /* the simulation's (collision_lods): the mission's start look's */
         }
@@ -8401,7 +8503,7 @@ int main(int argc, char **argv)
                 vv.look_yaw = atan2f(ms->vx, ms->vz) * 180.0f / 3.14159265f;
                 vv.look_pitch = 0.0f;
                 vv.eye[0] = ms->x; vv.eye[1] = ms->y; vv.eye[2] = ms->z;
-            } else if (g_vport == 1) vv.look_yaw = v.look_yaw + 180.0f; else vv.look_pitch = -89.0f;   /* rear / straight down */
+            } else if (g_vport == 1) vv.look_yaw = v.look_yaw + (g_cheat_front ? 0.0f : 180.0f); else vv.look_pitch = -89.0f;   /* rear (voyeur: forward) / straight down */
             vv.vfov = 2.0f * atanf(tanf(73.74f * 3.14159265f / 360.0f) / 2.0f) * 180.0f / 3.14159265f;   /* all three at zoom 2.0 (0x1001bc50) */
             if (g_pit_first >= 0 && g_frame_layer.parts && g_pit_first < g_frame_layer.part_count) {
                 mech3d nopit = g_frame_layer;
@@ -8484,10 +8586,11 @@ int main(int argc, char **argv)
             float k = flash_level(g_sim.now, &in_ph);
             int ex_red;
             float ek = exit_fade_level(&ex_red);
-            if (g_exit_fade_t0 >= 0) {   /* DOS, leaving: the picture toward black / red (exit_fade_level), the bar not */
-                const float mul[3] = {1.0f - ek, 1.0f - ek, 1.0f - ek}, add[3] = {ex_red ? ek : 0.0f, 0, 0};
-                HUD_BEGIN(g_hud, w, h); hud_tint(g_hud, w, h, mul, add); hud_end(g_hud);
-            }
+            /* DOS, leaving: the picture toward black / red (exit_fade_level) - the HUD with it (the original draws the HUD into
+             * the 3D window, whose colours the fade takes: DOSBox BASSSCN1 Ctrl+Q, the instruments and texts darken with the
+             * view), the message bar not: tinted once the HUD is drawn, before the message lines (exit_tint) */
+            g_exit_tint_due = g_exit_fade_t0 >= 0;
+            g_exit_tint_k = ek; g_exit_tint_red = ex_red;
             if (k > 0 && g_tex_kind == 3) {   /* DOS: the palette - every colour toward (63, 0, 0) */
                 const float mul[3] = {1.0f - k, 1.0f - k, 1.0f - k}, add[3] = {k, 0, 0};
                 HUD_BEGIN(g_hud, w, h); hud_tint(g_hud, w, h, mul, add); hud_end(g_hud);
@@ -9649,6 +9752,7 @@ int main(int argc, char **argv)
             if (g_paused && g_hs_paused.tex)   /* 0x10036370: PAUSED centred in the rect (0, 0.2)-(1, 0.4), native size */
                 hud_draw(g_hud, &g_hs_paused, 320.0f - hud_px_x(g_hud, (float)g_hs_paused.w) * 0.5f,
                          144.0f - hud_px_y(g_hud, (float)g_hs_paused.h) * 0.5f, NULL);
+            exit_tint(w, h);
             /* message lines (engine 0x10003010 / 0x10002e40): line 0 an MSGBAR across the top (DOS capture: rows 0-48
              * at 1024x768, the text 17-27 px down), line 1 the same across the bottom; each drawn only while active */
             if (g_msg_t > 0) {
@@ -9672,6 +9776,7 @@ int main(int argc, char **argv)
             if (g_paused && g_hs_paused.tex)
                 hud_draw(g_hud, &g_hs_paused, 320.0f - hud_px_x(g_hud, (float)g_hs_paused.w) * 0.5f,
                          144.0f - hud_px_y(g_hud, (float)g_hs_paused.h) * 0.5f, NULL);
+            exit_tint(w, h);
             if (MSG_ONLY_VIEW) {   /* ejected / destroyed: the message lines stay (DOSBox: "Ejecting", "Press CTRL-Q to exit...") */
                 int k;
                 for (k = 0; k < 2; k++) {
@@ -9682,6 +9787,7 @@ int main(int argc, char **argv)
             }
             hud_end(g_hud);
         }
+        if (g_hud && g_exit_tint_due) { HUD_BEGIN(g_hud, w, h); exit_tint(w, h); hud_end(g_hud); }   /* no HUD pass this frame */
         if (g_hud) hud_set_flash(g_hud, 0, 0, 0, 0);
         if (g_render_w && g_world && g_lr_fbo[0]) { lowres_present(g_out_w, g_out_h); w = g_out_w; h = g_out_h; }
         if (g_sim_ok && g_world && g_hud && !getenv("MW2_NO_STARTUP") && (g_tex_kind == 3 || c3d_ti)) {
@@ -9696,17 +9802,16 @@ int main(int argc, char **argv)
              * vertex colour (DAT_1024e494) or the flat colours / HUD table (0x1002ac40), and the frame-3 fade targets the
              * time of day's slot (4 / 0 / 8: DAT_1024e494 off) - so the picture is there from the first frame; the HUD
              * and flat colours are the start slot's (hud_mission_palette). (Titanium textures keep the fade: not traced) */
-            static int frame, steps;
-            static int32_t prev_now;
+            /* At the original's frame rates (DOS: 10-30 a second) that is 0x16c ticks from the third frame; the port runs
+             * it on the simulation's clock: the same 0x16c ticks (2.0 s) at any frame rate. Counted in frames, a frame
+             * shorter than a tick gave 10 steps - at 144 frames a second the fade was over in 0.07 s and the mission
+             * seemed to start at full brightness */
+            static int frame;
+            static int32_t t3;
             float level;
             frame++;
-            if (frame == 3) {
-                float ticks = (float)(g_sim.now - prev_now) * 0.182f;
-                steps = ticks <= 0 ? 0x14 : ticks < 1.0f ? 10 : (int)(362.0f / ticks + 0.5f);
-                if (steps < 1) steps = 1;
-            }
-            prev_now = g_sim.now;
-            level = frame <= 3 ? 0.0f : (float)(frame - 3) / (float)steps;
+            if (frame == 3) t3 = g_sim.now;
+            level = frame <= 3 ? 0.0f : (float)(g_sim.now - t3) * 0.182f / 364.0f;
             g_fade_level = level > 1.0f ? 1.0f : level;
             if (level < 1.0f) {
                 int fw, fh;

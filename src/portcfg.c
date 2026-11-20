@@ -7,6 +7,10 @@
 #include <stdlib.h>
 #include <sys/stat.h>
 #include <errno.h>
+#ifndef _WIN32
+#include <dirent.h>
+#include <strings.h>
+#endif
 
 void portcfg_defaults(portcfg *c)
 {
@@ -34,6 +38,30 @@ static int find_ci(const char *dir, const char *name, char *out, size_t outlen)
     snprintf(p, sizeof p, "%s/%s", dir, name); if (exists(p)) { snprintf(out, outlen, "%s", p); return 1; }
     snprintf(p, sizeof p, "%s/%s", dir, upper); if (exists(p)) { snprintf(out, outlen, "%s", p); return 1; }
     snprintf(p, sizeof p, "%s/%s", dir, lower); if (exists(p)) { snprintf(out, outlen, "%s", p); return 1; }
+#ifndef _WIN32
+    {   /* any other case (a folder copied from Windows, which ignores it: "Install", "Cd", "Track02.MP3" ...) */
+        DIR *d = opendir(dir);
+        struct dirent *e;
+        int ok = 0;
+        if (!d) return 0;
+        while (!ok && (e = readdir(d)) != NULL)
+            if (strcasecmp(e->d_name, name) == 0) {
+                snprintf(p, sizeof p, "%s/%s", dir, e->d_name);
+                if (exists(p)) { snprintf(out, outlen, "%s", p); ok = 1; }
+            }
+        closedir(d);
+        return ok;
+    }
+#else
+    return 0;   /* (the file system ignores case) */
+#endif
+}
+int portcfg_find_ci(const char *dir, const char *name, char *out, size_t outlen) { return find_ci(dir, name, out, outlen); }
+/* a sub-folder of dir in any letter case: its path in out (as given when there is none) */
+static int dir_ci(const char *dir, const char *name, char *out, size_t outlen)
+{
+    if (find_ci(dir, name, out, outlen) && is_dir(out)) return 1;
+    snprintf(out, outlen, "%s/%s", dir, name);
     return 0;
 }
 
@@ -156,10 +184,8 @@ int portcfg_is_game_dir(const char *dir)
 {
     char p[PORTCFG_PATH * 2], tmp[PORTCFG_PATH];
     if (!is_dir(dir)) return 0;
-    snprintf(p, sizeof p, "%s/install", dir);
-    if (is_dir(p)) return 1;                                            /* a game folder */
-    snprintf(p, sizeof p, "%s/cd", dir);
-    if (is_dir(p)) return 1;            /* a game folder whose install files sit at the top (cd/ beside them) */
+    if (dir_ci(dir, "install", p, sizeof p)) return 1;                 /* a game folder (any letter case) */
+    if (dir_ci(dir, "cd", p, sizeof p)) return 1;   /* a game folder whose install files sit at the top (cd/ beside them) */
     return find_ci(dir, "DATABASE.MW2", tmp, sizeof tmp) && find_ci(dir, "MW2.PRJ", tmp, sizeof tmp);   /* a plain install */
 }
 
@@ -219,19 +245,17 @@ int portcfg_resolve(portcfg *c, const char *exe_dir, const char *hint)
             }
     }
     if (c->game[0]) {   /* the folder's parts, unless overridden */
-        snprintf(p, sizeof p, "%s/install", c->game);
-        if (!c->install[0]) snprintf(c->install, sizeof c->install, "%s", is_dir(p) ? p : c->game);   /* a plain install is its own */
-        snprintf(p, sizeof p, "%s/cd", c->game);
-        if (!c->cd[0] && is_dir(p)) snprintf(c->cd, sizeof c->cd, "%s", p);
-        snprintf(p, sizeof p, "%s/music", c->game);
-        if (!c->music[0] && is_dir(p)) snprintf(c->music, sizeof c->music, "%s", p);
-        snprintf(p, sizeof p, "%s/titanium", c->game);   /* the Titanium edition's 16-bit files */
-        if (!c->titanium[0] && is_dir(p)) snprintf(c->titanium, sizeof c->titanium, "%s", p);
+        /* (each in any letter case: a folder copied from Windows may hold "Install", "CD", "Music") */
+        int have = dir_ci(c->game, "install", p, sizeof p);
+        if (!c->install[0]) snprintf(c->install, sizeof c->install, "%s", have ? p : c->game);   /* a plain install is its own */
+        if (dir_ci(c->game, "cd", p, sizeof p) && !c->cd[0]) snprintf(c->cd, sizeof c->cd, "%s", p);
+        if (dir_ci(c->game, "music", p, sizeof p) && !c->music[0]) snprintf(c->music, sizeof c->music, "%s", p);
+        if (dir_ci(c->game, "titanium", p, sizeof p) && !c->titanium[0]) snprintf(c->titanium, sizeof c->titanium, "%s", p);   /* the Titanium edition's 16-bit files */
     }
     /* the DOS archive: the install's, else the disc's */
     if (!c->models[0] && c->install[0]) {
         if (!find_ci(c->install, "MW2.PRJ", c->models, sizeof c->models) && c->cd[0]) {
-            snprintf(p, sizeof p, "%s/%s", c->cd, app_cddata);
+            dir_ci(c->cd, app_cddata, p, sizeof p);
             if (!find_ci(p, "MW2.PRJ", c->models, sizeof c->models)) find_ci(c->cd, "MW2.PRJ", c->models, sizeof c->models);
         }
     }
@@ -254,7 +278,7 @@ int portcfg_edition(const portcfg *c, int ed, char *models, char *textures, char
     cp(models, c->models); cp(textures, c->textures); cp(kind, "dos"); cp(sky, ""); cp(fog, "");
     if (ed != PORTCFG_ED_ENHANCED && ed != PORTCFG_ED_DOS) return -1;
     if (!find_ci(c->install, "MW2.PRJ", a, sizeof a)) {   /* the DOS archive (the install's, else the disc's) */
-        snprintf(b, sizeof b, "%s/%s", c->cd, app_cddata);
+        dir_ci(c->cd, app_cddata, b, sizeof b);
         if (!c->cd[0] || (!find_ci(b, "MW2.PRJ", a, sizeof a) && !find_ci(c->cd, "MW2.PRJ", a, sizeof a))) return -1;
     }
     cp(models, a); cp(textures, a);

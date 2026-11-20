@@ -124,6 +124,8 @@ struct glr {
     /* the palette fade of the 3D editions (0x1002ad50): textured polygons in a flat colour, untextured ones toward a
      * target palette by their palette index (glr_set_world_fade) */
     rb_tex ptab_tex;
+    uint8_t ptab_last[256][3];              /* the table last uploaded to ptab_tex (glr_set_world_fade) */
+    int ptab_valid;
     int    dsign;                           /* glr_set_damage_shade */
     float  tint[3], pfade;
     int    tint_on;
@@ -1514,6 +1516,10 @@ void glr_set_world_fade(glr *r, const uint8_t pal[256][3], float k, const float 
     if (r->pfade > 0) {
         uint8_t img[256][4];
         int x;
+        /* only when the table changes: glview calls this every frame, and replacing a texture the frame in flight still
+         * samples makes the GPU backends wait for it - every frame while light amplification or a fade was on */
+        if (r->ptab_valid && memcmp(r->ptab_last, pal, sizeof r->ptab_last) == 0) return;
+        memcpy(r->ptab_last, pal, sizeof r->ptab_last); r->ptab_valid = 1;
         for (x = 0; x < 256; x++) { img[x][0] = pal[x][0]; img[x][1] = pal[x][1]; img[x][2] = pal[x][2]; img[x][3] = 255; }
         rb_tex_image(r->ptab_tex, 256, 1, img, 0);
         rb_tex_filter(r->ptab_tex, RB_NEAREST, RB_NEAREST);

@@ -798,7 +798,12 @@ static void unit_startup_sound(msim *s, int i)
 {
     float p3[3] = {(float)s->actors[i].mech.origin[0], s->units[i].y, (float)s->actors[i].mech.origin[2]};
     int enemy = (s->actors[i].friendly ? 0 : s->actors[i].alliance) == 1;
-    if (!s->on_sound) return;
+    /* only the units the mech controller runs: GBL's class table 0xa6520 (8 ints a class) gives classes 1, 2, 4, 5, 6 and
+     * 8 the mech controller 0x28a00 / 0x26a50 / 0x26d00 / 0x27b00 (whose state 0 -> 1 plays these and posts message 0x1a,
+     * 0x28567..0x2857d), class 3 (turrets) the artillery controller 0x2f300 / 0x2eed0 / 0x2f050 / 0x2f0f0 and class 7
+     * 0x33c90 / 0x337a0 / 0x33950 / 0x33a20 - neither plays 0x104 / 0xf7 nor calls 0x42e40, so a turret or door powering
+     * up is silent and posts no "Enemy power-up detected" */
+    if (!s->on_sound || s->actors[i].unit_class == 3 || s->actors[i].unit_class == 7) return;
     if (!enemy) s->on_sound(s->shot_user, 0xf7, p3);
     else if (s->now >= s->player_online_at && !s->player_unit.destroyed) {   /* +0x15 & 0x20: set at state 2, kept through a shutdown (state 3), cleared in states 0 / 4 */
         s->on_sound(s->shot_user, 0x104, p3);
@@ -1186,6 +1191,7 @@ static void terrain_release(void *t);
 static float wrap180(float a);
 static int los_blocked(const msim *s, float x0, float y0, float z0, float x1, float y1, float z1);
 static int jump_line_clear(const msim *s, int i, int who, float y, const float to[3]);
+static int fire_line_world_first(const msim *s, int i, int thing, const float to[3]);
 static void avoid_obstacles(msim *s, int i, ai_mind *m, float goal_bearing, float dt);
 static unsigned rnd_ms(unsigned *x);
 static unsigned rnd_ms(unsigned *x) { *x = *x * 1103515245u + 12345u; return (*x >> 16) & 0x7FFF; }
@@ -1896,8 +1902,12 @@ void msim_step(msim *s, int32_t dt_ms)
         if (s->ai_focus && s->ai_who && !(s->cmd && s->cmd[i]) && !(in_star ? cur >= 0 && s->logic.tables[ac->table].nodes[cur].lock == 2 : (m->lock_bits & 1))) {
             int self_al = ac->friendly ? 0 : ac->alliance, att = -2, q3;
             int pt = s->player_target;
-            if (s->player_attacks && pt == i && self_al == 1 && !s->player_unit.destroyed) att = -1;
-            if (self_al == 2 && s->player_victim == i && !s->player_unit.destroyed) att = -1;   /* a neutral the player hit */
+            /* the player is attacking a unit (its record state 3 with that unit as goal) once it has HIT it (0x516b0 ->
+             * 0x23970 with the projectile's owner) or run into an enemy (0x21a80: contact +0xa8 with an alliance-1 unit
+             * +0x7c -> 0x23970) - not for firing at it while targeted: a near miss does not wake a unit (the 3D editions'
+             * rule the port had used; GBL has none such). FindAttacker 0x22a90 takes another alliance only (0x2b620) */
+            (void)pt;
+            if (self_al != 0 && s->player_victim == i && !s->player_unit.destroyed) att = -1;
             for (q3 = 0; q3 < s->actor_count && att == -2; q3++) {
                 int al = s->actors[q3].friendly ? 0 : s->actors[q3].alliance;
                 if (q3 != i && s->armed[q3] && !s->units[q3].destroyed && s->ai_who[q3] == i && al != self_al) att = q3;
@@ -2969,7 +2979,11 @@ static void spawn_shot_h(msim *s, int weapon, int owner, const float from[3], co
     sh->ams_d = -1;
     sh->id = ++s->shot_serial;
     sh->cpa = -1;
-    if (owner == -1) s->player_last_shot = sh->id;   /* 0x10044xxx: DAT_1025a69c (kept only for a missile) */
+    /* the player's newest MISSILE (projectile type 3 / 4) - the one F10 / F9 follow: DOSBox BASSSCN1, an LRM 20 fired, then
+     * the machine gun, then F10 - the camera takes the missile. Every shot had counted, so after a laser or a gun F10 had
+     * nothing to follow (3Dfx: DAT_1025a69c, kept only for a missile) */
+    if (owner == -1 && weapon >= 0 && weapon < sim_wcount() && (sim_wtab()[weapon].type == 3 || sim_wtab()[weapon].type == 4))
+        s->player_last_shot = sh->id;
 }
 
 /* ---- GBL: the anti-missile system (weapon 29; fn0 0x54943, fn1 0x54aa3 -> 0x54bb0, toggle 0x548d0) ---------------- */
@@ -3507,7 +3521,7 @@ static void combat_step(msim *s, float dt)
 
     /* triggers and launches: the AI's fire decisions */
     for (i = 0; i < s->actor_count; i++) {
-        float dx, dz, from[3], to[3], ex = 0, ez = 0, ey = 0, ef = 0, eh = 0, aim_h;
+        float dx, dz, from[3], to[3], fire_to[3], ex = 0, ez = 0, ey = 0, ef = 0, eh = 0, aim_h;
         int who = -1;
         ai_mind *m = s->minds && s->ai_ok ? &s->minds[i] : NULL;
         /* the AI's trigger (+0x25): cleared by the state's movement (0x100130f0 case 2, 0x10013290), which does not
@@ -3519,6 +3533,8 @@ static void combat_step(msim *s, float dt)
         dx = ex - (float)s->actors[i].mech.origin[0];
         dz = ez - (float)s->actors[i].mech.origin[2];
         from[0] = (float)s->actors[i].mech.origin[0]; from[1] = s->units[i].y + s->height[i] * 0.7f; from[2] = (float)s->actors[i].mech.origin[2];
+        /* the fire line's far end (GBL 0x2c2a0: the target's +0xc8..+0xd0 - a unit's centre, as 0x2e450's) */
+        fire_to[0] = ex; fire_to[1] = who >= -1 ? unit_centre_y(s, who) : aim_h; fire_to[2] = ez;
         if (m) {   /* AI missile lock (0x10044560, every live mech, for the AI's selected weapon +0xac = combat_unit.ai_sel):
                     * guided, origin distance (3D) in the weapon's window (+0x3c < d <= +0x40), within 16 degrees of the aim
                     * (bearing off heading + lagged twist; pitch + elevation): 0x8000 on target; 0x40 + a 0x16c-tick timer (GBL
@@ -3579,14 +3595,16 @@ static void combat_step(msim *s, float dt)
                     cu->ai_trigger = fw >= 0 && !los_blocked(s, (float)s->actors[i].mech.origin[0], s->units[i].y + s->height[i] * 0.7f,
                                                              (float)s->actors[i].mech.origin[2], ex, aim_h, ez) &&
                                      !los_unit_first(s, i, who, (float)s->actors[i].mech.origin[0], s->units[i].y + s->height[i] * 0.7f,
-                                                     (float)s->actors[i].mech.origin[2], ex, aim_h, ez);
+                                                     (float)s->actors[i].mech.origin[2], ex, aim_h, ez) &&
+                                     !fire_line_world_first(s, i, who == -3 && (m->node_tgt >> 16) == 4 ? (int)(m->node_tgt & 0xffff) : -1, fire_to);
                 }
             }
         } else if (who == -1 && order_attacks_player(s, i) &&
             !los_blocked(s, (float)s->actors[i].mech.origin[0], s->units[i].y + s->height[i] * 0.7f, (float)s->actors[i].mech.origin[2],
                          ex, aim_h, ez) &&
             !los_unit_first(s, i, who, (float)s->actors[i].mech.origin[0], s->units[i].y + s->height[i] * 0.7f, (float)s->actors[i].mech.origin[2],
-                            ex, aim_h, ez)) {
+                            ex, aim_h, ez) &&
+            !fire_line_world_first(s, i, -1, fire_to)) {
             int fw;
             /* homing only if locked when triggered (0x100437a0 / 0x100443a0): the volley latches the target in its slot */
             s->units[i].lock_target = !m || !(m->lock & 0x80) ? -2 : who >= -1 ? who
@@ -5642,6 +5660,7 @@ static int probe_engine(const msim *s, int self, const float p0[3], const float 
 
 /* dos: the DOS broad phase (dos_broad_reject) for the world entries and the units' pieces */
 static int probe_unit_hit;   /* the unit the last probe_engine_ex stopped at (hit 2): -1 the player, an actor; -2 none */
+static int probe_entry_hit;  /* the collision entry the last probe_engine_ex stopped at (hit 1); -1 none */
 static int probe_engine_ex(const msim *s, int self, const float p0[3], const float p1[3], int dos, int *climb, float *ox, float *oz)
 {
     const terrain_t *t = (const terrain_t *)s->terrain;
@@ -5649,10 +5668,12 @@ static int probe_engine_ex(const msim *s, int self, const float p0[3], const flo
     int ci, hit = 0, k;
     *climb = 0;
     probe_unit_hit = -2;
+    probe_entry_hit = -1;
     if (t && clist_seg(s, p0, p1, dos ? 2 : 0, &tt, n, &ci)) {
         const cobj_t *c = &t->co[ci];
         float box[6], sph[4];
         hit = 1;
+        probe_entry_hit = ci;
         *climb = ((c->type == 0 || c->type == 5) && n[1] > 0.7660444f) || (s->world->parts[c->part].objtype & 0xf0) == 0x50;
         cobj_now(s, c, box, sph);
         *ox = sph[0]; *oz = sph[2];
@@ -5681,7 +5702,7 @@ static int probe_engine_ex(const msim *s, int self, const float p0[3], const flo
                 hl = e > 0.0f ? e : g0.len;   /* 0x100107b0: the end stays when the entry is 0 */
                 if (!(e < tt) || !(hl < tt)) continue;
                 tt = hl;
-                hit = 2; *climb = 0; *ox = sph[0]; *oz = sph[2]; probe_unit_hit = k;
+                hit = 2; *climb = 0; *ox = sph[0]; *oz = sph[2]; probe_unit_hit = k; probe_entry_hit = -1;
                 if (getenv("MW2_PROBE_TRACE")) fprintf(stderr, "probe %.2fs actor %d: unit %d piece %s r %.0f at %.0f of %.0f\n", s->now / 1000.0, self, k, pp->model_name, sph[3], hl, g0.len);   /* TEST ONLY */
             }
         }
@@ -5698,6 +5719,24 @@ static int jump_line_clear(const msim *s, int i, int who, float y, const float t
     int climb, hit = probe_engine_ex(s, i, p0, to, 1, &climb, &ox, &oz);
     return !hit || (hit == 2 && probe_unit_hit == who);
 }
+/* GBL 0x2c2a0 (the fire decision 0x2eb60, pilots below level 5: +0x19c bit 0x10): the line from the unit (+0x50..+0x58, its
+ * centre) to its target (+0xc8..+0xd0) through the same collision-list query as 0x2e450 (0x1da90 / 0x1dbb0 / 0x1c640: the
+ * whole object list 0xa5f6c, only the unit's own pieces skipped - no size limit, so the mesas, ridges and ice shelves are
+ * in it); the nearest object struck must be the target. los_blocked / los_unit_first test the buildings and the units;
+ * this adds the rest of the list: 1 when the first thing struck is a world entry other than the target thing (thing >= 0:
+ * its bld index) */
+static int fire_line_world_first(const msim *s, int i, int thing, const float to[3])
+{
+    const terrain_t *t = (const terrain_t *)s->terrain;
+    float p0[3] = {(float)s->actors[i].mech.origin[0], unit_centre_y(s, i), (float)s->actors[i].mech.origin[2]}, ox, oz;
+    int climb, part;
+    if (probe_engine_ex(s, i, p0, to, 1, &climb, &ox, &oz) != 1 || probe_entry_hit < 0 || !t) return 0;
+    part = t->co[probe_entry_hit].part;
+    if (thing >= 0 && t->thing_of && part < t->nparts && t->thing_of[part] == thing) return 0;
+    if (getenv("MW2_LOS_TRACE")) fprintf(stderr, "los: %.2fs actor %d held by %s\n", s->now / 1000.0, i, s->world->parts[part].model_name);   /* TEST ONLY */
+    return 1;
+}
+
 int msim_test_probe(const msim *s, const float p0[3], const float p1[3], float *ox, float *oz)   /* TEST ONLY */
 {
     int climb;
@@ -5983,4 +6022,10 @@ void msim_jet_flames(msim *s, float x, float y, float z, float heading)
         fx_start(s, FX_JET, p);
     }
     s->fx_rot_ok = 0;
+}
+
+/* the "palex" cheat (GBL 0x46530 -> 0x25680 on the target's mech): the unit dies at once, nothing blown off */
+void msim_cheat_kill(msim *s, int i)
+{
+    if (i >= 0 && i < s->actor_count && s->armed && s->armed[i] && !s->units[i].destroyed) self_destruct(s, i);
 }
