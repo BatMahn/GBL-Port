@@ -6,7 +6,7 @@ or Vulkan on Windows, Vulkan on Linux, Metal on macOS); builds on macOS, Linux a
 
 As on DOS, Ghost Bear's Legacy is its own program: `gbl`.
 
-## Status (1.0.8, 2026-11-21)
+## Status (1.0.9, 2026-11-21)
 Complete and playable from start to finish: all 22 campaign missions, the Combat Simulator and the Mech Lab. Tagged
 releases (`v*`) are built by GitHub Actions: a macOS app (Apple Silicon), a Linux tarball (x86_64, SDL3 included), a
 Fedora RPM and a Windows zip. Or build from source (below).

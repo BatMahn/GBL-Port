@@ -153,8 +153,13 @@ void main() {
       int b = s + 3 * k;
       for (int c = (k == 0 ? 0 : 1); c < 3; c++) {
         if (c == 2 && ((int(dvtx(b * 13 + 12) + 0.5) % 32 / 3) & 2) == 0) break;
-        Cc[n] = dos_cam(vec3(dvtx((b + c) * 13), dvtx((b + c) * 13 + 1), dvtx((b + c) * 13 + 2)));
-        if (Cc[n].z < nr) near = true;
+        vec3 wc = vec3(dvtx((b + c) * 13), dvtx((b + c) * 13 + 1), dvtx((b + c) * 13 + 2));
+        vec4 qc = u_mvp * vec4(wc, 1.0);
+        Cc[n] = dos_cam(wc);
+        // (a corner GL's near plane cuts counts too: a cockpit corner between the set's near plane, 8 cm, and GL's
+        // leaves the polygon ungrown and cut short by GL, while the DOS span runs on - a thin line of the world showed
+        // between the pieces, DOSBox NEWCSCN1 Warhammer IIC: none)
+        if (Cc[n].z < nr || qc.z + qc.w < 0.0 || qc.w <= 0.0) near = true;
         n++;
       }
       if (((int(dvtx(b * 13 + 12) + 0.5) % 32 / 3) & 2) != 0) break;

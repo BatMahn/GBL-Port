@@ -380,7 +380,10 @@ vec3 dos_gouraud(float lev) {
     bool pitclip = false; int nr = dos_nearof(s);
     if (trust && nr > 0) {
       ivec3 Cc[18]; bool near = false;
-      for (int i = 0; i < n; i++) { int b2 = I[i] * 13; Cc[i] = dos_cam(vec3(dvtx(b2), dvtx(b2 + 1), dvtx(b2 + 2))); if (Cc[i].z < nr) near = true; cmin = min(cmin, C[i]); cmax = max(cmax, C[i]); }
+      // (a corner GL's near plane cuts too - z + w < 0: a cockpit corner between the set's near plane, 8 cm, and GL's -
+      // the camera integers then, not GL's cut, as world.vert's box; GL's cut left the span short of the original's and a
+      // thin line of the world between the pieces, DOSBox NEWCSCN1 Warhammer IIC: none)
+      for (int i = 0; i < n; i++) { int b2 = I[i] * 13; Cc[i] = dos_cam(vec3(dvtx(b2), dvtx(b2 + 1), dvtx(b2 + 2))); if (Cc[i].z < nr || P[i].z + P[i].w < 0.0 || P[i].w <= 0.0) near = true; cmin = min(cmin, C[i]); cmax = max(cmax, C[i]); }
       if (near) {
         pitclip = true; cam = true; float tt;
         for (int k = 0; k <= n; k++) {

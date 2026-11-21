@@ -260,7 +260,13 @@ static void vertex_stage(int vid, int i, wv *o)
             int I[18], n = poly_corners(s, I, 18), Cc[18][3], k;
             pc_pit.s = s; pc_pit.isnear = 0; pc_pit.any = 0;
             pc_pit.lo[0] = pc_pit.lo[1] = 1 << 30; pc_pit.hi[0] = pc_pit.hi[1] = -(1 << 30);
-            for (k = 0; k < n; k++) { float w3[3]; dpos(I[k], w3); dos_cam(w3, Cc[k]); if (Cc[k][2] < nr) pc_pit.isnear = 1; }
+            for (k = 0; k < n; k++) {
+                float w3[3], w4[4], q[4];
+                dpos(I[k], w3); dos_cam(w3, Cc[k]);
+                w4[0] = w3[0]; w4[1] = w3[1]; w4[2] = w3[2]; w4[3] = 1.0f; mat4v(F->u_mvp, w4, q);
+                /* (a corner GL's near plane cuts counts too: world.vert) */
+                if (Cc[k][2] < nr || q[2] + q[3] < 0.0f || q[3] <= 0.0f) pc_pit.isnear = 1;
+            }
             if (pc_pit.isnear)
                 for (k = 0; k <= n && n >= 3; k++) {
                     const int cur = k % n, prv = (k + n - 1) % n, bc = Cc[cur][2] < nr, bp = Cc[prv][2] < nr;
@@ -1058,7 +1064,7 @@ static void dpoly_make(int s, float lev, dpoly *P)
         for (i = 0; i < n; i++) {
             float w3[3];
             dpos(I[i], w3); dos_cam(w3, Cc[i]);
-            if (Cc[i][2] < nr) isnear = 1;
+            if (Cc[i][2] < nr || Pc[i][2] + Pc[i][3] < 0.0f || Pc[i][3] <= 0.0f) isnear = 1;   /* (GL's near plane too: world.frag) */
             if (C[i] < P->cmin) P->cmin = C[i];
             if (C[i] > P->cmax) P->cmax = C[i];
         }

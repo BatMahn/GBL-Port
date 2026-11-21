@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.0.9 (2026-11-21)
+
+- **Cockpits: no more lines of light between the pieces (DOS and ENHANCED looks).** A cockpit corner between the
+  cockpit set's own near plane (8 cm) and the renderer's (farther out) was cut by the renderer, not by the original's
+  integers, so the piece came out short of the original's span and the world showed through along its edges - the
+  Warhammer IIC's struts, the Marauder IIC's upper struts in bright streaks. Such a polygon now takes the original's
+  path (the camera integers, the span's own coverage). DOSBox NEWCSCN1, standing, 12 s: the Warhammer IIC 581 pixels
+  from DOS (3290 before), the Marauder IIC 251 (5980); the other cockpits, the 23-scene comparison (138 frames) and
+  `make check` unchanged. Mirrored in the legacy renderer.
+- **Enemies checked against DOS (no change):** the armour factors are the original loader's (GBL 0x4d670: the player
+  x 4; enemies x 1 / 3 / 4 on Easy / Medium / Hard, the player's side x 3 / 3 / 4), and a Warhammer IIC standing still
+  on NEWCSCN1 is destroyed in about 34 s under DOSBox, 44 s in the port. Since 1.0.7 the player's heat sinks also work
+  at the original's rate on cold planets (most missions build every unit before the planet is read, so the temperate
+  rate) - you overheat sooner there than in 1.0.6, as in DOS.
+
 ## 1.0.8 (2026-11-21)
 
 - **Releases: no legacy Windows zip.** The 32-bit legacy Windows build is no longer built for releases - it has not been
