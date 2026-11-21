@@ -1,7 +1,7 @@
 name: Release
 
-# Builds gbl for macOS (Apple Silicon), Debian / Ubuntu (.deb), Fedora (.rpm), Windows (zip) and the legacy Windows build
-# (32-bit, Windows XP and newer, OpenGL 1.2: windows-x86-legacy zip).
+# Builds gbl for macOS (Apple Silicon, zip), Linux (x86_64 tarball with SDL3 beside gbl), Fedora (.rpm) and Windows (zip) -
+# the MW2 port's set (the legacy 32-bit Windows build is not released yet).
 #   - push a tag v* (git tag v0.1.0 && git push origin v0.1.0): build everything and publish a GitHub release
 #   - Actions tab -> Release -> Run workflow: build everything; the packages are the run's artifacts (no release)
 on:
@@ -27,30 +27,33 @@ jobs:
       - name: Package
         run: |
           mkdir -p dist
-          zip -r -y "dist/GBL-Port-${{ github.ref_name }}-macos-arm64.zip" "Ghost Bear's Legacy.app" README.md FOLDER_SETUP.md
+          zip -r -y "dist/GBL-Port-${{ github.ref_name }}-macos-arm64.zip" "Ghost Bear's Legacy.app"
 
       - uses: actions/upload-artifact@v4
         with:
           name: macos
           path: dist/*.zip
 
-  build-debian:
-    runs-on: ubuntu-22.04   # the oldest supported Ubuntu: the package also installs on newer Ubuntu / Debian
+  build-linux:
+    runs-on: ubuntu-22.04   # (older glibc: the tarball runs on more systems)
     env:
-      SDL3_VERSION: 3.2.24
+      SDL3_VERSION: 3.4.18
     steps:
       - uses: actions/checkout@v4
 
       - name: Install build deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake ninja-build pkg-config \
+          # (libgl / libegl: SDL3's own build - its OpenGL / EGL video and render backends; gbl draws through SDL's GPU
+          # API - Vulkan on Linux, loaded at run time; SDL3 carries the Vulkan headers - and its shaders are in the source)
+          sudo apt-get install -y build-essential cmake ninja-build pkg-config libgl1-mesa-dev libegl1-mesa-dev \
             libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev libxss-dev libxtst-dev \
             libxkbcommon-dev libwayland-dev wayland-protocols libdecor-0-dev libdrm-dev libgbm-dev \
             libasound2-dev libpulse-dev libpipewire-0.3-dev libdbus-1-dev libudev-dev libibus-1.0-dev
 
-      # Ubuntu has no SDL3 package: build it from the release tarball; the .deb ships libSDL3.so.0 in /usr/lib/gblport
-      # (gbl finds it there through its rpath). X11 / Wayland / ALSA / PulseAudio / PipeWire are loaded at run time.
+      # Ubuntu 22.04 / 24.04 have no SDL3 package: build the release from source (its video / audio backends are loaded
+      # at run time, so one build serves X11 and Wayland, PulseAudio, PipeWire and ALSA) and ship libSDL3.so.0 beside gbl
+      # (found through gbl's $ORIGIN rpath)
       - name: Build SDL3
         run: |
           curl -sSfL -o sdl3.tar.gz https://github.com/libsdl-org/SDL/releases/download/release-${SDL3_VERSION}/SDL3-${SDL3_VERSION}.tar.gz
@@ -60,21 +63,25 @@ jobs:
           cmake --build sdl3-build
           cmake --install sdl3-build
           echo "PKG_CONFIG_PATH=$PWD/sdl3/lib/pkgconfig" >> $GITHUB_ENV
-          echo "SDL3_LIB=$PWD/sdl3/lib/libSDL3.so.0" >> $GITHUB_ENV
+          echo "SDL3_DIR=$PWD/sdl3" >> $GITHUB_ENV
 
       - name: Build
-        run: make gbl RPATH='$$ORIGIN/../lib/gblport'
+        run: make gbl RPATH='$$ORIGIN'
 
       - name: Package
         run: |
-          VERSION=${GITHUB_REF_NAME#v}
-          case "$VERSION" in [0-9]*) ;; *) VERSION=0.0.0~${GITHUB_SHA::7} ;; esac
-          sh packaging/linux/build_deb.sh "$VERSION" "$SDL3_LIB"
+          mkdir -p dist/GBL-Port
+          readelf -d gbl | grep -q 'RUNPATH.*\$ORIGIN\|RPATH.*\$ORIGIN'
+          cp gbl dist/GBL-Port/
+          cp -L $SDL3_DIR/lib/libSDL3.so.0 dist/GBL-Port/
+          cp -r assets dist/GBL-Port/
+          cp README.md FOLDER_SETUP.md THIRD_PARTY.md dist/GBL-Port/
+          cd dist && tar czf GBL-Port-${{ github.ref_name }}-linux-x86_64.tar.gz GBL-Port
 
       - uses: actions/upload-artifact@v4
         with:
-          name: debian
-          path: dist/*.deb
+          name: linux
+          path: dist/*.tar.gz
 
   build-fedora:
     runs-on: ubuntu-latest
@@ -104,7 +111,7 @@ jobs:
   build-windows:
     runs-on: ubuntu-24.04   # cross-compiled with MinGW-w64; ships SDL3.dll beside gbl.exe
     env:
-      SDL3_VERSION: 3.2.24
+      SDL3_VERSION: 3.4.18
     steps:
       - uses: actions/checkout@v4
 
@@ -133,51 +140,9 @@ jobs:
           name: windows
           path: dist/*.zip
 
-  build-windows-legacy:
-    # the legacy build for Windows XP-era PCs: 32-bit, SDL2 (SDL3 does not run on XP), the OpenGL 1.2 renderer (RB=gl12),
-    # SSE2 (Pentium 4 / Athlon 64 or newer); ships SDL2.dll beside gbl.exe. Modern PCs: the windows-x64 zip
-    runs-on: ubuntu-24.04
-    env:
-      SDL2_VERSION: 2.32.10
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install MinGW-w64 (i686) and SDL2 (MinGW development package)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y mingw-w64 pkg-config zip
-          curl -sSfL -o sdl2.tar.gz https://github.com/libsdl-org/SDL/releases/download/release-${SDL2_VERSION}/SDL2-devel-${SDL2_VERSION}-mingw.tar.gz
-          tar xzf sdl2.tar.gz
-          echo "SDL2_PREFIX=$PWD/SDL2-${SDL2_VERSION}/i686-w64-mingw32" >> $GITHUB_ENV
-
-      - name: Build
-        run: make gbl WINDOWS=1 RB=gl12 SDL=2 CC=i686-w64-mingw32-gcc SDL2_DIR=$SDL2_PREFIX
-
-      - name: Check the imports (every DLL function Windows XP SP3 has, no MinGW runtime DLL)
-        run: |
-          i686-w64-mingw32-objdump -p gbl.exe | grep -E "DLL Name|^\s+[0-9a-f]+\s+[0-9]+ " > imports.txt
-          cat imports.txt
-          if grep -i -E "api-ms-win|ucrtbase|GetTickCount64|ConditionVariable|GetThreadId|SetFileInformationByHandle|GetFileInformationByHandleEx|_putenv_s|InitOnce|SRWLock|FlsAlloc|InitializeCriticalSectionEx|GetFinalPathNameByHandle|CreateSymbolicLink|libwinpthread|libgcc_s|libstdc" imports.txt; then
-            echo "gbl.exe imports a function or DLL Windows XP does not have" >&2; exit 1
-          fi
-          i686-w64-mingw32-objdump -p gbl.exe | grep -E "MajorSubsystemVersion\s+[45]$"
-
-      - name: Package
-        run: |
-          mkdir -p dist/GBL-Port
-          cp gbl.exe $SDL2_PREFIX/bin/SDL2.dll dist/GBL-Port/
-          cp -r assets dist/GBL-Port/
-          cp README.md FOLDER_SETUP.md THIRD_PARTY.md packaging/windows/README-legacy.txt dist/GBL-Port/
-          cd dist && zip -r GBL-Port-${{ github.ref_name }}-windows-x86-legacy.zip GBL-Port
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: windows-legacy
-          path: dist/*.zip
-
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build-macos, build-debian, build-fedora, build-windows, build-windows-legacy]
+    needs: [build-macos, build-linux, build-fedora, build-windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write

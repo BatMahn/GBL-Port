@@ -1,16 +1,15 @@
 # MechWarrior 2: Ghost Bear's Legacy (DOS, 1995) - native port
 
-A native 64-bit reimplementation (with a 32-bit legacy build for Windows XP-era PCs) of **MechWarrior 2: Ghost Bear's Legacy**, the 1995 expansion, rebuilt from the
+A native 64-bit reimplementation (with a 32-bit legacy build for Windows XP-era PCs in progress) of **MechWarrior 2: Ghost Bear's Legacy**, the 1995 expansion, rebuilt from the
 original disc's `GBL\MW2SHELL.EXE` and `GBL\MW2.EXE`. Portable C99 with SDL3, drawn through SDL3's GPU API (Direct3D 12
 or Vulkan on Windows, Vulkan on Linux, Metal on macOS); builds on macOS, Linux and Windows. You need your own copy of the game (see "Setting up the game folder").
 
 As on DOS, Ghost Bear's Legacy is its own program: `gbl`.
 
-## Status (1.0.7, 2026-11-21)
+## Status (1.0.8, 2026-11-21)
 Complete and playable from start to finish: all 22 campaign missions, the Combat Simulator and the Mech Lab. Tagged
-releases (`v*`) are built by GitHub Actions: a macOS app (Apple Silicon), a Debian / Ubuntu package, a Fedora RPM, a
-Windows zip and a Windows legacy zip (32-bit, Windows XP and newer, OpenGL 1.2 - see "The legacy build"). Or build from
-source (below).
+releases (`v*`) are built by GitHub Actions: a macOS app (Apple Silicon), a Linux tarball (x86_64, SDL3 included), a
+Fedora RPM and a Windows zip. Or build from source (below).
 
 Since the first playable release the work has been fidelity: checking the port against the original running in DOSBox,
 frame by frame and value by value, and fixing what differs. Every mission in MW2.PRJ (63) and all 23 GBL scenes complete
@@ -77,16 +76,17 @@ The game draws through SDL3's GPU API; the legacy Windows build (below) through 
 | macOS | Metal | macOS 10.14 or newer; Apple Silicon or a Metal-capable Intel Mac |
 
 In practice that means a GeForce GTX 600, Radeon HD 7700, Intel Haswell (Direct3D 12) or Skylake (Vulkan) or newer.
-Older cards and Windows 7 can't run it - use the legacy build. If no graphics interface starts, the game says why in a
+Older cards and Windows 7 can't run it - the legacy build (below, source only for now) is meant for them. If no graphics interface starts, the game says why in a
 message and exits.
 
-### The legacy build (older PCs)
+### The legacy build (older PCs, not released yet)
 
-For PCs those minimums leave out there is a legacy Windows build (`windows-x86-legacy` zip): the same game, all three
+For PCs those minimums leave out there is a legacy Windows build in the source - not yet in the releases, so build it
+yourself (docs/RENDERER_GL12.md): the same game, all three
 looks, drawn with OpenGL 1.2's fixed-function pipeline ([docs/RENDERER_GL12.md](docs/RENDERER_GL12.md)) and running on
 SDL2 (SDL3 does not run on Windows XP).
 
-| | Legacy build (`windows-x86-legacy`) |
+| | Legacy build |
 |---|---|
 | System | Windows XP SP3 or newer, 32-bit (runs on 64-bit Windows too) |
 | CPU | Pentium 4 / Athlon 64 or newer (SSE2: the simulation's arithmetic is the 64-bit builds', so missions play the same) |
@@ -115,7 +115,7 @@ SDL loads Vulkan / Direct3D 12 / Metal at run time, and the shaders are compiled
     sh scripts/macos_app.sh                  # macOS: "Ghost Bear's Legacy.app", with SDL3 bundled inside
     sh packaging/linux/build_deb.sh 0.1.0    # Debian / Ubuntu: dist/gblport_0.1.0_amd64.deb (needs libsdl3-0)
     make gbl RPATH='$$ORIGIN/../lib/gblport' && sh packaging/linux/build_deb.sh 0.1.0 $HOME/sdl3/lib/libSDL3.so.0
-                            # ... or with your SDL3 inside the package (/usr/lib/gblport), as the release does
+                            # ... or with your SDL3 inside the package (/usr/lib/gblport)
 
 SDL3 is found with pkg-config (`PKG_CONFIG_PATH`, or `SDL3_CONFIG="pkg-config sdl3"` for another command).
 

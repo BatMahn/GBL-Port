@@ -1,7 +1,18 @@
 # Changelog
 
+## 1.0.8 (2026-11-21)
+
+- **Releases: no legacy Windows zip.** The 32-bit legacy Windows build is no longer built for releases - it has not been
+  tested on its target yet; it stays in the source (README "The legacy build"). A release is now the macOS app, the Linux
+  tarball, the Fedora RPM and the Windows zip.
+- **The 1.0.7 release failed to build:** the legacy Windows build (SDL2) had no `SDL_HideCursor` (1.0.7's menu pointer), so
+  its job failed and with it the release. The SDL2 build has it now (`src/sdlcompat.h`); 1.0.8 is 1.0.7's game.
+
 ## 1.0.7 (2026-11-21)
 
+- **Releases as the MW2 port's:** a Linux tarball (x86_64, `GBL-Port-<version>-linux-x86_64.tar.gz`, SDL3 inside, runs
+  where it is unpacked) replaces the Debian package; the macOS zip holds the app alone; the Windows and Linux builds use
+  SDL 3.4 (the menus' sharper scaling). The Fedora RPM and the Windows zips are as before.
 - **Menus: the original's mouse pointer.** In a window the menus showed the system's arrow; they now draw the game's own
   grey pointer, over everything on every screen, as the DOS game does, and the system's arrow is hidden over the window.
 - **DOS and ENHANCED looks: fast on graphics chips at high resolutions.** 1.0.6 was still far too slow on a real

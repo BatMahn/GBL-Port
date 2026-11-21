@@ -391,6 +391,7 @@ MW2C SDL_Surface *mw2c_RenderReadPixels(SDL_Renderer *r, const SDL_Rect *rect)
 #define SDL_RenderReadPixels(r, rect) mw2c_RenderReadPixels(r, rect)
 #define SDL_ConvertSurface(s, f) SDL_ConvertSurfaceFormat(s, f, 0)
 #define SDL_DestroySurface SDL_FreeSurface
+#define SDL_HideCursor() (SDL_ShowCursor(SDL_DISABLE) >= 0)
 
 /* ---- audio: SDL3's device stream (the callback asks for bytes, SDL_PutAudioStreamData answers) as SDL2's callback
  * device; the stream's lock is the device's (SDL2 holds it through the callback, as SDL3 holds the stream's) */
