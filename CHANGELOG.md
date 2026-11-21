@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.4 (2026-11-20)
+
+- **macOS: the app's new icon** - the artwork fills the whole square and macOS rounds its corners, as current macOS
+  expects; the old icon had its own rounded frame, so it showed as a smaller tile inside the system's.
+
 ## 1.0.3 (2026-11-20)
 
 - **Levels of detail at large window sizes:** the distances at which 'Mechs and objects switch to their simpler models
