@@ -50,7 +50,9 @@ layout(std140, set = UBO_SET, binding = 1) uniform WorldDraw {
     int   u_shadow;    float u_alpha;    int u_blend;  int u_tinton;
     int   u_horizon;   int   u_tilit;   int u_onlayer;   // u_onlayer: drawing from a layer (its vertex buffer bound: dvtx)
     int   u_dlist;     // the layer's DOS draw list is bound (u_dos_rank: glr_dos_list)
-    int   u_clip_pass; // 0 every polygon; 1 the listed ones the 2D clip leaves alone (the lean DOS program); 2 the rest (the clip variant)
+    int   u_clip_pass; // 0 every polygon; 1 the listed ones with their records made on the CPU or needing none (the lean DOS
+                       // program, DOS_REC); 2 the rest (the per-pixel fill: the cockpit, lines, the polygons the CPU left)
+    int   u_dl_n;      // the layer's polygons in the draw list: u_dos_rank[u_dl_n + i] is polygon i's record (world.vert)
 };
 
 #define u_pit_rank(i) u_pit_rank4[(i) >> 2][(i) & 3]
@@ -174,7 +176,15 @@ bool dos_line_on(ivec2 p, ivec2 a, ivec2 b) {
     VLOC(8) flat VARY ivec4 v_i1; \
     VLOC(9) flat VARY vec4 v_sph; \
     VLOC(10) flat VARY vec4 v_f0; \
-    VLOC(11) noperspective VARY vec2 v_gs;
+    VLOC(11) noperspective VARY vec2 v_gs; \
+    V_LOC_DOS
+#if DOS_LOOK
+// the DOS look: the polygon's records (world.frag DOS_REC: their offset in the layer's record buffer, -1 none)
+#define V_LOC_DOS VLOC(12) flat VARY ivec4 v_i2;
+#define v_drec v_i2.x
+#else
+#define V_LOC_DOS
+#endif
 #define VLOC(n) layout(location = n)
 #define v_texsel v_i0.x
 #define v_emask  v_i0.y

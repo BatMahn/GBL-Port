@@ -42,9 +42,11 @@ enum { RB_LESS, RB_LEQUAL };
  * colour 3, texsel, edge), 1 = the bounding sphere (4 floats), 2 = the Titanium colour (4 floats); the HUD 0 = x, y,
  * u, v. Uniform slots: the world 0 rb_world_frame, 1 rb_world_draw (both stages); the HUD 0 rb_hud_draw (fragment).
  * Texture units: the world 0 u_tex, 1 u_dos_tab, 2 u_ptab; the HUD 0. Storage buffer (the DOS programs): the layer's
- * vertices; the DOS programs' vertex stage a second one: the polygons' draw-list depths (rb_storage_aux) */
-enum { RB_PROG_WORLD, RB_PROG_WORLD_DOS, RB_PROG_HUD, RB_PROG_WORLD_DOSDBG, RB_PROG_WORLD_DOSCLIP, RB_PROG_COUNT };   /* _DOSCLIP: the DOS
-   * fill with the paint's 2D clip (the rare polygons glr's draw list flags, and the cockpit's) */
+ * vertices; the DOS programs' vertex stage a second one: the polygons' draw-list depths (rb_storage_aux); the lean DOS
+ * program's fragment stage a second one: the polygons' records (rb_storage_frag) */
+enum { RB_PROG_WORLD, RB_PROG_WORLD_DOS, RB_PROG_HUD, RB_PROG_WORLD_DOSDBG, RB_PROG_WORLD_DOSCLIP, RB_PROG_COUNT };   /* _DOS: the lean
+   * DOS fill (each polygon's records made on the CPU, glr.c glr_dos_records); _DOSCLIP: the per-pixel fill, with the
+   * paint's 2D clip (what the records leave: lines, the polygons the CPU cannot reproduce, everything off the list) */
 /* the GPU backends (gblport.cfg gpu=): AUTO = the platform's first (Windows Direct3D 12, then Vulkan); OPENGL: the
  * RB=gl12 build's (its only one) */
 enum { RB_GPU_AUTO, RB_GPU_D3D12, RB_GPU_VULKAN, RB_GPU_METAL, RB_GPU_OPENGL };
@@ -119,6 +121,9 @@ void rb_storage(rb_buf b);
 /* the DOS program's second storage buffer, read by its vertex stage only: the layer's polygons' draw-list depths (glr.c
  * glr_dos_list; 0: none) */
 void rb_storage_aux(rb_buf b);
+/* the lean DOS program's storage buffer read by its fragment stage: the layer's polygon records (glr.c glr_dos_records;
+ * 0: none) */
+void rb_storage_frag(rb_buf b);
 void rb_draw(int first, int count);
 
 /* TEST ONLY (tools/audit/lookswitch.py): the live texture and buffer handles, and the GPU objects behind them (SDL_GPU:

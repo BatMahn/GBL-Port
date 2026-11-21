@@ -181,7 +181,6 @@ static void vertex_stage(int vid, int i, wv *o)
     /* the DOS draw list (world.vert): the polygon's depth along the painting order, or not listed */
     const int dli = g_dosprog && F->u_dos != 0 && F->u_dos_order != 0 && G.D.u_dlist != 0 && pit == 0 && tc[3] < 0.5f ? (int)(tc[0] + 0.5f) - 1 : -1;
     float dld = dli >= 0 && g_sb2 && (size_t)dli < g_nsb2 ? g_sb2[dli] : 3.0f;
-    if (dld > 8.0f) dld -= 16.0f;   /* (world.vert: + 16 flags the 2D clip's polygons; the CPU fill clips every one) */
     o->dnib = e / 2048; e -= o->dnib * 2048;
     o->bb = e >= 1024 ? 1 : 0;
     o->tif = 0;

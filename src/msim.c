@@ -336,7 +336,7 @@ int msim_init(msim *s, prj_archive *a, const char *scene, world_actor *actors, i
     int player_table;
     bwd_mission m;
     prj_record rec;
-    int i, k;
+    int i, k, *pl_after = NULL;
     const char *pl_rec;
     memset(s, 0, sizeof *s);
     s->fx_follow = -2;
@@ -406,11 +406,26 @@ int msim_init(msim *s, prj_archive *a, const char *scene, world_actor *actors, i
     combat_damage_live = getenv("MW2_NO_STARTUP") != NULL;   /* DAT_1024c570 = 0 at the mission start (0x1002388d) */
     s->armed = calloc((size_t)(count > 0 ? count : 1), sizeof *s->armed);
     if (!s->units || !s->armed) return -1;
+    {   /* the units' heat-sink tiers see the temperature as it stands when each GPS chunk is read: 25 before the tree's
+         * PLNT chunk, the planet's after it (GBL 0x4dc98 reads DAT_000a5bf8, set by 0x4f5ba; bwd_after_planet). In most
+         * missions every unit comes first: DOSBox CYANSCN1 (-51) and NEWCSCN1 (0), the Timber Wolf with group fire held
+         * and the shutdown patched out, heat 43 / 76 / 105-112 / 133 / 155 / 184 at 1-6 s on both, 1.0x falls ~4.6 a
+         * second on both - the cold tier would have sunk twice as fast */
+        bwd_mission tm;
+        int have_tree = bwd_mission_load(a, scene, &tm) == 0;
+        pl_after = calloc((size_t)(count > 0 ? count : 1), sizeof *pl_after);
+        for (i = 0; pl_after && i < count; i++) {
+            pl_after[i] = have_tree && bwd_after_planet(&tm, actors[i].group);
+            if (getenv("MW2_DEBUG_PLANET")) fprintf(stderr, "unit %d %s (%s): built %s the planet\n", i, actors[i].loadout, actors[i].group, pl_after[i] ? "after" : "before");
+        }
+        if (have_tree) bwd_mission_free(&tm);
+    }
     for (i = 0; i < count; i++) {
         char up[16];
         size_t q;
         for (q = 0; actors[i].loadout[q] && q < sizeof up - 1; q++) up[q] = (char)toupper((unsigned char)actors[i].loadout[q]);
         up[q] = '\0';
+        combat_set_load_temperature(pl_after && pl_after[i] ? s->planet.temperature : COMBAT_TEMP_BEFORE_PLANET);
         s->armed[i] = combat_init(&s->units[i], a, up) == 0;
         s->units[i].hold_fire_above = 65.0f;     /* AI heat discipline: assumed */
         /* one position for drawing, collision and simulation (engine object +0x50..+0x58): the unit starts at its spawn
@@ -418,6 +433,7 @@ int msim_init(msim *s, prj_archive *a, const char *scene, world_actor *actors, i
         s->units[i].y = s->units[i].ground = (float)actors[i].mech.origin[1];
         mech3d_hit_weights(&actors[i].mech, s->units[i].hit_w);
     }
+    free(pl_after);
     /* the player's mech: the shell writes it to USERSTAR.BWD (first GPS) before launching */
     snprintf(s->player_skel, sizeof s->player_skel, "TIMBRWLF");
     snprintf(s->player_loadout, sizeof s->player_loadout, "TBR00STD");
@@ -481,6 +497,16 @@ int msim_init(msim *s, prj_archive *a, const char *scene, world_actor *actors, i
         }
     }
     if (getenv("MW2_DEBUG_LOADOUT")) fprintf(stderr, "player loadout %s\n", s->player_loadout);   /* tests */
+    {   /* the player's GPS: the record holding it (USERSTAR in the campaign / Instant Action), as for the units above */
+        bwd_mission tm;
+        int after = 0;
+        if (bwd_mission_load(a, scene, &tm) == 0) {
+            after = bwd_after_planet(&tm, s->player_rec[0] ? s->player_rec : "USERSTAR");
+            bwd_mission_free(&tm);
+        }
+        if (getenv("MW2_DEBUG_PLANET")) fprintf(stderr, "player (%s): built %s the planet\n", s->player_rec[0] ? s->player_rec : "USERSTAR", after ? "after" : "before");
+        combat_set_load_temperature(after ? s->planet.temperature : COMBAT_TEMP_BEFORE_PLANET);
+    }
     if (combat_init(&s->player_unit, a, s->player_loadout) != 0) {
         if (getenv("MW2_DEBUG_LOADOUT")) fprintf(stderr, "loadout %s failed: TBR00STD\n", s->player_loadout);
         snprintf(s->player_skel, sizeof s->player_skel, "TIMBRWLF");

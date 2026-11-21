@@ -47,7 +47,8 @@ class ShimHeat(ctypes.Structure):
 def heat_state(rep, rnd, n):
     """GBL 0x252b0 (the per-frame heat: sinking, warning, shutdown sequence, shutdown, restart) vs combat_tick, for the
     player, with the override path's roll kept out (heat_override_roll checks it): random frames of 1-20 whole ticks and
-    random heat arriving, override pressed now and then while a sequence is pending."""
+    random heat arriving, override pressed now and then while a sequence is pending. Every other case with the player
+    invulnerable (MW2DIF +1): BlowAmmo (0x251e0) still runs from the shut-down branch."""
     e = gblemu.Emu(); L = lib('combat')
     L.shim_unit_new.restype = ctypes.c_void_p
     u = ctypes.c_void_p(L.shim_unit_new())
@@ -59,12 +60,13 @@ def heat_state(rep, rnd, n):
         e.stub(0x4af60, lambda em: calls.append(('rand', em.reg('eax'))) or 1)   # the override roll: stop the case
         e.stub(0x251e0, lambda em: calls.append(('blow', 0)) or 0)
         sink = rnd.choice([50, 70, 100, 45]) * rnd.randint(10, 30)
-        dif = e.alloc(8); e.write(dif, bytes([0, 0, 1, 0, 1, 1, 0, 0]))
+        inv = case & 1
+        dif = e.alloc(8); e.write(dif, bytes([0, inv, 1, 0, 1, 1, 0, 0]))
         obj = e.alloc(0x80); e.w32(obj + 4, 0); e.w16(obj + 0x14, 0)
         c = e.alloc(0x200); e.w32(c, obj); e.w32(c + 0xa0, sink); e.w32(c + 0xa4, 2)
         e.w32(DIFPTR, dif); e.w32(PLAYER, 0); e.w32(0xa6670, 0); e.w32(0x10ce80, 0)
         now = 1000; e.w32(NOW, now)
-        L.shim_heat_setup(u, sink, 1, case + 1)
+        L.shim_heat_setup2(u, sink, 1, case + 1, inv)
         h = ShimHeat()
         for f in range(400):
             t = rnd.choice([1, 2, 3, 4, 5, 6, 8, 12, 20])
@@ -101,6 +103,29 @@ def heat_state(rep, rnd, n):
                 e.w32(c + 0xa4, 2); e.w32(c + 0x8c, now); L.shim_set_seq(u, ctypes.c_float(0))
             if dos['blow']: break
     L.shim_unit_free(u)
+
+@test
+def heat_blow_shutdown(rep, rnd, n):
+    """GBL 0x25470..0x25496: shut down (state 3) above 100 heat for more than 0x71c ticks since the shutdown, BlowAmmo
+    (0x251e0) runs every frame - for an invulnerable player too (no MW2DIF +1 test on this path, unlike the override's
+    roll); vs combat_tick's shut-down branch. Heat, time since the shutdown, frame length, invulnerability, player / AI."""
+    e = gblemu.Emu(); L = lib('combat'); L.shim_shutdown_blow.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_float, ctypes.c_float, ctypes.c_int]
+    cases = [(inv, pl, h, since, t) for inv in (0, 1) for pl in (0, 1) for h in (100, 101, 150) for since in (0x71c - 6, 0x71c, 0x71d, 3000)
+             for t in (1, 4)] + [(rnd.randint(0, 1), rnd.randint(0, 1), rnd.randint(90, 300), rnd.randint(0, 4000), rnd.randint(1, 12)) for _ in range(n)]
+    for inv, pl, h, since, t in cases:
+        e.reset_data()
+        called = []
+        e.stub(0x251e0, lambda em: called.append(1) or 0); e.stub(0x42e40, lambda em: 0); e.stub(0x41740, lambda em: 0, pops=4)
+        e.stub(0x4af60, lambda em: 1)
+        d = e.alloc(8); e.write(d, bytes([0, inv, 1, 1, 1, 1, 0, 0]))
+        obj = e.alloc(0x40); e.w32(obj + 4, 0 if pl else 7); c = e.alloc(0x200); e.w32(c, obj)
+        e.w32(c + 0xa4, 3); e.w16(c + 0x110, 4); e.w32(c + 0x9c, h << 16); e.w32(c + 0xa0, 0)
+        now = 10000; e.w32(c + 0x8c, now - since - t)
+        e.w32(DIFPTR, d); e.w32(PLAYER, 0); e.w32(NOW, now); e.w32(TICKS, t)
+        e.call(0x252b0, eax=c)
+        dos = bool(called)
+        prt = bool(L.shim_shutdown_blow(inv, pl, ctypes.c_float(h), ctypes.c_float(since + t - t), t))
+        rep.check(dos == prt, 'inv %d player %d heat %d since %d ticks %d: dos %s port %s' % (inv, pl, h, since, t, dos, prt))
 
 @test
 def heat_sink_tiers(rep, rnd, n):

@@ -298,6 +298,37 @@ static int load_one(prj_archive *a, int type, bwd_mission *m, uint16_t id, const
     }
 }
 
+/* depth-first over the includes from record r, as GBL's loader reads them: 1 once `want` is reached (*after: the PLNT
+ * chunk came first), -1 on the PLNT before it, 0 neither in this branch */
+static int dfs_order(const bwd_mission *m, int r, const char *want, int depth, int *plnt, int *after)
+{
+    int k;
+    if (r < 0 || depth > 32) return 0;
+    if (strcasecmp(m->records[r].name, want) == 0) { *after = *plnt; return 1; }
+    for (k = 0; k < m->records[r].chunk_count; k++) {
+        const bwd_chunk *c = &m->records[r].chunks[k];
+        uint16_t id;
+        char name[11], upper[11];
+        size_t i;
+        if (strcmp(c->tag, "PLNT") == 0) *plnt = 1;
+        else if (bwd_incl(c, &id, name) == 0) {
+            for (i = 0; name[i]; i++) upper[i] = (char)toupper((unsigned char)name[i]);
+            upper[i] = '\0';
+            /* the include itself (a part not on disk too: the port's stand-in player is placed where USERSTAR is) */
+            if (strcasecmp(upper, want) == 0) { *after = *plnt; return 1; }
+            if (dfs_order(m, find_record(m, upper), want, depth + 1, plnt, after)) return 1;
+        }
+    }
+    return 0;
+}
+
+int bwd_after_planet(const bwd_mission *m, const char *record)
+{
+    int plnt = 0, after = 0;
+    if (!m || m->record_count < 1 || !record || !record[0]) return 0;
+    return dfs_order(m, 0, record, 0, &plnt, &after) ? after : 0;
+}
+
 int bwd_mission_load(prj_archive *a, const char *scene, bwd_mission *m)
 {
     int type = prj_find_type(a, "BWD"), id, i, k;

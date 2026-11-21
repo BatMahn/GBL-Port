@@ -78,7 +78,8 @@ The calls keep OpenGL's model, so the renderers above it read like the OpenGL 3.
   is `u_first + gl_VertexIndex` (Vulkan's `gl_VertexIndex`, D3D12's `SV_VertexID` and Metal's `[[vertex_id]]` agree only
   with a zero first vertex). The DOS look's per-layer vertex table (an OpenGL buffer texture before) is a read-only
   storage buffer; the DOS program's vertex stage reads a second one, the layer's polygons' draw-list depths
-  (`rb_storage_aux`, glr.c `glr_dos_list`).
+  (`rb_storage_aux`, glr.c `glr_dos_list`), and the lean DOS program's fragment stage another, the polygons' records
+  (`rb_storage_frag`, glr.c `glr_dos_records`).
 - **Texture level 0 only** (`RB_NEAREST` / `RB_LINEAR` minification on a mipmapped texture): sampler max LOD 0.25 with the
   nearest mip mode (the Vulkan specification's emulation of OpenGL's non-mipmapped minification).
 - **Binding slots** (SDL_CreateGPUShader's rules): SPIR-V vertex set 0 = storage buffers, set 1 = uniform blocks;
@@ -97,8 +98,12 @@ no shader tools.
     SPIR-V   --spirv-cross --hlsl (SM 6.0)------> HLSL --dxc------> DXIL (signed by dxc's built-in validator)  Direct3D 12
 
 The world shader is built twice (`DOS_LOOK` 0 / 1: the TITANIUM look / the DOS and ENHANCED looks, which carry the DOS
-fill's exact spans, its integer projection, the fog key and ENHANCED's true-colour tables), and the DOS fragment shader
-once more with `DOS_DEBUG` 1. The uniform blocks' std140 offsets are read back from SPIR-V
+fill's exact spans, its integer projection, the fog key and ENHANCED's true-colour tables); the DOS fragment shader comes
+in two programs - the lean one (`DOS_REC` 1, `RB_PROG_WORLD_DOS`), which reads each polygon's corner records and chain
+edges made once a frame on the CPU (`src/glr_dosrec.c`, the shader's per-pixel arithmetic line for line, lavapipe's
+fused dot product included) and per pixel only steps its row's two edges, and the per-pixel fill (`DOS_CLIP2D` 1,
+`RB_PROG_WORLD_DOSCLIP`) for what the records leave (lines, anything not listed, the rare polygon the CPU cannot
+reproduce) - and once more with `DOS_DEBUG` 1. The uniform blocks' std140 offsets are read back from SPIR-V
 (`spirv-cross --reflect`) and written as C structs with size checks. Tools used for the checked-in files (any later
 version should do): glslangValidator 15.1.0 (Ubuntu 24.04 `glslang-tools`), SPIRV-Cross git 15142bb
 (2026-09-28, C API 0.68.0), DirectXShaderCompiler 1.10.2605 (libdxcompiler / built-in validator). `make shaders SHADER_TOOLS=<folder>`

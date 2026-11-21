@@ -31,14 +31,15 @@ SH = os.path.join(ROOT, 'shaders')
 
 # (C name, source file, stage, defines). The world shader comes in two variants (DOS_LOOK 0 / 1), and the DOS look's
 # fragment shader once more with DOS_DEBUG 1 (MW2_DOS_DEBUG: the projection check's offsets painted). The DOS fragment
-# shader is built twice: without the paint's 2D clip (DOS_CLIP2D 0, every polygon the draw list says needs none) and
-# with it (world_dosclip_fs: the rare polygons whose corners land beyond the +-0x4000 box, and the cockpit's) - the clip's
-# code alone, never run, made every pixel of the fill 2.5x dearer on GPUs.
+# shader is built twice: the lean program (DOS_REC 1: each listed polygon's records made once a frame on the CPU, glr.c
+# glr_dos_records - the fill per pixel only finds its row's span) and the per-pixel fill (world_dosclip_fs, with the
+# paint's 2D clip: the cockpit's polygons, lines and the few the CPU leaves to it) - working every polygon out again
+# for every pixel made the DOS look unplayable on GPUs at high resolutions.
 SHADERS = [
     ('world_vs', 'world.vert', 'vert', {'DOS_LOOK': '0'}),
     ('world_fs', 'world.frag', 'frag', {'DOS_LOOK': '0'}),
     ('world_dos_vs', 'world.vert', 'vert', {'DOS_LOOK': '1'}),
-    ('world_dos_fs', 'world.frag', 'frag', {'DOS_LOOK': '1', 'DOS_CLIP2D': '0'}),
+    ('world_dos_fs', 'world.frag', 'frag', {'DOS_LOOK': '1', 'DOS_CLIP2D': '0', 'DOS_REC': '1'}),
     ('world_dosclip_fs', 'world.frag', 'frag', {'DOS_LOOK': '1', 'DOS_CLIP2D': '1'}),
     ('world_dosdbg_fs', 'world.frag', 'frag', {'DOS_LOOK': '1', 'DOS_DEBUG': '1', 'DOS_CLIP2D': '1'}),
     ('hud_vs', 'hud.vert', 'vert', {}),

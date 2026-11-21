@@ -194,6 +194,13 @@ typedef struct {
 int  bwd_mission_load(prj_archive *a, const char *scene, bwd_mission *m);
 void bwd_mission_free(bwd_mission *m);
 
+/* Whether the original reads `record`'s chunks only after the planet's PLNT chunk. GBL MW2.EXE parses the mission tree
+ * depth first, an INCL loading the included record's chunks there and then (0x50865 -> 0x4ea60 with the chunk handler
+ * 0x4f530), and builds each GPS chunk's unit as its chunk is read (0x50907..0x50a93 -> the loader 0x4d670); the PLNT
+ * chunk (0x4f57e) sets the temperature the loader's heat-sink tiers read (DAT_000a5bf8, 25 until then). Returns 1 after
+ * the PLNT, 0 before it (or when the record is not in the tree). */
+int  bwd_after_planet(const bwd_mission *m, const char *record);
+
 /* All ORDR text in the mission, in include order, concatenated. malloc'd. */
 char *bwd_mission_text(const bwd_mission *m, const char *record_suffix);
 

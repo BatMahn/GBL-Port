@@ -2,6 +2,7 @@
 #include "glr.h"
 #include "rb.h"
 #include "rb_shaders.h"
+#include "glr_dosrec.h"
 
 #include <limits.h>
 #include <math.h>
@@ -11,6 +12,7 @@
 #include <time.h>
 
 #define FLOATS_PER_VERTEX 13 /* pos3 normal3 uv2 color3 texsel1 edge1 */
+#define GLR_PIT_MAX 128      /* the DOS cockpit set's polygons (glr.pit_*) */
 
 #define GLR_LAYERS 2
 /* batches: 0..255 the surface slots, +0 untextured, +1 shadows, +2 unlit plain colours, then GLR_B0 + n the bank-0
@@ -84,9 +86,19 @@ typedef struct {
     int        *vc_stamp;      /* per vertex: the object visit its camera integers below are of */
     int32_t   (*vc)[5];        /* camera x, y (zoom rows), z (quarter units); screen x, y (-1 x: not projected yet) */
     uint8_t    *vc_oc;         /* its window outcode (0x3ea67) */
-    float      *drank;
+    float      *drank;         /* (then, at dl_pn + i, polygon i's records and at 2 dl_pn + n the cockpit polygon n's:
+                                * glr_dos_records) */
     rb_buf      drank_buf;
-    int         drank_n, vc_cap, drank_cap;
+    int         drank_n, vc_cap, drank_cap, dl_up;   /* dl_up: the list is up for this view (drank bound) */
+    /* the lean DOS program's polygon records (glr_dos_records): the layer's vertices as uploaded (vbo), each draw-list
+     * polygon's fan's first vertex there (-1: none), the records (ivec4s) - the fragment stage's second storage buffer */
+    float      *vf;
+    int         vf_n;
+    int        *dl_s;
+    int         pit_s[GLR_PIT_MAX];   /* the cockpit set's polygon n: its fan's first vertex (-1: not in this layer) */
+    rb_buf      drec_buf;
+    int32_t    *drec;
+    int         drec_n, drec_cap;
 } glr_layer;
 
 struct glr {
@@ -195,8 +207,10 @@ static void glr_bind_layer(glr *r, int li)
     rb_vertex(1, L->sph_vbo, 0);
     rb_vertex(2, L->tic_vbo, 0);
     rb_storage(L->vbo);
-    rb_storage_aux(L->drank_n > 0 ? L->drank_buf : 0);
-    r->D.u_dlist = L->drank_n > 0;
+    rb_storage_aux(L->dl_up ? L->drank_buf : 0);
+    rb_storage_frag(L->dl_up && L->drec_n > 0 ? L->drec_buf : 0);
+    r->D.u_dlist = L->dl_up;
+    r->D.u_dl_n = L->dl_pn;
     glr_on_layer = 1;
 }
 /* the transient vertices (env_vertex layout) drawn from the frame's stream: the sphere and Titanium colour zero, as the
@@ -209,6 +223,7 @@ static void glr_bind_stream(glr *r, size_t off)
     rb_vertex(2, 0, 0);
     rb_storage(0);
     rb_storage_aux(0);
+    rb_storage_frag(0);
     glr_on_layer = 0;
 }
 static size_t glr_stream(const float *v, size_t floats)
@@ -224,8 +239,8 @@ static size_t glr_stream(const float *v, size_t floats)
  * provoking corner lies from GL's (red x, green y: 0.5 = equal, +-1/64 per pixel; blue 1 = within 3 px) */
 static void glr_use_variant(glr *r, int dos)
 {
-    /* (the DOS look's default is the fill with the paint's 2D clip - exact for every polygon; the world layers' batches
-     * then go twice when the draw list flags the few that need it: the lean RB_PROG_WORLD_DOS for the rest, glr_frame) */
+    /* (the DOS look's default is the per-pixel fill with the paint's 2D clip - exact for every polygon; the layers'
+     * batches go twice when the draw list is up: the lean RB_PROG_WORLD_DOS first for the polygons with records) */
     r->prog = !dos ? RB_PROG_WORLD : getenv("MW2_DOS_DEBUG") ? RB_PROG_WORLD_DOSDBG : RB_PROG_WORLD_DOSCLIP;
 }
 
@@ -242,6 +257,7 @@ glr *glr_create(void)
         r->layer[l].sph_vbo = rb_buf_new();
         r->layer[l].tic_vbo = rb_buf_new();
         r->layer[l].drank_buf = rb_buf_new();
+        r->layer[l].drec_buf = rb_buf_new();
     }
     for (k = 0; k < GLR_SLOTS * 4; k++) r->tex[k] = rb_tex_new();
     for (k = 0; k < 2; k++) r->env_tex[k] = rb_tex_new();
@@ -271,6 +287,8 @@ void glr_destroy(glr *r)
         rb_buf_delete(r->layer[k].sph_vbo);
         rb_buf_delete(r->layer[k].tic_vbo);
         rb_buf_delete(r->layer[k].drank_buf);
+        rb_buf_delete(r->layer[k].drec_buf);
+        free(r->layer[k].vf); free(r->layer[k].dl_s); free(r->layer[k].drec);
         free(r->layer[k].tic); free(r->layer[k].tipn); free(r->layer[k].tistat); free(r->layer[k].tip);
         free(r->layer[k].dl_o); free(r->layer[k].dl_p); free(r->layer[k].dl_v);
         free(r->layer[k].vc_stamp); free(r->layer[k].vc); free(r->layer[k].vc_oc); free(r->layer[k].drank);
@@ -1101,6 +1119,24 @@ static int set_layer(glr *r, int li, const mech3d *m, const uint8_t palette[256]
     L->tic_static_ok = 0; L->tic_dyn = 1;
     tic = tipn = NULL; tip = NULL;
     L->vertex_count = (int)n;
+    {   /* (the lean DOS program's records: glr_dos_records reads the polygons from these) */
+        size_t v;
+        free(L->vf); L->vf = buf; L->vf_n = (int)n; buf = NULL;
+        free(L->dl_s);
+        L->dl_s = malloc((size_t)(L->dl_pn > 0 ? L->dl_pn : 1) * sizeof *L->dl_s);
+        if (L->dl_s) {
+            for (k = 0; k < L->dl_pn; k++) L->dl_s[k] = -1;
+            for (v = 0; v < n; v++) {
+                const int d = L->tic[v * 4 + 3] < 0.5f ? (int)(L->tic[v * 4] + 0.5f) - 1 : -1;
+                if (d >= 0 && d < L->dl_pn && L->dl_s[d] < 0) L->dl_s[d] = (int)v;
+            }
+        }
+        for (k = 0; k < GLR_PIT_MAX; k++) L->pit_s[k] = -1;
+        for (v = 0; v < n; v++) {   /* (the edge code's 65536 x (1 + n): the cockpit set's polygon n) */
+            const int e = (int)(L->vf[v * FLOATS_PER_VERTEX + 12] + 0.5f) / 65536;
+            if (e >= 1 && e <= GLR_PIT_MAX && L->pit_s[e - 1] < 0) L->pit_s[e - 1] = (int)v;
+        }
+    }
     for (b = 0; b < GLR_SLOTS; b++)
         if (L->batch_count[b] > 0) upload_texture(r, b, r->slot_frame[b] && slots[b] ? r->slot_frame[b] : slots[b]);
     for (b = 0; b < GLR_SLOTS; b++)
@@ -1971,7 +2007,7 @@ static int dl_cull(const dl_ctx *X, const int32_t s[4])
     }
     return 0;
 }
-typedef struct { int layer, poly, clip; } dl_ent;   /* clip: a corner beyond the paint's +-0x4000 box (the 2D clip's case) */
+typedef struct { int layer, poly; } dl_ent;
 static const glr *dl_sort_r;
 static int64_t dl_obj_link(const glr *r, int li, const glr_dobj *o)
 {
@@ -2041,14 +2077,92 @@ static void dl_walk(dl_ctx *X, glr_layer *L, int li, const glr_dobj *ob, int **k
             if (X->ne >= DL_CAP_ENTRIES) X->over |= 2;
             if (X->ne < DL_CAP_ENTRIES || !X->caps) {
                 if (cnt > 1) X->multi++;
-                int clip = n == 2;   /* (a line, 0x54fa9: its pixel rule is the clip variant's alone) */
-                /* (the shader's test is -16383 .. 16382 on its own projection of the same records - a margin for rounding) */
-                for (i2 = 0; i2 < cnt; i2++) if (cr[i2].sx < -15000 || cr[i2].sx > 15000 || cr[i2].sy < -15000 || cr[i2].sy > 15000) clip = 1;
-                (*key)[X->ne] = (int)kk; (*id)[X->ne] = X->ne; (*ent)[X->ne].layer = li; (*ent)[X->ne].poly = p; (*ent)[X->ne].clip = clip; X->ne++;
+                (*key)[X->ne] = (int)kk; (*id)[X->ne] = X->ne; (*ent)[X->ne].layer = li; (*ent)[X->ne].poly = p; X->ne++;
             } else X->abort = 1;
         }
     }
 }
+/* The lean DOS program's records (world.frag DOS_REC, glr_dosrec.c), made after the list's depths: for each listed
+ * polygon i of the layer, at drank[dl_pn + i], the offset of its records in drec (ivec4s), -2 for a polygon the fill's
+ * records do not concern (no fill: billboards, points - the lean program draws it all the same), -1 for one left to
+ * the per-pixel fill (the clip variant): a line (0x54fa9's pixels), a polygon whose records would not come out as the
+ * per-pixel fill's (glr_dosrec.c: an overflow, GL's near plane at a corner, a cap reached), and everything while
+ * MW2_DOS_EXACT=0 */
+static void glr_dos_records(glr *r, int li)
+{
+    static dosrec_poly P;
+    glr_layer *L = &r->layer[li];
+    const rb_world_frame *F = &r->F;
+    const int corners = F->u_dos_smooth != 0 || F->u_dos_tc != 0;
+    dosrec_view V;
+    int k, n4 = 0;
+    memcpy(V.eye, F->u_dos_eye, sizeof V.eye);
+    memcpy(V.rx, F->u_dos_rx, sizeof V.rx); memcpy(V.ry, F->u_dos_ry, sizeof V.ry); memcpy(V.rz, F->u_dos_rz, sizeof V.rz);
+    V.ps[0] = F->u_dos_ps[0]; V.ps[1] = F->u_dos_ps[1];
+    V.vp[0] = F->u_vp[0]; V.vp[1] = F->u_vp[1];
+    memcpy(V.mvp, F->u_mvp, sizeof V.mvp);
+    V.nr = F->u_dos_order != 0 ? F->u_dos_near : 0;
+    for (k = 0; k < L->dl_pn + GLR_PIT_MAX; k++) {   /* the listed polygons, then the cockpit set's */
+        const int pit = k >= L->dl_pn;
+        float *rid = pit ? &L->drank[2 * L->dl_pn + (k - L->dl_pn)] : &L->drank[L->dl_pn + k], tsel;
+        const int s = pit ? (k - L->dl_pn < r->pit_n ? L->pit_s[k - L->dl_pn] : -1) : L->dl_s ? L->dl_s[k] : -1;
+        int need, c, j, i, e0, ro, co, ec;
+        int32_t *h;
+        *rid = -1.0f;
+        if (s < 0 || !L->vf || s >= L->vf_n || (!pit && (L->drank[k] > 2.5f || L->dl_p[k].n == 2))) continue;
+        ec = (int)(L->vf[(size_t)s * FLOATS_PER_VERTEX + 12] + 0.5f) / 65536;
+        if (ec >= 410) continue;   /* (lines: the tracers' streaks, colour type 2's outlines - 0x54fa9's pixels) */
+        tsel = L->vf[(size_t)s * FLOATS_PER_VERTEX + 11];
+        if (!(tsel > 0.5f) || ec >= 400 || ((int)(L->vf[(size_t)s * FLOATS_PER_VERTEX + 12] + 0.5f) % 65536) % 2048 >= 1024) {
+            *rid = -2.0f;   /* (no fill: a point's pixel, a billboard) */
+            continue;
+        }
+        if ((int)(tsel + 0.5f) - 1 != s || !F->u_dos_exact || !dosrec_build(&V, L->vf, L->vf_n, s, &P)) continue;
+        need = 2 + 2 * (P.ne[0] + P.ne[1]) + P.m + (corners ? (P.nc + 1) / 2 : 0);
+        if (n4 + need > L->drec_cap) {
+            int nc = 2 * (n4 + need) + 4096;
+            int32_t *d2 = realloc(L->drec, (size_t)nc * 4 * sizeof *d2);
+            if (!d2) break;
+            L->drec = d2; L->drec_cap = nc;
+        }
+        h = L->drec + (size_t)n4 * 4;
+        e0 = n4 + 2; ro = e0 + 2 * (P.ne[0] + P.ne[1]); co = ro + P.m;
+        h[0] = e0; h[1] = P.ne[0]; h[2] = P.ne[1]; h[3] = ro;
+        h[4] = P.ytop; h[5] = P.ybot; h[6] = P.nodiscard + 2 * (corners ? P.nc : 0); h[7] = co;
+        h += 8;
+        for (c = 0; c < 2; c++) for (j = 0; j < P.ne[c]; j++) { memcpy(h, P.edge[c][j], 8 * sizeof *h); h += 8; }
+        for (i = 0; i < P.m; i++) { memcpy(h, P.rec[i], 4 * sizeof *h); h += 4; }
+        if (corners) {
+            memset(h, 0, (size_t)((P.nc + 1) / 2) * 4 * sizeof *h);
+            memcpy(h, P.cuv, (size_t)P.nc * 2 * sizeof(float));
+        }
+        *rid = (float)n4;
+        n4 += need;
+    }
+    L->drec_n = n4;
+    {   /* MW2_DOS_REC_STATS=1 (a diagnostic): every 60 layer lists, the listed polygons and the cockpit set's by their
+         * records - made, left to the per-pixel fill, not concerned */
+        static int st = -1, calls;
+        static long cnt[2][3], outl;
+        if (st < 0) st = getenv("MW2_DOS_REC_STATS") ? atoi(getenv("MW2_DOS_REC_STATS")) : 0;   /* (2: every list) */
+        if (st) {
+            for (k = 0; k < L->dl_pn + r->pit_n; k++) {
+                const int pit = k >= L->dl_pn;
+                float v;
+                if (pit ? L->pit_s[k - L->dl_pn] < 0 : L->drank[k] > 2.5f) continue;
+                v = pit ? L->drank[2 * L->dl_pn + (k - L->dl_pn)] : L->drank[L->dl_pn + k];
+                cnt[pit][v >= 0 ? 0 : v > -1.5f ? 1 : 2]++;
+                if (!pit && L->dl_p[k].n >= 3 && L->dl_s && L->dl_s[k] >= 0 && L->vf[(size_t)L->dl_s[k] * FLOATS_PER_VERTEX + 12] >= 410.0f * 65536.0f) outl++;
+            }
+            if (++calls % (st == 2 ? 1 : 60) == 0) {
+                fprintf(stderr, "dos records: listed %ld made, %ld per-pixel (%ld outlines), %ld none; cockpit %ld made, %ld per-pixel, %ld none\n",
+                        cnt[0][0], cnt[0][1], outl, cnt[0][2], cnt[1][0], cnt[1][1], cnt[1][2]);
+                memset(cnt, 0, sizeof cnt); outl = 0;
+            }
+        }
+    }
+}
+
 /* the list for this frame and each listed polygon's depth (L->drank: GL NDC z; 3 for a polygon not listed) */
 static void glr_dos_list(glr *r, const int64_t R[3][3], const int64_t raw[3][3], const float eye_gl[3], int w, int h,
                          const int sh[2], uint32_t zoom_raw, uint32_t zoom, int near4, float far_cm, const float *mvp, const float *view)
@@ -2100,9 +2214,9 @@ static void glr_dos_list(glr *r, const int64_t R[3][3], const int64_t raw[3][3],
             L->vc_oc = malloc((size_t)L->vc_cap);
             if (!L->vc_stamp || !L->vc || !L->vc_oc) { L->vc_cap = 0; return; }
         }
-        if (L->drank_cap < L->dl_pn || !L->drank) {
+        if (L->drank_cap < 2 * L->dl_pn + GLR_PIT_MAX || !L->drank) {
             free(L->drank);
-            L->drank_cap = L->dl_pn + 1024;
+            L->drank_cap = 2 * L->dl_pn + GLR_PIT_MAX + 1024;
             if (!(L->drank = malloc((size_t)L->drank_cap * sizeof *L->drank))) { L->drank_cap = 0; return; }
         }
         for (k = 0; k < L->dl_pn; k++) L->drank[k] = 3.0f;
@@ -2173,12 +2287,12 @@ static void glr_dos_list(glr *r, const int64_t R[3][3], const int64_t raw[3][3],
                                                                              * order: behind every main-list polygon) */
             if (wd > prev - step) wd = prev - step;
             prev = wd;
-            r->layer[e->layer].drank[e->poly] = (float)(wd * 2.0 - 1.0) + (e->clip ? 16.0f : 0.0f);   /* (+ 16: world.vert's flag) */
+            r->layer[e->layer].drank[e->poly] = (float)(wd * 2.0 - 1.0);
         }
         for (li = 0; li < GLR_LAYERS; li++) {   /* a billboard pair: its one drawn picture where either winding is listed */
             glr_layer *L = &r->layer[li];
             for (k = 0; k < L->dl_pn; k++)
-                if (L->dl_p[k].twin >= 0 && (L->drank[k] < 2.5f || L->drank[k] > 8.0f) && L->drank[L->dl_p[k].twin] > 2.5f && L->drank[L->dl_p[k].twin] < 8.0f)
+                if (L->dl_p[k].twin >= 0 && L->drank[k] < 2.5f && L->drank[L->dl_p[k].twin] > 2.5f)
                     L->drank[L->dl_p[k].twin] = L->drank[k];
         }
         r->dl_stat[0] = X.ne; r->dl_stat[1] = X.multi; r->dl_stat[2] = X.over; r->dl_stat[3] = paint;
@@ -2205,7 +2319,11 @@ static void glr_dos_list(glr *r, const int64_t R[3][3], const int64_t raw[3][3],
     for (li = 0; li < GLR_LAYERS; li++) {
         glr_layer *L = &r->layer[li];
         L->drank_n = L->dl_pn;
-        if (L->dl_pn > 0) rb_buf_data(L->drank_buf, L->drank, (size_t)L->dl_pn * sizeof *L->drank);
+        L->dl_up = 1;
+        if (rb_backend() != RB_GPU_OPENGL) glr_dos_records(r, li);   /* (the OpenGL 1.2 build fills on the CPU: none) */
+        else { for (k = 0; k < L->dl_pn + GLR_PIT_MAX; k++) L->drank[L->dl_pn + k] = -1.0f; L->drec_n = 0; }
+        rb_buf_data(L->drank_buf, L->drank, (size_t)(2 * L->dl_pn + GLR_PIT_MAX) * sizeof *L->drank);
+        if (L->drec_n > 0) rb_buf_data(L->drec_buf, L->drec, (size_t)L->drec_n * 4 * sizeof *L->drec);
     }
     if (timing) {
         static double acc; static int nfr;
@@ -2289,7 +2407,7 @@ void glr_draw_rect(glr *r, const glr_view *v, int x0, int y0, int w, int h)
     r->F.u_ambient = v->ambient;
     UV(r->F.u_fog_color, v->fog_color, 3);
     r->F.u_dos = 0;
-    { int l2; for (l2 = 0; l2 < GLR_LAYERS; l2++) r->layer[l2].drank_n = 0; }   /* (the DOS draw list: set below) */
+    { int l2; for (l2 = 0; l2 < GLR_LAYERS; l2++) r->layer[l2].drank_n = r->layer[l2].dl_up = 0; }   /* (the DOS draw list: set below) */
     {   /* the TITANIUM look's draw order (world.vert; mercsw paints its sorted list without a working depth test).
          * MW2_TI_ORDER=0 (testing): the pixels' own depths, both faces. (The DOS look sets its own below) */
         static int tio = -1;
@@ -2621,7 +2739,7 @@ void glr_draw_rect(glr *r, const glr_view *v, int x0, int y0, int w, int h)
                 if (dl < 0) dl = getenv("MW2_DOS_LIST") ? atoi(getenv("MW2_DOS_LIST")) != 0 : 1;
                 if (dl && r->F.u_dos_order && r->F.u_dos && v->ortho_w <= 0)
                     glr_dos_list(r, (const int64_t (*)[3])R, (const int64_t (*)[3])rows, eye, w, h, sh2, zoom_raw, zoom, r->F.u_dos_near, v->far_cull, mvp, view);
-                else for (l2 = 0; l2 < GLR_LAYERS; l2++) r->layer[l2].drank_n = 0;
+                else for (l2 = 0; l2 < GLR_LAYERS; l2++) r->layer[l2].drank_n = r->layer[l2].dl_up = 0;
             }
         }
     }
@@ -2638,16 +2756,17 @@ void glr_draw_rect(glr *r, const glr_view *v, int x0, int y0, int w, int h)
         UV(r->D.u_wire, v->wire ? (li == 0 ? wr : wb) : off, 4);   /* (the wireframe's edges come from the fragment shader) */
     }
     glr_bind_layer(r, li);
-    {   /* the DOS fill in two passes when the layer's draw list is up (SDL_GPU): the polygons it lists and finds inside the
-         * paint's +-0x4000 box with the lean program (RB_PROG_WORLD_DOS, no 2D clip compiled in), then the flagged ones and
-         * the unlisted (the cockpit's, near-clipped at its own plane) with the clip variant - the same pixels, the clip's
-         * code no longer weighing on every pixel (1.0.0 - 1.0.5: the fill 2.5x dearer, an M4 Pro at 3600 x 2260 7 fps).
-         * The OpenGL 1.2 build fills on the CPU: one pass */
+    {   /* the DOS fill in two passes when the layer's draw list is up (SDL_GPU): the polygons whose records the CPU made
+         * (glr_dos_records: the listed ones and the cockpit set's) and those the fill's records do not concern with the lean
+         * program (RB_PROG_WORLD_DOS: per pixel only the row's span from the records), then the rest - lines, the few the
+         * records cannot reproduce, anything not listed - with the per-pixel fill (RB_PROG_WORLD_DOSCLIP). The same pixels;
+         * 1.0.0 - 1.0.6 worked every polygon out again for every pixel (an M4 Pro at 3600 x 2260: 7 fps). The OpenGL 1.2
+         * build fills on the CPU: one pass */
         static int split = -1;
         const int keep = r->prog;
         int pass, two;
         if (split < 0) split = getenv("MW2_DOS_SPLIT") ? atoi(getenv("MW2_DOS_SPLIT")) != 0 : 1;   /* (0: testing, one pass) */
-        two = split && keep == RB_PROG_WORLD_DOSCLIP && L->drank_n > 0 && rb_backend() != RB_GPU_OPENGL;
+        two = split && keep == RB_PROG_WORLD_DOSCLIP && L->dl_up && rb_backend() != RB_GPU_OPENGL;
         for (pass = two ? 1 : 0; pass <= (two ? 2 : 0); pass++) {
             r->D.u_clip_pass = pass;
             r->prog = pass == 1 ? RB_PROG_WORLD_DOS : keep;

@@ -2007,6 +2007,7 @@ static void player_messages(void)
      * warning AND 1.2 s later at the sequence), "Shutting down" (message 0xd) when the sequence shuts the mech down */
     if (pu->heat_warning) { hud_message_v("Heat level critical", 64); if (g_sfx) sfx_play(g_sfx, 0xe9, SFX_V64, 0.0f); g_sim.player_unit.heat_warning = 0; }
     if (pu->auto_shutdown) { hud_message_v("Shutting down", 14); g_sim.player_unit.auto_shutdown = 0; }
+    if (pu->cook_msg) { hud_message_v("Heat level critical", 64); g_sim.player_unit.cook_msg = 0; }   /* GBL 0x25293: message 0, no MECOVHW1 */
     /* with message 3 the overheat alarm MECOVHW1 0xe9 - only when the sequence starts with the latch 0x1000 clear (GBL 0x252b0,
      * combat.c seq_alarm: cleared at or below 65 with no sequence pending, so a sequence restarted before such a frame is
      * silent) */
@@ -7445,11 +7446,14 @@ int main(int argc, char **argv)
                     if (H("weapon_fire_group_3")) mask |= g_groups[2];
                     g_sim.player_fire_mask = all ? 0 : mask;
                     g_sim.player_attacks = (all || mask) != 0;   /* the trigger fires with or without a target (along the aim line) */
-                    if (g_sim.now < g_sim.player_online_at && !getenv("MW2_NO_STARTUP")) { g_sim.player_fire_mask = 0; g_sim.player_attacks = 0; }   /* starting up */
-                    {   /* the triggers held now (combat.c fires on their press); autopilot fire tests press every other frame */
+                    {   /* the triggers held now (combat.c fires on their press); autopilot fire tests press every other frame.
+                         * Kept while starting up too (nothing fires then: the unit is offline): a trigger held through the
+                         * start-up is no new press - DOSBox NEWCSCN1 / CYANSCN1, group fire held through a heat shutdown and
+                         * the restart: nothing fires again, the heat falls to 0 with the trigger still down */
                         static int auto_tog;
                         g_sim.player_unit.fire_held = !g_sim.player_attacks ? 0 : all ? ((auto_tog ^= 1) ? 0xFFFFFFFFu : 0) : mask;
                     }
+                    if (g_sim.now < g_sim.player_online_at && !getenv("MW2_NO_STARTUP")) { g_sim.player_fire_mask = 0; g_sim.player_attacks = 0; }   /* starting up */
                 }
                 g_sim.player_sel_w = g_sel_weapon;
                 g_sim.player_aim_free = 1;

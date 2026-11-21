@@ -1,5 +1,37 @@
 # Changelog
 
+## 1.0.7 (2026-11-21)
+
+- **Menus: the original's mouse pointer.** In a window the menus showed the system's arrow; they now draw the game's own
+  grey pointer, over everything on every screen, as the DOS game does, and the system's arrow is hidden over the window.
+- **DOS and ENHANCED looks: fast on graphics chips at high resolutions.** 1.0.6 was still far too slow on a real
+  graphics chip at a large window (an Apple M4 Pro at 3600 x 2260 with 4x anti-aliasing: about 7 frames a second). The
+  fill that copies the original's polygon drawing exactly worked out each polygon's corners from scratch - their
+  position on screen, the cut at the near plane, the original's clip at the screen's far edges - again for every single
+  pixel of it, millions of times a frame, with large scratch tables a graphics chip handles badly. That work is now done
+  once per polygon per frame on the CPU, where the game already builds the original's draw list, and the graphics chip
+  only looks up the polygon's two edges on the pixel's row. The cockpit's polygons go the same way. The picture is the
+  same to the pixel (every GBL mission, six views each, outside and from the cockpit, DOS and ENHANCED, with
+  anti-aliasing, tracers, against 1.0.5). On the test machine's software renderer the world now draws about 2.4 times
+  faster than in 1.0.6, nearly 4 times faster than 1.0.5, and faster than the early-November build on which the DOS
+  look still ran smoothly on a Mac; the work left for each pixel is a small fraction of what it was, and that is where a
+  graphics chip gains the most.
+- **Overheating checked against the original DOS game.** The heat itself was already right: with group fire held, the
+  heat bar is full in about 3 seconds, "Heat level critical" and "Shutdown sequence initiated" are spoken, and the 'Mech
+  shuts down about 8 seconds after you start firing, as in DOS. The DOS game shows no "Shutdown..." text next to the heat
+  bar (the label stays "Heat" in green, at every screen size), and it only shows the heat messages as text when the
+  voices can't play; the port does the same. Three things did differ, and are fixed:
+  - **Cold planets:** the original only applies a planet's cooling bonus to the 'Mechs it loads after the planet's data,
+    and in most missions every 'Mech, yours included, is loaded first. On those planets the port cooled every 'Mech two
+    to five times too fast, so you could fire much longer before overheating, and a shut-down 'Mech cooled off before its
+    ammunition could explode. Missions that load the planet first keep the bonus, as in
+    DOS.
+  - **Invulnerability cheat:** if your 'Mech stays shut down with its heat over the top for 10 seconds, its ammunition
+    still explodes and you lose weapons, as in DOS - only the death is prevented. Before, nothing happened.
+  - **Holding the trigger through a shutdown:** a volley cut off by the shutdown is lost, and after the restart the
+    weapons only fire again once you press the trigger again, as in DOS. Before, the port finished the old volley and
+    fired everything again the moment the 'Mech came back up, often straight into a second shutdown.
+
 ## 1.0.6 (2026-11-21)
 
 - **DOS and ENHANCED looks: much faster again.** Since 1.0.0 these looks drew the world far more slowly on real

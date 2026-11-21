@@ -12,7 +12,8 @@
  *     overridden: GBL 0x252b0 rolls rand(500 x frame ticks) == 0 each frame (taken at 30 fps: 1 in 18000 a
  *     tick, combat.c) for a cook-off - the DOS rule (0x24ec0): the first
  *     slot holding the first ammo bin's item takes a critical, destroyed if there is none (so
- *     within a roll or two); an invulnerable player skips all that
+ *     within a roll or two); an invulnerable player skips the roll; shut down above 100 its ammunition
+ *     still blows (GBL 0x25470), only the death is refused (0x25680)
  *   - clock: 182 ticks per second
  * Armour, structure, weapons and their locations come from the MEK records.
  *
@@ -89,6 +90,7 @@ typedef struct {
     combat_weapon weapons[COMBAT_MAX_WEAPONS];
     int           weapon_count;
     float         heat, sink_per_tick;
+    int           sink_temp;      /* the temperature its heat-sink rate was set at (combat_set_load_temperature) */
     int           shutdown, destroyed, damage_taken;
     int           down_in_update;   /* destroyed inside its own controller update (0x1001a180: heat 0x10015f50 - the
                                      * shutdown timeout, a cook-off; the DOS self-destruct): its case 4 runs the same
@@ -102,6 +104,8 @@ typedef struct {
                                    * 0x315c0: controller +0x98 - +0xa0 x ticks, before the heat is held at 0), summed until the
                                    * HUD takes it */
     int           auto_shutdown;  /* one tick: the sequence shut the mech down (message 0xd "Shutting down") */
+    int           cook_msg;       /* one tick: the heat's ammunition path found no bin to blow (GBL 0x251e0: message 0
+                                   * "Heat level critical", voice only - no MECOVHW1) */
     int           restarted;      /* one tick: the heat restart (state 3 -> 0): the start-up lock runs again (msim.c) */
     int           human;          /* a human pilot: edge-triggered fire, no range check (0x100437a0) */
     uint32_t      fire_held, fire_prev, fire_edge;   /* human: weapons whose trigger is held now / last tick / newly pressed */
@@ -210,6 +214,10 @@ uint16_t combat_mek_rating(const mek_def *d);
  * Hard 45 / 225 / 67 / 36 (AI 'Mechs: Medium's) */
 void combat_set_player_difficulty(combat_unit *u, int difficulty);
 int combat_sink_rate(int player, int difficulty, int temperature);   /* GBL 0x4dc98: per tick per sinking point, 16.16 */
+/* the temperature the heat-sink tiers use for units built from now on (combat_init): GBL's loader reads DAT_000a5bf8, 25
+ * until the mission's PLNT chunk is read; units whose GPS chunk comes earlier in the tree keep the temperate rate */
+#define COMBAT_TEMP_BEFORE_PLANET 25
+void combat_set_load_temperature(int temperature);
 /* the loader's armour factor (engine 0x10041410 / DOS 0x4c760, by MW2DIF +5 difficulty 0 / 1 / 2): front and rear
  * armour (not structure) x 4 for the player; x 3 / 3 / 4 for a unit of alliance 0 (the player's side); x 1 / 3 / 4
  * for any other (enemy, neutral). combat_armor_mult gives the factor, combat_set_armor_mult applies it once */

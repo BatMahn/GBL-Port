@@ -1,12 +1,17 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
 // world.frag - the world renderer's fragment shader (src/glr.c; the OpenGL 3.3 program's FS, ported to SDL_GPU).
-// Compiled as DOS_LOOK 0 / 1 (see world.vert) and, for MW2_DOS_DEBUG, DOS_LOOK 1 with DOS_DEBUG 1. Differences from the
-// OpenGL program, none in what it computes:
+// Compiled as DOS_LOOK 0 / 1 (see world.vert) and, for MW2_DOS_DEBUG, DOS_LOOK 1 with DOS_DEBUG 1; the DOS look's lean
+// program with DOS_REC 1 (its polygons' corner records and chains made once a frame on the CPU, glr_dosrec.c - the
+// per-pixel fill below, DOS_REC 0, works them out for every pixel). Differences from the OpenGL program, none in what it
+// computes:
 //  - gl_FragCoord is SDL_GPU's (top-left origin): glFragCoord below is GL's (bottom-left), u_fbh the target's height
 //  - samplers: u_tex, u_dos_tab, u_ptab are fragment textures 0, 1, 2; the DOS look's vertex table a storage buffer
 #ifndef DOS_DEBUG
 #define DOS_DEBUG 0
+#endif
+#ifndef DOS_REC
+#define DOS_REC 0
 #endif
 #define UBO_SET 3
 #define SSBO_SET 2
@@ -121,6 +126,14 @@ float dos_gshade(int i, float g) { int b = i * 13; return dvtx(b + 7) + dvtx(b +
 int dos_q(float p) { return (int(trunc(p * 4.0)) + 2) >> 2; }
 // 0x3dfb7: quarter pixels, + 2 >> 2
 ivec2 dos_gvtx(vec4 q) { vec2 p = q.xy / q.w * 0.5 * u_vp; ivec2 c = ivec2(u_vp) / 2; return ivec2(c.x + dos_q(p.x), c.y - dos_q(p.y)); }
+// 0x3c610 type 4: a corner's baked index a (16.16) as the fill takes it - ramp + i (L + 1) / 16 when a >= 48, else a
+int dos_gsc(int a16, int L1) { return a16 < 0x300000 ? a16 : (a16 & int(0xfff00000u)) + ((((a16 >> 16) & 15) * L1) << 12); }
+// 0x3e8fe's attributes at the near plane: as x and y, from the corner of the smaller z (imul / idiv)
+ivec2 dos_nclip_a(ivec3 A, ivec3 B, ivec2 Aa, ivec2 Ba, int nr) {
+  if (B.z <= A.z) return A.z == B.z ? Aa : ivec2(dos_muldiv(Aa.x - Ba.x, nr - B.z, A.z - B.z) + Ba.x, dos_muldiv(Aa.y - Ba.y, nr - B.z, A.z - B.z) + Ba.y);
+  return ivec2(dos_muldiv(Ba.x - Aa.x, nr - A.z, B.z - A.z) + Aa.x, dos_muldiv(Ba.y - Aa.y, nr - A.z, B.z - A.z) + Aa.y);
+}
+#if !DOS_REC
 // one chain (dir -1: backward, the first, 0x5a5eb; + 1 forward, 0x5a689) at DOS row y: (x, c) in 16.16
 // an edge's x step, trunc((dx << 16) / rows), modulo 2^32 as the original's 32-bit registers hold it - computed in parts so
 // that a dx of 32768 px or more (a corner far off the window at high resolutions) does not overflow (dx << 16) here first:
@@ -202,13 +215,6 @@ int dos_clip2d(inout ivec3 Rc[20], inout ivec2 Rs[20], inout ivec2 Ra[20], int m
   return m;
 }
 #endif
-// 0x3c610 type 4: a corner's baked index a (16.16) as the fill takes it - ramp + i (L + 1) / 16 when a >= 48, else a
-int dos_gsc(int a16, int L1) { return a16 < 0x300000 ? a16 : (a16 & int(0xfff00000u)) + ((((a16 >> 16) & 15) * L1) << 12); }
-// 0x3e8fe's attributes at the near plane: as x and y, from the corner of the smaller z (imul / idiv)
-ivec2 dos_nclip_a(ivec3 A, ivec3 B, ivec2 Aa, ivec2 Ba, int nr) {
-  if (B.z <= A.z) return A.z == B.z ? Aa : ivec2(dos_muldiv(Aa.x - Ba.x, nr - B.z, A.z - B.z) + Ba.x, dos_muldiv(Aa.y - Ba.y, nr - B.z, A.z - B.z) + Ba.y);
-  return ivec2(dos_muldiv(Ba.x - Aa.x, nr - A.z, B.z - A.z) + Aa.x, dos_muldiv(Ba.y - Aa.y, nr - A.z, B.z - A.z) + Aa.y);
-}
 ivec2 dos_gchain(ivec2 V[20], int C[20], int m, int top, int dir, int y, int ybot) {
   int a = top, b = (a + dir + m) % m, r0 = V[top].y;
   for (int g = 0; g < 20 && V[b].y == V[a].y && b != top; g++) { a = b; b = (a + dir + m) % m; }
@@ -456,6 +462,105 @@ vec3 dos_gouraud(float lev) {
   if (exact) return dos_colour(float(((val + (((k + r) & 1) == 0 ? 0x7fffu : 0u)) >> 16) & 0xffu));
   return dos_colour(floor(cc + (((k + r) & 1) == 0 ? 32767.0 / 65536.0 : 0.0)));
 }
+#else
+// DOS_REC (the lean program): the polygon's records made once a frame on the CPU (glr.c glr_dos_records, glr_dosrec.c:
+// this file's per-pixel arithmetic above, line for line) - at v_drec in the layer's record buffer: a header (the left
+// chain's edges' offset and count, the right chain's count, the records' offset; the top and bottom rows, no-discard +
+// 2 x the corner count, the corners' offset), each chain's edges (2 ivec4: the row the walk passes on at, the first
+// row, the row count, the x step; the upper corner's x, the corners' records), the records (a << 16, u << 16, v << 16,
+// camera z) and, for the ENHANCED / smooth Gouraud's range, the corners' u, v. Here only the row's two edges and the span
+// (before: every corner re-read, projected, near-cut and 2D-clipped for every pixel)
+layout(std430, set = SSBO_SET, binding = SSBO_BINDING + 1) readonly buffer DosRec { ivec4 u_drec[]; };
+// the chain's edge at DOS row yq (dos_gedge's walk): its first ivec4's index
+int dos_rchain(int e0, int ne, int yq) { int k = 0; while (k < ne - 1 && yq >= u_drec[e0 + 2 * k].x) k++; return e0 + 2 * k; }
+// dos_gchain: (x, c) in 16.16 at row y
+ivec2 dos_rgchain(int e, int ro, int y, int L1) {
+  ivec4 E0 = u_drec[e], E1 = u_drec[e + 1];
+  uint t = uint(y - E0.y);
+  int ca = dos_gsc(u_drec[ro + E1.y].x, L1), cb = dos_gsc(u_drec[ro + E1.z].x, L1);
+  return ivec2(int(uint(E1.x) * 65536u + 0x8000u + t * uint(E0.w)), int(uint(ca + 0x8000) + t * uint(dos_idiv(cb - ca, E0.z))));
+}
+// the coverage alone - dos_gouraud(0)'s discards, for the flat and textured kinds (their spans are the Gouraud fill's)
+void dos_cover() {
+  if (v_texsel <= 0 || v_drec < 0) return;
+  ivec4 H0 = u_drec[v_drec], H1 = u_drec[v_drec + 1];
+  if ((H1.z & 1) != 0) return;
+  int ytop = H1.x, ybot = H1.y, y = int(u_vp.y) - 1 - (int(floor(glFragCoord.y)) - int(u_vpo.y));
+  if (y < ytop || y > ybot || ybot == ytop) discard;
+  int yq = y == ybot && y > ytop ? y - 1 : y;
+  int ea = dos_rchain(H0.x, H0.y, yq), eb = dos_rchain(H0.x + 2 * H0.y, H0.z, yq);
+  ivec4 A0 = u_drec[ea], A1 = u_drec[ea + 1], B0 = u_drec[eb], B1 = u_drec[eb + 1];
+  int x1 = int(uint(A1.x) * 65536u + 0x8000u + uint(y - A0.y) * uint(A0.w));
+  int x2 = int(uint(B1.x) * 65536u + 0x8000u + uint(y - B0.y) * uint(B0.w));
+  int x0 = min(x1, x2) >> 16, w = (max(x1, x2) >> 16) - x0, k = int(floor(glFragCoord.x)) - int(u_vpo.x) - x0;
+  if (k < 0 || k > w) discard;
+}
+// a record's texture attributes as dos_ttex's A: (u q, v q, q) or (u, v, 0)
+vec3 dos_ra(int i, bool persp) { ivec4 R = u_drec[i]; if (persp) { float qq = 1.0 / float(max(R.w, 1)); return vec3(vec2(R.yz) * qq, qq); } return vec3(vec2(R.yz), 0.0); }
+// dos_ttex from the records (the coverage's discards were dos_gouraud's)
+ivec2 dos_ttex(bool persp) {
+  if (v_drec < 0) return ivec2(-1);
+  ivec4 H0 = u_drec[v_drec], H1 = u_drec[v_drec + 1];
+  int ybot = H1.y, ytop = H1.x;
+  int y = clamp(int(u_vp.y) - 1 - (int(floor(glFragCoord.y)) - int(u_vpo.y)), ytop, ybot), yq = y == ybot && y > ytop ? y - 1 : y;
+  int ea = dos_rchain(H0.x, H0.y, yq), eb = dos_rchain(H0.x + 2 * H0.y, H0.z, yq);
+  ivec4 A0 = u_drec[ea], A1 = u_drec[ea + 1], B0 = u_drec[eb], B1 = u_drec[eb + 1];
+  int x1 = int(uint(A1.x) * 65536u + 0x8000u + uint(y - A0.y) * uint(A0.w));
+  int x2 = int(uint(B1.x) * 65536u + 0x8000u + uint(y - B0.y) * uint(B0.w));
+  vec3 p1 = dos_ra(H0.w + A1.y, persp), q1 = dos_ra(H0.w + A1.z, persp), p2 = dos_ra(H0.w + B1.y, persp), q2 = dos_ra(H0.w + B1.z, persp);
+  vec3 a1 = p1 + float(y - A0.y) * (q1 - p1) / float(A0.z), a2 = p2 + float(y - B0.y) * (q2 - p2) / float(B0.z);
+  if (x2 <= x1) { int ti = x1; x1 = x2; x2 = ti; vec3 ta = a1; a1 = a2; a2 = ta; }   // (0x67681: the larger x the right)
+  int xL = x1 >> 16, w = (x2 >> 16) - xL + 1, k = clamp(int(floor(glFragCoord.x)) - int(u_vpo.x) - xL, 0, w - 1);
+  ivec2 uv;
+  if (!persp) {
+    uv = ivec2(int(a1.x) + 0x8000 + k * int(trunc((a2.x - a1.x) / float(w))), int(a1.y) + 0x8000 + k * int(trunc((a2.y - a1.y) / float(w))));
+  } else {
+    vec3 d16 = 16.0 * (a2 - a1) / float(w);
+    int r = k >> 4, j = k & 15, nr = w >> 4;
+    vec3 p0 = a1 + float(r) * d16;
+    ivec2 u0 = ivec2(trunc(p0.xy / p0.z)) + 0x8000, u1;
+    if (r < nr) { vec3 p1 = p0 + d16; u1 = ivec2(trunc(p1.xy / p1.z)) + 0x8000; uv = u0 + j * ((u1 - u0) >> 4); }
+    else { u1 = ivec2(trunc(a2.xy / a2.z)) + 0x8000; int rem = w & 15; uv = u0 + j * ivec2(trunc(vec2(u1 - u0) / float(max(rem, 1)))); }
+  }
+  ivec2 ts = ivec2(u_texsize);
+  return ivec2((uv.x >> 16) & (ts.x - 1), (uv.y >> 16) & (ts.y - 1));
+}
+vec3 dos_gouraud(float lev) {
+  float g = (lev + 1.0) / 16.0, px = floor(glFragCoord.x), py = floor(glFragCoord.y);
+  float cc = v_gs.y + v_gs.x * g + 0.5, cmin = -1e9, cmax = 1e9;
+  int k = int(px), r = int(py);
+  uint val = 0u; bool exact = false;
+  if (v_texsel > 0 && v_drec >= 0) {
+    ivec4 H0 = u_drec[v_drec], H1 = u_drec[v_drec + 1];
+    int L1 = int(lev) + 1, ytop = H1.x, ybot = H1.y; bool nd = (H1.z & 1) != 0;
+    if (u_dos_smooth != 0 || u_dos_tc != 0) {
+      cmin = 1e9; cmax = -1e9;
+      for (int i = 0; i < (H1.z >> 1); i++) {
+        ivec4 q = u_drec[H1.w + (i >> 1)]; vec2 cu = intBitsToFloat((i & 1) == 0 ? q.xy : q.zw);
+        float C = cu.y + cu.x * g; cmin = min(cmin, C); cmax = max(cmax, C);
+      }
+    }
+    int y0 = int(u_vp.y) - 1 - (int(py) - int(u_vpo.y)), y = clamp(y0, ytop, ybot);
+    if (!nd && (y0 != y || ybot == ytop)) discard;
+    int yq = y == ybot && y > ytop ? y - 1 : y;
+    ivec2 e1 = dos_rgchain(dos_rchain(H0.x, H0.y, yq), H0.w, y, L1), e2 = dos_rgchain(dos_rchain(H0.x + 2 * H0.y, H0.z, yq), H0.w, y, L1);
+    if (e2.x <= e1.x) { ivec2 t2 = e1; e1 = e2; e2 = t2; }
+    int x0 = e1.x >> 16, w = (e2.x >> 16) - x0;
+    int st = w != 0 ? dos_idiv(e2.y - e1.y, max(w >> 1, 1)) : 0;
+    k = int(px) - int(u_vpo.x) - x0;
+    if (!nd && (k < 0 || k > w)) discard;
+    k = clamp(k, 0, w); r = y - ytop;
+    val = uint(e1.y) + uint(k >> 1) * uint(st); exact = true;
+    cc = float(int(val)) / 65536.0;
+  }
+  if (u_dos_smooth != 0 || u_dos_tc != 0) {
+    float e = clamp(cc - 0.25, cmin, cmax), e0 = floor(e);
+    return mix(dos_colour(e0), dos_colour(e0 + 1.0), e - e0);
+  }
+  if (exact) return dos_colour(float(((val + (((k + r) & 1) == 0 ? 0x7fffu : 0u)) >> 16) & 0xffu));
+  return dos_colour(floor(cc + (((k + r) & 1) == 0 ? 32767.0 / 65536.0 : 0.0)));
+}
+#endif
 #endif
 void main() {
   glFragCoord = vec4(gl_FragCoord.x, u_fbh - gl_FragCoord.y, gl_FragCoord.zw);   // GL's bottom-left origin
@@ -558,7 +663,11 @@ void main() {
 #else
     if (kind == 5) discard;   // (a line: glr's draw list sends it to the clip variant, which holds 0x54fa9's pixel rule)
 #endif
+#if DOS_REC
+    if (kind <= 2 && v_texsel > 0 && u_dos_exact != 0) dos_cover();
+#else
     if (kind <= 2 && v_texsel > 0 && u_dos_exact != 0) dos_gouraud(0.0);
+#endif
     if (kind == 0) { o_color = u_dos_tc != 0 ? dos_tc_out(dos_colour(base)) : vec4(dos_colour(base), 1.0); return; }
 // kind 4: a type 3 billboard - its texel indices as they are (0x38ae3 returns a 0x3000 word unshaded)
     if (kind == 4 && u_dos_tc != 0) { vec4 tc = dos_tc_tex(15.0, false); if (tc.a < 0.5) discard; o_color = dos_tc_out(tc.rgb); return; }

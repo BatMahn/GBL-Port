@@ -18,6 +18,10 @@ static float frand(unsigned *s) { return (float)rnd(s) / 32768.0f; }
 static combat_planet g_planet = {1.0f, 0, 100000.0f, 0};
 
 void combat_set_planet(const combat_planet *p) { g_planet = *p; if (g_planet.jet_damping <= 0) g_planet.jet_damping = 100000.0f; }
+/* the temperature the loader's heat-sink tiers see for the units built next (GBL DAT_000a5bf8: 25 until the mission's
+ * PLNT chunk is read, the planet's after; see bwd_after_planet) */
+static int g_load_temp = COMBAT_TEMP_BEFORE_PLANET;
+void combat_set_load_temperature(int t) { g_load_temp = t; }
 static int g_auto_eject;   /* DAT_1024bfbc */
 void combat_set_auto_eject(int on) { g_auto_eject = on != 0; }
 int  combat_auto_eject(void) { return g_auto_eject; }
@@ -90,8 +94,10 @@ int combat_init(combat_unit *u, prj_archive *a, const char *loadout)
         u->slot_count[l] = d.loc[l].slot_count <= MEK_SLOTS ? d.loc[l].slot_count : MEK_SLOTS;
         for (k = 0; k < MEK_SLOTS; k++) u->slots[l][k] = d.loc[l].slots[k];
     }
-    /* heat sinking per tick (AI mechs / normal difficulty; the player's set again by combat_set_player_difficulty) */
-    u->sink_per_tick = (float)d.heat_sinking * (float)combat_sink_rate(0, 1, g_planet.temperature) / 65536.0f;
+    /* heat sinking per tick (AI mechs / normal difficulty; the player's set again by combat_set_player_difficulty), at the
+     * temperature in force when the unit is built (GBL 0x4dc98: DAT_000a5bf8, combat_set_load_temperature) */
+    u->sink_temp = g_load_temp;
+    u->sink_per_tick = (float)d.heat_sinking * (float)combat_sink_rate(0, 1, u->sink_temp) / 65536.0f;
     u->rating = combat_mek_rating(&d);
     u->tons = (int)d.tonnage;   /* controller +0xe4 (MEK +0x00): the head-hit ratio in 0x1000c1f0 */
     u->jets = (int)d.jump_mp;
@@ -139,6 +145,9 @@ static int selectable(int w);
 static void destroy_location(combat_unit *t, int loc);
 static void crit_item(combat_unit *t, int loc, int idx, int silent);
 static void cook_off(combat_unit *u);
+/* GBL 0x25680 (the death): returns at once for the player with invulnerability on (MW2DIF +1, 0x25680's first test) -
+ * reached here only by the heat's ammunition path (damage, 0x265e0, and collisions skip such a player before this) */
+static void kill_unit(combat_unit *t) { if (!(t->human && t->invulnerable)) t->destroyed = 1; }
 
 /* engine 0x10043cc0: one round leaves the weapon's count and its current bin (an empty bin moves the pointer on to
  * the next without taking a round); the count reaching 0 marks the weapon spent (state -1) and that projectile
@@ -239,6 +248,7 @@ void combat_tick(combat_unit *u, float dt)
     u->fire_edge = u->fire_held & ~u->fire_prev;
     u->fire_prev = u->fire_held;
     u->heat_warning = 0;
+    u->cook_msg = 0;
     u->seq_alarm = 0;
     u->auto_shutdown = 0;
     u->restarted = 0;
@@ -246,12 +256,18 @@ void combat_tick(combat_unit *u, float dt)
         combat_weapon *cw = &u->weapons[i];
         const sim_weapon *sw = &WT[cw->weapon];
         if (cw->state < 0) continue;   /* destroyed by a critical hit, or out of ammunition */
-        /* 0x100437a0 runs only while the mech is up (state 2): a volley's timer stands still while shut down; the
-         * recycle and repeat waits are measured from a start time, so they run on */
-        if ((u->shutdown || u->offline) && cw->state == CW_FIRING) continue;
+        if (u->shutdown || u->offline) {
+            /* the weapons' state machine (GBL 0x53200) runs only while the unit is up (state 2); every frame it is not
+             * (starting up, shut down, powered down: 0x2840d) 0x531a0 puts a weapon that is firing or waiting to repeat
+             * back to ready - the rest of a volley is lost, and a trigger held through a shutdown and the restart fires
+             * nothing until it is pressed again (DOSBox: the heat falls to 0 after the restart with the trigger down).
+             * The recycle wait is measured from its start time, so it runs on */
+            if (cw->state == CW_FIRING || cw->state == CW_REPEAT) { cw->state = CW_READY; cw->shots = 0; cw->t = 0; }
+            else { cw->t10 = cw->t; cw->t += ticks; }
+            continue;
+        }
         cw->t10 = cw->t;
         cw->t += ticks;
-        if (u->shutdown || u->offline) continue;
         if (cw->state == CW_RECYCLE && cw->t >= (float)sw->refire) { cw->state = CW_READY; cw->t = 0; }
         else if (cw->state == CW_REPEAT && cw->t >= (float)sw->refire) {
             /* still held: the next volley (counted from 0); released: ready */
@@ -296,8 +312,12 @@ void combat_tick(combat_unit *u, float dt)
                 if ((float)(u->rng >> 8) / 16777216.0f < ticks / 18000.0f) { cook_off(u); if (u->destroyed) u->down_in_update = 1; }
             }
         } else if (h > 100 && u->shutdown) {
-            /* shut down above 100 for more than 0x71c ticks since the shutdown: BlowAmmo (0x251e0) every frame */
-            if (!u->invulnerable && u->seq_ticks > 1820.0f) { cook_off(u); if (u->destroyed) u->down_in_update = 1; }
+            /* shut down above 100 for more than 0x71c ticks since the shutdown: BlowAmmo (0x251e0) every frame. No
+             * invulnerability test on this path (0x25470..0x25496): an invulnerable player's ammunition blows and takes
+             * its criticals too, only the death (0x25680) is refused. DOSBox NEWCSCN1, "kent", group fire held: shut down
+             * 8.4 s after the trigger, "Critical hit" and "Internal ammo explosion detected" 10 s later, the right side's
+             * weapons gone, the 'Mech alive and restarting ~22 s after the shutdown */
+            if (u->seq_ticks > 1820.0f) { cook_off(u); if (u->destroyed) u->down_in_update = 1; }
         } else if (h > 80 && !u->shutdown_pending) {
             u->shutdown_pending = 1; u->seq_ticks = 0;
             if (!u->alarm_latch) { u->alarm_latch = 1; u->seq_alarm = 1; }   /* latch +0x111 bit 0x10 */
@@ -326,16 +346,21 @@ void combat_tick(combat_unit *u, float dt)
 static void cook_off(combat_unit *u)
 {
     int l, k;
-    if (u->bin_count > 0)
+    if (u->bin_count > 0) {
         for (l = 0; l < 8; l++) {
             if (u->loc_gone[l]) continue;
             for (k = 0; k < u->slot_count[l]; k++)
                 if (u->slots[l][k] == u->bins[0].id) { crit_item(u, l + 1, k, 0); return; }
         }
-    /* GBL 0x24ec0 (0x2525d): no such entry - a computer-run unit, or the player with automatic ejection on, goes to
-     * state 5 (ejected; a hostile atmosphere makes it 4 in 0x25680) before 0x25680 */
-    if ((g_auto_eject || !u->human) && !(u->human && u->invulnerable)) u->ejected = g_planet.hostile ? 2 : 1;
-    u->destroyed = 1;
+        /* GBL 0x251e0 (0x2525d): no such entry - a computer-run unit, or the player with automatic ejection on, goes to
+         * state 5 (ejected; a hostile atmosphere makes it 4 in 0x25680) before 0x25680. A unit with no bins at all
+         * (+0x5c == 0, 0x251f1) skips this. The invulnerable player is set to state 5 too and 0x25680 then refuses the
+         * death, leaving the controller in state 5 for good - not modelled: the port keeps that player as it is */
+        if ((g_auto_eject || !u->human) && !(u->human && u->invulnerable)) u->ejected = g_planet.hostile ? 2 : 1;
+    }
+    /* the player: message 0 "Heat level critical" (0x25293: 0x42e40(eax = 0) - voice 64, no sound) before the death */
+    if (u->human) u->cook_msg = 1;
+    kill_unit(u);
 }
 
 /* engine location numbers 1-8 -> MEK index 0-7 (same order) */
@@ -363,7 +388,7 @@ static void destroy_location(combat_unit *t, int loc)   /* 1-8, engine 0x1001664
     default:
         break;
     }
-    t->destroyed = 1;
+    kill_unit(t);   /* 0x25a90 -> 0x25680 */
 }
 
 /* engine 0x100167b0: entry `idx` of location `loc`'s item list takes a critical (silent: a location being destroyed);
@@ -440,8 +465,8 @@ static void crit_item(combat_unit *t, int loc, int idx, int silent)
         } else if (eq == 6000) {
             /* heat sink: 0.000763 less dissipation while it is positive (it can go below 0), else 0 */
             if (t->sink_per_tick > 0) t->sink_per_tick -= 0.000762939453125f; else t->sink_per_tick = 0;
-        } else if (eq == 5750) t->destroyed = 1;              /* cockpit */
-        else if (eq == 5900) { if (g_planet.hostile) t->destroyed = 1; }   /* life support */
+        } else if (eq == 5750) kill_unit(t);                  /* cockpit (0x25cc0 -> 0x25680) */
+        else if (eq == 5900) { if (g_planet.hostile) kill_unit(t); }   /* life support */
         else if (eq == 7000) {                                 /* jump jet */
             if (t->jets < 1) t->jet_ddy = 0; else t->jet_ddy -= t->jet_ddy / (float)t->jets;
             if (t->jets > 0) t->jets--;
@@ -972,7 +997,8 @@ void combat_set_armor_mult(combat_unit *u, float mult)
 }
 
 /* GBL MW2.EXE 0x4dc98..0x4dd7b (in the loader 0x4d670): the dissipation per tick per heat sinking point (16.16), by the
- * planet's temperature (PLNT, DAT_000a5bf8) - an AI unit, and the player at difficulty 1 (MW2DIF +5): 250 at -100 or
+ * temperature as the loader finds it when the unit is built (DAT_000a5bf8: 25 until the PLNT chunk is read - most
+ * missions build every unit first, so their units sink at the temperate rate on any planet; combat_set_load_temperature) - an AI unit, and the player at difficulty 1 (MW2DIF +5): 250 at -100 or
  * colder, 100 below -30, 45 above 50, else 50; the player at difficulty 0: 350 / 140 / 70 (no hot tier); difficulty 2:
  * 225 / 67 / 36 / 45; another difficulty value 50 whatever the temperature. The port had the 3Dfx DLL's tiers (no -100
  * tier: BRAN, CLAI, PETE, ZACK sank 2.5x slower than GBL; difficulty 2 cold 67.5) */
@@ -988,6 +1014,6 @@ int combat_sink_rate(int player, int difficulty, int temperature)
 void combat_set_player_difficulty(combat_unit *u, int difficulty)
 {
     /* the unit was set up at the AI / difficulty 1 rate (combat_init) */
-    float r1 = (float)combat_sink_rate(0, 1, g_planet.temperature), rp = (float)combat_sink_rate(1, difficulty, g_planet.temperature);
+    float r1 = (float)combat_sink_rate(0, 1, u->sink_temp), rp = (float)combat_sink_rate(1, difficulty, u->sink_temp);
     u->sink_per_tick = u->sink_per_tick / r1 * rp;
 }

@@ -51,11 +51,14 @@ void main() {
 #if DOS_LOOK
   int dli = u_dos != 0 && u_dos_order != 0 && u_dlist != 0 && pit == 0 && a_tic.w < 0.5 ? int(a_tic.x + 0.5) - 1 : -1;
   float dld = dli >= 0 ? u_dos_rank[dli] : 0.0;
-  // + 16: the list flags a polygon whose corners land beyond the paint's +-0x4000 box (glr_dos_list): drawn by the clip
-  // variant (u_clip_pass 2) with everything not listed (the cockpit's own near plane), the rest by the lean program (1)
-  bool dclip = dld > 8.0;
-  if (dclip) dld -= 16.0;
-  bool dskip = (u_clip_pass == 1 && (dli < 0 || dclip)) || (u_clip_pass == 2 && dli >= 0 && !dclip);
+  // the polygon's records (glr_dos_list -> glr_dos_records, after the depths): their offset in the layer's record buffer,
+  // -2 for a polygon the fill's records do not concern, -1 for one left to the per-pixel fill - drawn by the clip
+  // variant (u_clip_pass 2) with everything not listed (the cockpit's own near plane); the rest by the lean program (1)
+  // (the cockpit set's polygon n - not listed, its own near plane - at 2 u_dl_n + n)
+  int drid = dli >= 0 ? int(u_dos_rank[u_dl_n + dli]) : u_dos != 0 && u_dlist != 0 && pit > 0 ? int(u_dos_rank[2 * u_dl_n + min(pit - 1, 127)]) : -1;
+  bool dlean = drid != -1;
+  bool dskip = (u_clip_pass == 1 && !dlean) || (u_clip_pass == 2 && dlean);
+  v_drec = u_clip_pass == 1 && drid >= 0 ? drid : -1;
 #else
   const int dli = -1;
   const bool dskip = false;

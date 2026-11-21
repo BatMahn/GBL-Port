@@ -12,9 +12,15 @@ typedef struct {
     int msg_warn, msg_seq, msg_down, restarted;
     float seq_ticks, heat;
 } shim_heat;
+void shim_heat_setup2(combat_unit *u, int sink16, int human, int seed, int invulnerable);
 void shim_heat_setup(combat_unit *u, int sink16, int human, int seed)
 {
+    shim_heat_setup2(u, sink16, human, seed, 0);
+}
+void shim_heat_setup2(combat_unit *u, int sink16, int human, int seed, int invulnerable)
+{
     memset(u, 0, sizeof *u);
+    u->invulnerable = invulnerable;
     u->sink_per_tick = (float)sink16 / 65536.0f;
     u->human = human;
     u->rng = (unsigned)seed;
@@ -27,7 +33,8 @@ void shim_heat_frame(combat_unit *u, shim_heat *h)
     combat_tick(u, (float)h->ticks / COMBAT_TICKS_PER_S);
     h->heat = u->heat;
     h->shutdown = u->shutdown; h->pending = u->shutdown_pending; h->override = u->override;
-    h->latch = u->alarm_latch; h->warn_latch = u->warn_latch; h->destroyed = u->destroyed;
+    h->latch = u->alarm_latch; h->warn_latch = u->warn_latch;
+    h->destroyed = u->destroyed || u->cook_msg;   /* BlowAmmo ran: the death, or (invulnerable) its message alone */
     h->msg_warn = u->heat_warning; h->msg_seq = u->seq_alarm; h->msg_down = u->auto_shutdown; h->restarted = u->restarted;
     h->seq_ticks = u->seq_ticks;
 }
@@ -42,6 +49,7 @@ float shim_unit_sink(int heat_sinking, int player, int difficulty, int temperatu
     combat_unit u; combat_planet p = {1.0f, temperature, 100000.0f, 0};
     combat_set_planet(&p);
     memset(&u, 0, sizeof u);
+    u.sink_temp = temperature;   /* a unit built after the PLNT chunk (combat_set_load_temperature) */
     u.sink_per_tick = (float)heat_sinking * (float)combat_sink_rate(0, 1, temperature) / 65536.0f;
     if (player) combat_set_player_difficulty(&u, difficulty);
     return u.sink_per_tick;
@@ -68,4 +76,15 @@ void shim_collide(float speed, float ny, float rel, int other_tons, int own_tons
     u.tons = own_tons;
     collide(&u, speed, ny, rel, other_tons, 0, &rng);
     for (l = 0; l < 8; l++) out[l] = 1000.0f - u.armor[l];
+}
+/* shut down above 100: one frame of `ticks` with `since` ticks since the shutdown; returns 1 if BlowAmmo ran (the death
+ * or, for an invulnerable player, its message) */
+int shim_shutdown_blow(int invulnerable, int human, float heat, float since, int ticks)
+{
+    combat_unit u;
+    memset(&u, 0, sizeof u);
+    u.human = human; u.invulnerable = invulnerable; u.rng = 1;
+    u.shutdown = 1; u.shutdown_pending = 1; u.seq_ticks = since; u.heat = u.heat_mark = heat;
+    combat_tick(&u, (float)ticks / COMBAT_TICKS_PER_S);
+    return u.destroyed || u.cook_msg;
 }

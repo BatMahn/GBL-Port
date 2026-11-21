@@ -54,7 +54,8 @@ typedef struct {
     SDL_GPUBuffer *vb[MAXV];
     uint32_t voff[MAXV];
     uint8_t vstream[MAXV];
-    SDL_GPUBuffer *sb, *sb2;   /* sb2: the vertex stage's second storage buffer (the DOS programs' draw-list depths) */
+    SDL_GPUBuffer *sb, *sb2, *sb3;   /* sb2: the vertex stage's second storage buffer (the DOS programs' draw-list depths); sb3:
+                                      * the fragment stage's (the lean DOS program's polygon records) */
     SDL_GPUTexture *tx[MAXT];
     SDL_GPUSampler *sm[MAXT];
     uint32_t uoff[2], ulen[2];
@@ -136,7 +137,7 @@ static struct {
     rb_tex tex[MAXT];
     rb_buf vb[MAXV];
     size_t voff[MAXV];
-    rb_buf sb, sb2;
+    rb_buf sb, sb2, sb3;
     uint32_t uoff[2], ulen[2];
     int uvalid[2];
 } S;
@@ -830,6 +831,7 @@ void rb_texture(int unit, rb_tex t) { if (unit >= 0 && unit < MAXT) S.tex[unit] 
 void rb_vertex(int binding, rb_buf b, size_t offset) { if (binding >= 0 && binding < MAXV) { S.vb[binding] = b; S.voff[binding] = offset; } }
 void rb_storage(rb_buf b) { S.sb = b; }
 void rb_storage_aux(rb_buf b) { S.sb2 = b; }
+void rb_storage_frag(rb_buf b) { S.sb3 = b; }
 
 void rb_uniforms(int slot, const void *data, size_t bytes)
 {
@@ -884,6 +886,10 @@ void rb_draw(int first, int count)
             if (B(S.sb2) && g_buf[S.sb2].b) { c->sb2 = g_buf[S.sb2].b; g_buf[S.sb2].used = g_serial; }
             else c->sb2 = zero_buffer(16);
         }
+        if (rb_shader_blobs[PROG_FS[prog]].storage_buffers > 1) {
+            if (B(S.sb3) && g_buf[S.sb3].b) { c->sb3 = g_buf[S.sb3].b; g_buf[S.sb3].used = g_serial; }
+            else c->sb3 = zero_buffer(16);
+        }
     }
     c->nt = (uint8_t)rb_shader_blobs[PROG_FS[prog]].samplers;
     for (k = 0; k < c->nt; k++) {
@@ -908,7 +914,7 @@ void rb_draw(int first, int count)
     if (g_ncmd >= 2) {   /* the same state as the draw before, its stream vertices just after: one draw (the HUD's quads) */
         rcmd *p = &g_cmd[g_ncmd - 2];
         if (p->type == C_DRAW && p->pipe == c->pipe && p->nv == c->nv && p->vstream[0] && c->vstream[0]
-            && p->voff[0] + p->count * PROG_STRIDE[prog][0] == c->voff[0] && p->sb == c->sb && p->sb2 == c->sb2 && p->nt == c->nt && p->nu == c->nu
+            && p->voff[0] + p->count * PROG_STRIDE[prog][0] == c->voff[0] && p->sb == c->sb && p->sb2 == c->sb2 && p->sb3 == c->sb3 && p->nt == c->nt && p->nu == c->nu
             && !memcmp(&p->vp, &c->vp, sizeof c->vp) && !memcmp(&p->sc, &c->sc, sizeof c->sc)) {
             int same = 1;
             for (k = 1; k < c->nv; k++) same &= !c->vstream[k] && !p->vstream[k] && p->vb[k] == c->vb[k] && p->voff[k] + p->count * PROG_STRIDE[prog][k] == c->voff[k];
@@ -1099,9 +1105,9 @@ static void exec_list(SDL_GPUCommandBuffer *cb)
             for (k = 0; k < c->nv; k++) { vb[k].buffer = c->vstream[k] ? g_stream : c->vb[k]; vb[k].offset = c->voff[k]; }
             if (c->nv) SDL_BindGPUVertexBuffers(P, 0, vb, c->nv);
             if (c->sb) {
-                SDL_GPUBuffer *vsb[2] = {c->sb, c->sb2};
+                SDL_GPUBuffer *vsb[2] = {c->sb, c->sb2}, *fsb[2] = {c->sb, c->sb3};
                 SDL_BindGPUVertexStorageBuffers(P, 0, vsb, c->sb2 ? 2 : 1);
-                SDL_BindGPUFragmentStorageBuffers(P, 0, &c->sb, 1);
+                SDL_BindGPUFragmentStorageBuffers(P, 0, fsb, c->sb3 ? 2 : 1);
             }
             for (k = 0; k < c->nt; k++) { ts[k].texture = c->tx[k]; ts[k].sampler = c->sm[k]; }
             if (c->nt) SDL_BindGPUFragmentSamplers(P, 0, ts, c->nt);

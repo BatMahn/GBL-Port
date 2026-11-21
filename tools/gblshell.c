@@ -280,12 +280,14 @@ static void gbl_present_video(SDL_Texture *t)
     if (t == g_gtx) SDL_SetTextureScaleMode(t, getenv("MW2_TEXT_SMOOTH") ? SDL_SCALEMODE_LINEAR : GBL_SHELL_SCALEMODE);
     gbl_logical(g_grd, 1);
 }
+static void gbl_cursor_overlay(void);
 static void gbl_present(void)
 {
     if (!g_grd) return;
     if (!g_gvid_tx) SDL_UpdateTexture(g_gtx, NULL, g_fb, W * 3);
     if (g_gvid_fit >= 0) { gbl_present_video(g_gvid_tx ? g_gvid_tx : g_gtx); SDL_RenderPresent(g_grd); return; }
     SDL_RenderClear(g_grd); SDL_RenderTexture(g_grd, g_gvid_tx ? g_gvid_tx : g_gtx, NULL, NULL); gbl_text_layer(g_grd);
+    if (!g_gvid_tx) gbl_cursor_overlay();   /* the DOS pointer over everything, every screen (not during a full-screen clip) */
     g_ntcover = 0;
     if (g_grab[0]) {   /* TEST ONLY (GBL_EVENTS "S file.ppm", windowed): the rendered window with its text layer */
         SDL_Surface *rs = SDL_RenderReadPixels(g_grd, NULL);   /* (a NULL rect reads the viewport: the 640x480 picture, scaled) */
@@ -753,7 +755,35 @@ static void gbl_cursor_load(void)
     if (n > 0 && shp_decode(d, (size_t)n, 0, &g_cursor) == 0) g_have_cursor = 1;
     free(d);
 }
-/* the pixels under the pointer drawn last (headless): a screen keeps the presented frame as the picture under a panel
+/* windowed: the original's pointer (DOS draws its own; the port had shown the system's arrow) drawn last on every
+ * presented frame - over the picture and the text layer, in the screen's palette - at the mouse's place in the 640 x 480
+ * picture; the system's pointer is hidden over the window (SDL_HideCursor at start-up) */
+static SDL_Texture *g_cur_tx;
+static void gbl_cursor_overlay(void)
+{
+    static uint8_t rgba[96 * 96 * 4];
+    SDL_FRect dst;
+    int X, Y;
+    if (!g_have_cursor || g_headless || !g_grd || g_cursor.w > 96 || g_cursor.h > 96 || g_cursor.w <= 0 || g_cursor.h <= 0) return;
+    if (g_win && SDL_GetMouseFocus() != g_win) return;
+    if (!g_cur_tx) {
+        g_cur_tx = SDL_CreateTexture(g_grd, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STREAMING, g_cursor.w, g_cursor.h);
+        if (!g_cur_tx) return;
+        SDL_SetTextureBlendMode(g_cur_tx, SDL_BLENDMODE_BLEND);
+        SDL_SetTextureScaleMode(g_cur_tx, SDL_SCALEMODE_NEAREST);
+    }
+    for (Y = 0; Y < g_cursor.h; Y++)
+        for (X = 0; X < g_cursor.w; X++) {
+            uint8_t *o = rgba + ((size_t)Y * (size_t)g_cursor.w + (size_t)X) * 4;
+            const int k = Y * g_cursor.w + X;
+            if (g_cursor.mask[k]) { memcpy(o, gbl_pal()[g_cursor.pix[k]], 3); o[3] = 255; } else memset(o, 0, 4);
+        }
+    SDL_UpdateTexture(g_cur_tx, NULL, rgba, g_cursor.w * 4);
+    dst.x = (float)(g_in.mx + g_cursor.left); dst.y = (float)(g_in.my + g_cursor.top);
+    dst.w = (float)g_cursor.w; dst.h = (float)g_cursor.h;
+    SDL_RenderTexture(g_grd, g_cur_tx, NULL, &dst);   /* (the renderer's logical 640 x 480 presentation scales it) */
+}
+/* the pixels under the pointer drawn last: a screen keeps the presented frame as the picture under a panel
  * (the Esc menu, a dialog) - gbl_cursor_unsave() takes the pointer of the previous frame out of such a copy */
 static uint8_t g_cur_under[96 * 96 * 3];
 static int g_cur_ux, g_cur_uy, g_cur_uw, g_cur_uh;
@@ -762,7 +792,7 @@ static void gbl_draw_cursor(int x, int y)
 {
     int X, Y;
     g_cur_uw = 0;
-    if (!g_have_cursor || !g_headless) return;   /* windowed: the system pointer (SDL) */
+    if (!g_have_cursor || !g_headless) return;   /* windowed: gbl_cursor_overlay draws it on every presented frame */
     if (g_cursor.w <= 96 && g_cursor.h <= 96) {
         g_cur_ux = x + g_cursor.left; g_cur_uy = y + g_cursor.top; g_cur_uw = g_cursor.w; g_cur_uh = g_cursor.h;
         for (Y = 0; Y < g_cur_uh; Y++)
@@ -1351,6 +1381,7 @@ int main(int argc, char **argv)
         if (pc.mode == 0 || pc.mode == 2) wf |= SDL_WINDOW_FULLSCREEN;   /* (no mode set: the desktop's - SDL2's FULLSCREEN_DESKTOP) */
         g_win = SDL_CreateWindow("MechWarrior 2: Ghost Bear's Legacy", W * 2, H * 2, wf);   /* centred; no text input until asked */
         if (!g_win) { fprintf(stderr, "SDL: %s\n", SDL_GetError()); return 1; }
+        SDL_HideCursor();   /* the menus draw the DOS pointer themselves (gbl_draw_cursor), as the original - not the system's arrow */
         /* the menus through the same GPU interface as the simulation (gblport.cfg gpu=, rb.h): SDL's Direct3D 12 or Vulkan
          * renderer on Windows, Vulkan on Linux, Metal on macOS - the other one, then SDL's software renderer, if it can't
          * start; never OpenGL - except in the legacy build (RB=gl12: no SDL_GPU), SDL's OpenGL renderer, else its software one */

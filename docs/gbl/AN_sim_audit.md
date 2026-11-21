@@ -34,7 +34,7 @@ read of the main loop's simulation / AI / combat call graph; (3) fixes for every
 
 | # | what | GBL | before | after |
 |---|---|---|---|---|
-| 1 | heat sinking tiers | 0x4dc98..0x4dd7b | -100 or colder not modelled (AI / Medium 100 per point); Hard cold 67.5 | 250 (AI / Medium), 350 Easy, 225 Hard; Hard cold 67 - BRAN, CLAI, PETE, ZACK sink 2.5x |
+| 1 | heat sinking tiers | 0x4dc98..0x4dd7b | -100 or colder not modelled (AI / Medium 100 per point); Hard cold 67.5 | 250 (AI / Medium), 350 Easy, 225 Hard; Hard cold 67 - BRAN, CLAI, PETE, ZACK sink 2.5x. (BA: only for units built after the PLNT chunk - see section 9) |
 | 2 | override cook-off | 0x25430 rand(500 x frame ticks) == 0 | 3Dfx 3 in 4000 a tick: mean 7.8 s | 1 in 18000 a tick (the per-frame rule at 30 fps): mean ~95 s (DOSBox 45 fps ~44 s, period hardware longer) |
 | 3 | leg turn servo | 0x278e1 heading += +0x3c x ticks / 182; servo +0x34 T 54 (0x26ad1) | heading turned at the demand at once | eased (T 54 ticks): turns build up / run on ~0.3 s (player and AI; FEET_TO_TORSO too, 0x2811d) |
 | 4 | spot turn / airborne turn | 0x28054..0x280ed | AI turned at any speed; immobile player pivoted; turning in mid-air | no turn under kv 1 (~1 km/h) for computer-run units and the immobile player; none airborne (feet > centre height over ground, 0x276fb) without jets |
@@ -865,4 +865,47 @@ Open:
 - Manoeuvre 1's leftover-point quirk depends on the order of every unit's points in the one nav table (another unit's
   point between two of this unit's shifts which ones 0x236d0 drops): the port keeps each unit's points apart (ASSUMED none
   in between, as msim.c's guard).
+
+## 9. BA - the heat path against DOSBox (1.0.7)
+
+User report on 1.0.6: "mech doesn't overheat ... there's no shutdown text by the heat bar". Method: the decompile and asm of
+0x252b0 / 0x251e0 / 0x531a0 / 0x4dc98 and the loader's walk, unicorn (simdiff heat_state, heat_blow_shutdown), and
+DOSBox runs (Timber Wolf TBR00STD, 640 x 480 and 1024 x 768) read three ways: the heat bar's pixels (row 432, 0..100;
+with MW2.EXE 0x31492 `mov ecx,100` patched to 400 the bar reads 0..400), the shutdown patched out (0x253bd jle -> jmp)
+to follow the heat past 100, and DOSBox's sound capture (Ctrl+F6) searched for the voice samples (SNDS 64 / 15 / 14 /
+48 / 54) by cross-correlation for the message times.
+
+What DOS shows:
+- No text for the heat messages: 0x42e40 queues the voice, and its text is shown only when the voice can't play (the
+  port already did this). The label under the bar stays "Heat" (green) through the whole sequence at both sizes - there
+  is no "Shutdown..." / "Overridden" label in the DOS edition (AR's removal stands). Shut down, the whole HUD goes
+  (radar, weapons, bars, damage display) until the restart.
+- Group fire held, temperate planet: heat ~27 at 0.65 s, ~66 at 1.5 s, ~86 at 2.4 s, 100 at 3.3 s (the port's steps
+  arrive ~0.2-0.3 s sooner: the capture's own delay); then ~26 a second. "Heat level critical" 1.67 s after the trigger,
+  "Shutdown sequence initiated" ~3.7 s (queued behind it), "Shutting down" 8.36 / 8.4 s (port 8.2 s: the sequence
+  starts at 81 and runs 0x445 ticks).
+- Not invulnerable (CYANSCN1, nothing near): shut down ~8.3 s, the ammunition blows and the 'Mech dies 10 s later
+  (0x71c ticks shut down above 100). Port: shutdown 8.23 s, death 18.27 s after the trigger.
+- Invulnerable ("kent"): the same shutdown; 10 s later "Critical hit" / "Internal ammo explosion detected", the bins
+  explode (the right side's five weapons lost), no death; "Heat level critical" again (0x251e0 with no bin left: message
+  0); restart once the heat is down to 65 (CYAN ~27.5 s after the trigger, port 27.3 s); the trigger still held fires
+  nothing after the restart.
+- Chain fire, single taps ~3-4 a second (CYAN): heat creeps up to ~90-98 by ~28 s, shutdown ~29-30 s, restart, a
+  second sequence - the port within the run-to-run spread (the taps' timing under xdotool is irregular).
+
+Fixed (commits 3e343e0, f962002, 72158cf):
+| item | GBL | before | after |
+|---|---|---|---|
+| heat-sink tier | 0x4dc98 reads DAT_000a5bf8 at build time; 25 until PLNT (0x4f5ba); GPS units built as the depth-first include walk reaches them (0x50865, 0x50a93 -> 0x4d670) | the planet's tier for every unit | the tier at the temperature in force when the unit's record is reached (bwd_after_planet): CYAN / COLB / UMBE / RUS2 / BRON / GREY / RUST / FUCH ... temperate; PUCE / SABL / SILV / SWIS / TAUP / CHED / PROV / WHIT ... the planet's. DOSBox CYAN (-51, PLNT after) = NEWC (0); PUCE (-100, PLNT first) sinks ~5x |
+| invulnerable, shut down > 100 | 0x25470..0x25496 (no MW2DIF +1 test) -> 0x251e0; 0x25680 refuses the death | nothing | the bins blow; the death refused (kill_unit) |
+| BlowAmmo, no entry | 0x2525d..0x25293 | no message; ejection state for units without bins | message 0 for the player; no ejection without bins (0x251f1) |
+| weapons not up | 0x531a0 every frame state != 2 | a volley frozen and resumed after the restart; held trigger re-fired at power-up | firing / repeat -> ready; held trigger is no new press |
+
+Checked, no change: heat per projectile at release (0x5366e: table +0x34), walking heat per frame (0x28407), jets 3/512
+a jet a tick (0x27fb5), dissipation x 2 shut down (0x2531c), the thresholds 0x64 / 0x50 / 0x41 and timers 0x444 /
+0x71c / 0x2d8, the override (0x3348d: only with a sequence pending and not shut down; message 2, sound 0xcd), the
+override's roll skipped for the invulnerable player (0x25421), +0x94 zeroed by the motion update (0x26d63).
+Open: the roll's frame-rate dependence is still taken at 30 fps (section 4); the invulnerable player with automatic
+ejection on is left in state 5 by DOS when no bin is left (a frozen, living 'Mech) - not modelled; the dH/dT bar was
+not re-measured against DOSBox here.
 
