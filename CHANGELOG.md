@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.5 (2026-11-20)
+
+- **macOS: missions launch again with anti-aliasing at 8x.** 1.0.3's start-up step that builds the graphics pipelines
+  behind the drop screen asked for the anti-aliasing setting as chosen, not as the graphics chip can do it (an Apple M4
+  takes 4x at most for the window); the chip refused, and the game stopped before the mission ("rasterSampleCount (8)
+  is not supported by device"). It now uses the same lowered setting the mission draws with, and a pipeline the chip
+  refuses at that step is skipped instead of stopping the game.
+
 ## 1.0.4 (2026-11-20)
 
 - **macOS: the app's new icon** - the artwork fills the whole square and macOS rounds its corners, as current macOS

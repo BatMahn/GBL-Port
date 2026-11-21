@@ -95,6 +95,7 @@ static int g_nbuf, g_capbuf;
 static uint32_t g_serial = 1;
 static rb_tex g_win_tex;
 static int g_win_samples = 1, g_win_made, g_win_w, g_win_h;
+static int g_prewarming;   /* rb_prewarm: a pipeline the device refuses is skipped, not fatal */
 /* the window's picture's format: on Vulkan the swapchain's (shown with a copy - a blit is a draw, 7 ms a frame at 1920 x
  * 1080 in Mesa's software Vulkan), else RGBA8 (shown with a blit, the documented way on Direct3D 12 and Metal) */
 static SDL_GPUTextureFormat g_win_fmt = COLOR_FMT;   /* g_win_made: the samples asked for when made */
@@ -487,6 +488,8 @@ static SDL_GPUGraphicsPipeline *pipeline(int prog, int has_depth, int samples, i
     e->p = SDL_CreateGPUGraphicsPipeline(g_dev, &pi);
     if (!e->p) {
         if (g_probing) { SDL_snprintf(g_probe_err, sizeof g_probe_err, "program %d: %s", prog, SDL_GetError()); return NULL; }
+        if (g_prewarming) { fprintf(stderr, "rb: prewarm skipped (program %d): %s\n", prog, SDL_GetError()); return NULL; }   /* built
+                                                                         * (or reported) when it is really used */
         fprintf(stderr, "rb: pipeline (program %d): %s\n", prog, SDL_GetError()); exit(1);
     }
     g_npipes++;
@@ -793,14 +796,26 @@ static const struct { int prog, blend, dtest, dwrite, dfunc, bias, cmask, win, d
     {2,1,0,0,0,0,15,1,1}, {2,2,0,0,0,0,15,1,1}, {2,3,0,0,0,0,15,1,1}, {2,1,0,0,0,0,15,0,1}, {2,1,0,0,0,0,15,0,0},
     {PROG_CLEAR,0,0,0,0,0,15 | 16,1,1}, {PROG_CLEAR,0,0,0,0,0,15,1,1}};
 int rb_prewarm_count(void) { return (int)(sizeof PREWARM / sizeof PREWARM[0]); }
+/* the sample count a window target really gets (target_make steps the request down to what the GPU takes: an Apple
+ * M4 refuses 8) - the prewarm asked for the raw setting, and the pipeline failed (1.0.3 on macOS: no mission launched) */
+static int win_samples_eff(void)
+{
+    SDL_GPUSampleCount sc;
+    if (g_win_samples <= 1) return 1;
+    sc = g_win_samples >= 8 ? SDL_GPU_SAMPLECOUNT_8 : g_win_samples >= 4 ? SDL_GPU_SAMPLECOUNT_4 : SDL_GPU_SAMPLECOUNT_2;
+    while (sc > SDL_GPU_SAMPLECOUNT_1 && !SDL_GPUTextureSupportsSampleCount(g_dev, g_win_fmt, sc)) sc = (SDL_GPUSampleCount)(sc - 1);
+    return sc == SDL_GPU_SAMPLECOUNT_8 ? 8 : sc == SDL_GPU_SAMPLECOUNT_4 ? 4 : sc == SDL_GPU_SAMPLECOUNT_2 ? 2 : 1;
+}
 void rb_prewarm(int i)
 {
     const int blend = S.blend, dtest = S.dtest, dwrite = S.dwrite, dfunc = S.dfunc, bias = S.bias;
     if (!g_dev || i < 0 || i >= rb_prewarm_count()) return;
     S.blend = PREWARM[i].blend; S.dtest = PREWARM[i].dtest; S.dwrite = PREWARM[i].dwrite; S.dfunc = PREWARM[i].dfunc;
     S.bias = PREWARM[i].bias;
-    pipeline(PREWARM[i].prog, PREWARM[i].depth && g_depth_fmt != SDL_GPU_TEXTUREFORMAT_INVALID, PREWARM[i].win ? g_win_samples : 1,
+    g_prewarming = 1;
+    pipeline(PREWARM[i].prog, PREWARM[i].depth && g_depth_fmt != SDL_GPU_TEXTUREFORMAT_INVALID, PREWARM[i].win ? win_samples_eff() : 1,
              PREWARM[i].cmask, PREWARM[i].win ? g_win_fmt : COLOR_FMT);
+    g_prewarming = 0;
     S.blend = blend; S.dtest = dtest; S.dwrite = dwrite; S.dfunc = dfunc; S.bias = bias;
 }
 
