@@ -141,6 +141,10 @@ uint dos_xstep(int dx, int cnt) {
 // window wrapped (JESS: a mountain's foot covered the ground in front); with the cut's shade linear in the screen
 // coordinate a near-clipped Gouraud face showed stripes (JESS mountain foot). gl12's copy (rb_gl12_world.c) was run
 // against 0x3de30 under unicorn: identical on 3000 random polygons
+#ifndef DOS_CLIP2D
+#define DOS_CLIP2D 1
+#endif
+#if DOS_CLIP2D
 uvec2 i64_neg(uvec2 a) { uint lo = ~a.y + 1u; return uvec2(~a.x + (lo == 0u ? 1u : 0u), lo); }
 uvec2 i64_mul(int a, int b) { uvec2 p = dos_mul64(uint(abs(a)), uint(abs(b))); return (a < 0) != (b < 0) ? i64_neg(p) : p; }
 uvec2 i64_sub(uvec2 a, uvec2 b) { return uvec2(a.x - b.x - (a.y < b.y ? 1u : 0u), a.y - b.y); }
@@ -197,6 +201,7 @@ int dos_clip2d(inout ivec3 Rc[20], inout ivec2 Rs[20], inout ivec2 Ra[20], int m
   }
   return m;
 }
+#endif
 // 0x3c610 type 4: a corner's baked index a (16.16) as the fill takes it - ramp + i (L + 1) / 16 when a >= 48, else a
 int dos_gsc(int a16, int L1) { return a16 < 0x300000 ? a16 : (a16 & int(0xfff00000u)) + ((((a16 >> 16) & 15) * L1) << 12); }
 // 0x3e8fe's attributes at the near plane: as x and y, from the corner of the smaller z (imul / idiv)
@@ -233,7 +238,11 @@ int dos_line_recs(vec3 A, vec3 B, out ivec2 Rs[20]) {
   if (!bb) { Rc[m] = b; m++; }
   if (ba != bb) { Rc[m] = dos_nclip(b, a, nr, t); m++; }
   for (int i = 0; i < m; i++) Rs[i] = dos_camscr(Rc[i]);
+#if DOS_CLIP2D
   return dos_clip2d(Rc, Rs, Ra, m);
+#else
+  return m;   // (a line needing the cut is drawn by the clip variant: glr's draw list flags it)
+#endif
 }
 bool dos_line_px(ivec2 p, ivec2 Rs[20], int m) {
   if (m == 1) return p == Rs[0];
@@ -270,8 +279,7 @@ ivec4 dos_gedge(ivec2 V[20], int m, int top, int dir, int y, int ybot) {
 ivec2 dos_ttex(bool persp) {
   int s = v_texsel - 1, n = 0, top = 0, ybot, nc = 0, nr = dos_nearof(s);
   ivec2 V[20]; vec3 A[20];   // (u or u q, v or v q, q)
-  ivec3 Cc[18]; ivec2 Uc[18]; bool near = false;
-  ivec3 Rc[20]; ivec2 Ra[20];   // the records' camera integers and u, v << 16 (0x3e80c: the vertex's texel << 16)
+  ivec3 Cc[18]; ivec2 Uc[18]; bool near = false;   // Uc: u, v << 16 (0x3e80c: the vertex's texel << 16)
   for (int t = 0; t < 16; t++) {
     int b = s + 3 * t;
     for (int c = (t == 0 ? 0 : 1); c < 3; c++) {
@@ -287,16 +295,35 @@ ivec2 dos_ttex(bool persp) {
     if (((int(dvtx(b * 13 + 12) + 0.5) % 32 / 3) & 2) != 0) break;
   }
   if (near && nr == 0) return ivec2(-1);
-  // the corners in front, and on the near plane where an edge crosses it (0x3e8fe: x, y, u, v, imul / idiv)
+  // the corners in front, and on the near plane where an edge crosses it (0x3e8fe: x, y, u, v, imul / idiv); each
+  // record's attributes straight into A - the records' camera integers (Rc, Ra) are only kept for the 2D clip, whose
+  // rare case (a corner beyond the +-0x4000 box) walks them again below. (Building and copying those 20-entry arrays
+  // for every pixel made the DOS look's fill 2.5x slower on GPUs: 1.0.0 - 1.0.5, an M4 Pro at 3600 x 2260: 7 fps)
   for (int k = 0; k <= nc && nc >= 3; k++) {
     int cur = k % nc, prv = (k + nc - 1) % nc; float tt;
     bool bc = Cc[cur].z < max(nr, 1), bp = Cc[prv].z < max(nr, 1);
-    if (k > 0 && bc != bp && n < 18) { Rc[n] = dos_nclip(Cc[prv], Cc[cur], max(nr, 1), tt); Ra[n] = dos_nclip_a(Cc[prv], Cc[cur], Uc[prv], Uc[cur], max(nr, 1)); V[n] = dos_camscr(Rc[n]); n++; }
-    if (k < nc && !bc && n < 18) { Rc[n] = Cc[cur]; Ra[n] = Uc[cur]; V[n] = dos_camscr(Rc[n]); n++; }
+    ivec3 rc; ivec2 ra;
+    if (k > 0 && bc != bp && n < 18) { rc = dos_nclip(Cc[prv], Cc[cur], max(nr, 1), tt); ra = dos_nclip_a(Cc[prv], Cc[cur], Uc[prv], Uc[cur], max(nr, 1));
+      V[n] = dos_camscr(rc); if (persp) { float qq = 1.0 / float(max(rc.z, 1)); A[n] = vec3(vec2(ra) * qq, qq); } else A[n] = vec3(vec2(ra), 0.0); n++; }
+    if (k < nc && !bc && n < 18) { rc = Cc[cur]; ra = Uc[cur];
+      V[n] = dos_camscr(rc); if (persp) { float qq = 1.0 / float(max(rc.z, 1)); A[n] = vec3(vec2(ra) * qq, qq); } else A[n] = vec3(vec2(ra), 0.0); n++; }
   }
-  if (n >= 3) n = dos_clip2d(Rc, V, Ra, n);
+  bool big = false;
+  for (int i = 0; i < n; i++) big = big || V[i].x < -16383 || V[i].x > 16382 || V[i].y < -16383 || V[i].y > 16382;
+#if DOS_CLIP2D
+  if (big && n >= 3) {   // the 2D clip (0x3de30): the same records again, with their camera integers
+    ivec3 Rc[20]; ivec2 Ra[20]; int m = 0;
+    for (int k = 0; k <= nc && nc >= 3; k++) {
+      int cur = k % nc, prv = (k + nc - 1) % nc; float tt;
+      bool bc = Cc[cur].z < max(nr, 1), bp = Cc[prv].z < max(nr, 1);
+      if (k > 0 && bc != bp && m < 18) { Rc[m] = dos_nclip(Cc[prv], Cc[cur], max(nr, 1), tt); Ra[m] = dos_nclip_a(Cc[prv], Cc[cur], Uc[prv], Uc[cur], max(nr, 1)); V[m] = dos_camscr(Rc[m]); m++; }
+      if (k < nc && !bc && m < 18) { Rc[m] = Cc[cur]; Ra[m] = Uc[cur]; V[m] = dos_camscr(Rc[m]); m++; }
+    }
+    n = dos_clip2d(Rc, V, Ra, m);
+    for (int i = 0; i < n; i++) { if (persp) { float qq = 1.0 / float(max(Rc[i].z, 1)); A[i] = vec3(vec2(Ra[i]) * qq, qq); } else A[i] = vec3(vec2(Ra[i]), 0.0); }
+  }
+#endif
   if (n < 3) return ivec2(-1);
-  for (int i = 0; i < n; i++) { if (persp) { float qq = 1.0 / float(max(Rc[i].z, 1)); A[i] = vec3(vec2(Ra[i]) * qq, qq); } else A[i] = vec3(vec2(Ra[i]), 0.0); }
   ybot = V[0].y;
   for (int i = 0; i < n; i++) { if (V[i].y <= V[top].y) top = i; ybot = max(ybot, V[i].y); }
   int y = clamp(int(u_vp.y) - 1 - (int(floor(glFragCoord.y)) - int(u_vpo.y)), V[top].y, ybot);
@@ -331,7 +358,7 @@ vec3 dos_gouraud(float lev) {
   uint val = 0u; bool exact = false;
   if (v_texsel > 0) {
     vec4 P[18]; float C[18]; int I[18], RA[18]; ivec2 V[20]; int CF[20]; int n = 0, m = 0, s = v_texsel - 1, L1 = int(lev) + 1;
-    ivec3 Rc[20]; ivec2 Ra[20]; bool cam = false;   // the records (dos_clip2d): camera integers, the baked index << 16
+    bool cam = false;   // (the records' camera integers and baked indices: kept only by the clip variant's rare case)
     bool trust = u_dos_exact != 0;   // (the vertex shader places the polygon at the DOS points: always the DOS spans)
     for (int t = 0; t < 16; t++) {
       int b = s + 3 * t;
@@ -353,8 +380,8 @@ vec3 dos_gouraud(float lev) {
         for (int k = 0; k <= n; k++) {
           int cur = k % n, prv = (k + n - 1) % n;
           bool bc = Cc[cur].z < nr, bp = Cc[prv].z < nr;
-          if (k > 0 && bc != bp && m < 20) { Rc[m] = dos_nclip(Cc[prv], Cc[cur], nr, tt); Ra[m] = dos_nclip_a(Cc[prv], Cc[cur], ivec2(RA[prv], 0), ivec2(RA[cur], 0), nr); V[m] = dos_camscr(Rc[m]); m++; }
-          if (k < n && !bc && m < 20) { Rc[m] = Cc[cur]; Ra[m] = ivec2(RA[cur], 0); V[m] = dos_camscr(Cc[cur]); m++; }
+          if (k > 0 && bc != bp && m < 20) { ivec3 rc = dos_nclip(Cc[prv], Cc[cur], nr, tt); V[m] = dos_camscr(rc); CF[m] = dos_gsc(dos_nclip_a(Cc[prv], Cc[cur], ivec2(RA[prv], 0), ivec2(RA[cur], 0), nr).x, L1); m++; }
+          if (k < n && !bc && m < 20) { V[m] = dos_camscr(Cc[cur]); CF[m] = dos_gsc(RA[cur], L1); m++; }
         }
       }
     }
@@ -371,14 +398,35 @@ vec3 dos_gouraud(float lev) {
 #endif
           V[m] = trust ? ds : dg; }
         else V[m] = trust ? dos_scr(vec3(dvtx(b2), dvtx(b2 + 1), dvtx(b2 + 2))) : dos_gvtx(a);
-        if (trust) Rc[m] = dos_cam(vec3(dvtx(b2), dvtx(b2 + 1), dvtx(b2 + 2)));
-        Ra[m] = ivec2(RA[i], 0);
         CF[m] = int(floor(C[i] * 65536.0 + 0.5)); m++; }
       if ((da >= 0.0) != (db >= 0.0)) { float t = da / (da - db); V[m] = dos_gvtx(mix(a, b, t)); CF[m] = int(floor(mix(C[i], C[(i + 1) % n], t) * 65536.0 + 0.5)); m++; }
     }
     if (trust && m >= 3 && !pitclip && m == n) cam = true;   // (not near-clipped: every record from a corner)
-    if (cam && m >= 3) m = dos_clip2d(Rc, V, Ra, m);
-    if (cam) for (int i = 0; i < m; i++) CF[i] = dos_gsc(Ra[i].x, L1);
+    // (not near-clipped, every record a corner: record i is corner i; near-clipped, CF was set as the records were made)
+    if (cam && !pitclip) for (int i = 0; i < m; i++) CF[i] = dos_gsc(RA[i], L1);
+#if DOS_CLIP2D
+    if (cam && m >= 3) {   // the 2D clip's rare case: the records again, with their camera integers (0x3de30)
+      bool big = false;
+      for (int i = 0; i < m; i++) big = big || V[i].x < -16383 || V[i].x > 16382 || V[i].y < -16383 || V[i].y > 16382;
+      if (big) {
+        ivec3 Rc[20]; ivec2 Ra[20]; int q = 0;
+        if (!pitclip) for (int i = 0; i < m; i++) { int b2 = I[i] * 13; Rc[i] = dos_cam(vec3(dvtx(b2), dvtx(b2 + 1), dvtx(b2 + 2))); Ra[i] = ivec2(RA[i], 0); }
+        else {
+          ivec3 Cc[18]; float tt;
+          for (int i = 0; i < n; i++) { int b2 = I[i] * 13; Cc[i] = dos_cam(vec3(dvtx(b2), dvtx(b2 + 1), dvtx(b2 + 2))); }
+          for (int k = 0; k <= n; k++) {
+            int cur = k % n, prv = (k + n - 1) % n;
+            bool bc = Cc[cur].z < nr, bp = Cc[prv].z < nr;
+            if (k > 0 && bc != bp && q < 20) { Rc[q] = dos_nclip(Cc[prv], Cc[cur], nr, tt); Ra[q] = dos_nclip_a(Cc[prv], Cc[cur], ivec2(RA[prv], 0), ivec2(RA[cur], 0), nr); V[q] = dos_camscr(Rc[q]); q++; }
+            if (k < n && !bc && q < 20) { Rc[q] = Cc[cur]; Ra[q] = ivec2(RA[cur], 0); V[q] = dos_camscr(Cc[cur]); q++; }
+          }
+        }
+        if (pitclip) m = q;
+        m = dos_clip2d(Rc, V, Ra, m);
+        for (int i = 0; i < m; i++) CF[i] = dos_gsc(Ra[i].x, L1);
+      }
+    }
+#endif
     if (m >= 3) {
       int top = 0, ybot = V[0].y;
       for (int i = 0; i < m; i++) { if (V[i].y <= V[top].y) top = i; ybot = max(ybot, V[i].y); }
@@ -498,6 +546,7 @@ void main() {
 // exact spans as the Gouraud fill (dos_gouraud's discards; its shade unused) - the rows from the top vertex's to the
 // bottom one's and each from the left chain's x >> 16 to the right one's, both inclusive, chains from x + 0.5
 // kind 5: a line (a two-corner polygon, colour type 0) - 0x54fa9's pixels in the palette colour (world.vert: its box)
+#if DOS_CLIP2D
     if (kind == 5) {
       int s = v_texsel - 1; ivec2 Rs[20];
       if (s < 0) discard;
@@ -506,6 +555,9 @@ void main() {
       if (!dos_line_px(pp, Rs, m)) discard;
       o_color = u_dos_tc != 0 ? dos_tc_out(dos_colour(base)) : vec4(dos_colour(base), 1.0); return;
     }
+#else
+    if (kind == 5) discard;   // (a line: glr's draw list sends it to the clip variant, which holds 0x54fa9's pixel rule)
+#endif
     if (kind <= 2 && v_texsel > 0 && u_dos_exact != 0) dos_gouraud(0.0);
     if (kind == 0) { o_color = u_dos_tc != 0 ? dos_tc_out(dos_colour(base)) : vec4(dos_colour(base), 1.0); return; }
 // kind 4: a type 3 billboard - its texel indices as they are (0x38ae3 returns a 0x3000 word unshaded)

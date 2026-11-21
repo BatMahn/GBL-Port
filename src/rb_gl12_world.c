@@ -180,7 +180,8 @@ static void vertex_stage(int vid, int i, wv *o)
     else if (pit >= 200) { kmode = pit - 200; pit = 0; }
     /* the DOS draw list (world.vert): the polygon's depth along the painting order, or not listed */
     const int dli = g_dosprog && F->u_dos != 0 && F->u_dos_order != 0 && G.D.u_dlist != 0 && pit == 0 && tc[3] < 0.5f ? (int)(tc[0] + 0.5f) - 1 : -1;
-    const float dld = dli >= 0 && g_sb2 && (size_t)dli < g_nsb2 ? g_sb2[dli] : 3.0f;
+    float dld = dli >= 0 && g_sb2 && (size_t)dli < g_nsb2 ? g_sb2[dli] : 3.0f;
+    if (dld > 8.0f) dld -= 16.0f;   /* (world.vert: + 16 flags the 2D clip's polygons; the CPU fill clips every one) */
     o->dnib = e / 2048; e -= o->dnib * 2048;
     o->bb = e >= 1024 ? 1 : 0;
     o->tif = 0;
@@ -2108,7 +2109,7 @@ void gl12_world_draw(int first, int count)
     b = G.sb2 && G.sb2 != RB_STREAM ? gl12_buf_ptr(G.sb2, &bytes) : NULL;
     g_sb2 = b ? (const float *)b : NULL;
     g_nsb2 = b ? bytes / 4 : 0;
-    g_dosprog = G.prog == RB_PROG_WORLD_DOS || G.prog == RB_PROG_WORLD_DOSDBG;
+    g_dosprog = G.prog == RB_PROG_WORLD_DOS || G.prog == RB_PROG_WORLD_DOSDBG || G.prog == RB_PROG_WORLD_DOSCLIP;
     g_dosdbg = G.prog == RB_PROG_WORLD_DOSDBG;
     g_dord = 2.0f;
     key_init(&g_k);

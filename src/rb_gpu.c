@@ -141,12 +141,12 @@ static struct {
     int uvalid[2];
 } S;
 
-static const int PROG_VS[RB_PROG_COUNT + 1] = {RB_SH_WORLD_VS, RB_SH_WORLD_DOS_VS, RB_SH_HUD_VS, RB_SH_WORLD_DOS_VS, RB_SH_CLEAR_VS};
-static const int PROG_FS[RB_PROG_COUNT + 1] = {RB_SH_WORLD_FS, RB_SH_WORLD_DOS_FS, RB_SH_HUD_FS, RB_SH_WORLD_DOSDBG_FS, RB_SH_CLEAR_FS};
-static const int PROG_NV[RB_PROG_COUNT + 1] = {3, 3, 1, 3, 0};
-static const uint32_t PROG_STRIDE[RB_PROG_COUNT + 1][MAXV] = {{52, 16, 16}, {52, 16, 16}, {16, 0, 0}, {52, 16, 16}, {0, 0, 0}};
-#define PROG_IS_WORLD(p) ((p) == RB_PROG_WORLD || (p) == RB_PROG_WORLD_DOS || (p) == RB_PROG_WORLD_DOSDBG)
-#define PROG_HAS_SB(p) ((p) == RB_PROG_WORLD || (p) == RB_PROG_WORLD_DOS || (p) == RB_PROG_WORLD_DOSDBG)   /* (the TITANIUM program reads its layer too: its draw order) */
+static const int PROG_VS[RB_PROG_COUNT + 1] = {RB_SH_WORLD_VS, RB_SH_WORLD_DOS_VS, RB_SH_HUD_VS, RB_SH_WORLD_DOS_VS, RB_SH_WORLD_DOS_VS, RB_SH_CLEAR_VS};
+static const int PROG_FS[RB_PROG_COUNT + 1] = {RB_SH_WORLD_FS, RB_SH_WORLD_DOS_FS, RB_SH_HUD_FS, RB_SH_WORLD_DOSDBG_FS, RB_SH_WORLD_DOSCLIP_FS, RB_SH_CLEAR_FS};
+static const int PROG_NV[RB_PROG_COUNT + 1] = {3, 3, 1, 3, 3, 0};
+static const uint32_t PROG_STRIDE[RB_PROG_COUNT + 1][MAXV] = {{52, 16, 16}, {52, 16, 16}, {16, 0, 0}, {52, 16, 16}, {52, 16, 16}, {0, 0, 0}};
+#define PROG_IS_WORLD(p) ((p) == RB_PROG_WORLD || (p) == RB_PROG_WORLD_DOS || (p) == RB_PROG_WORLD_DOSDBG || (p) == RB_PROG_WORLD_DOSCLIP)
+#define PROG_HAS_SB(p) PROG_IS_WORLD(p)   /* (the TITANIUM program reads its layer too: its draw order) */
 
 /* ---- small helpers */
 static void *grow(void *p, int *cap, int need, size_t elem)
@@ -793,6 +793,7 @@ static const struct { int prog, blend, dtest, dwrite, dfunc, bias, cmask, win, d
     {0,0,1,0,0,0,15,1,1}, {0,0,1,1,0,0,15,1,1}, {0,1,0,0,0,0,15,1,1}, {0,1,1,0,0,0,15,1,1},
     {0,0,1,0,0,0,15,0,1}, {0,0,1,1,0,0,15,0,1}, {0,1,0,0,0,0,15,0,1}, {0,1,1,0,0,0,15,0,1},
     {1,0,0,0,0,0,15,1,1}, {1,0,1,1,0,0,15,1,1}, {1,1,1,1,0,0,15,1,1}, {1,0,1,1,0,0,15,0,1}, {1,1,1,1,0,0,15,0,1},
+    {4,0,0,0,0,0,15,1,1}, {4,0,1,1,0,0,15,1,1}, {4,1,1,1,0,0,15,1,1}, {4,0,1,1,0,0,15,0,1}, {4,1,1,1,0,0,15,0,1},
     {2,1,0,0,0,0,15,1,1}, {2,2,0,0,0,0,15,1,1}, {2,3,0,0,0,0,15,1,1}, {2,1,0,0,0,0,15,0,1}, {2,1,0,0,0,0,15,0,0},
     {PROG_CLEAR,0,0,0,0,0,15 | 16,1,1}, {PROG_CLEAR,0,0,0,0,0,15,1,1}};
 int rb_prewarm_count(void) { return (int)(sizeof PREWARM / sizeof PREWARM[0]); }

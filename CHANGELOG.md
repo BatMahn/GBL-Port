@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.0.6 (2026-11-21)
+
+- **DOS and ENHANCED looks: much faster again.** Since 1.0.0 these looks drew the world far more slowly on real
+  graphics chips (an Apple M4 Pro at its full Retina resolution: 7 frames a second). The first audit round's fixes (the
+  mountain clipping, the stripes at a mountain's foot, the tracers) had put code into the per-pixel fill that only a
+  handful of polygons ever need, and a graphics chip pays for such code on every pixel, used or not. The fill is now
+  built twice: an everyday version without that code, and the full version for the few polygons that need it (marked
+  by the draw list the game already builds each frame), the tracers and the cockpit. The picture is the same to the
+  pixel (every GBL mission, six views each, DOS and ENHANCED, against 1.0.5); the world draws about 1.6 times faster on
+  the test machine's software renderer, and the gain should be larger on a graphics chip, where the unused code cost
+  the most.
+
 ## 1.0.5 (2026-11-20)
 
 - **macOS: missions launch again with anti-aliasing at 8x.** 1.0.3's start-up step that builds the graphics pipelines

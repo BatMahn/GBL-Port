@@ -43,7 +43,8 @@ enum { RB_LESS, RB_LEQUAL };
  * u, v. Uniform slots: the world 0 rb_world_frame, 1 rb_world_draw (both stages); the HUD 0 rb_hud_draw (fragment).
  * Texture units: the world 0 u_tex, 1 u_dos_tab, 2 u_ptab; the HUD 0. Storage buffer (the DOS programs): the layer's
  * vertices; the DOS programs' vertex stage a second one: the polygons' draw-list depths (rb_storage_aux) */
-enum { RB_PROG_WORLD, RB_PROG_WORLD_DOS, RB_PROG_HUD, RB_PROG_WORLD_DOSDBG, RB_PROG_COUNT };
+enum { RB_PROG_WORLD, RB_PROG_WORLD_DOS, RB_PROG_HUD, RB_PROG_WORLD_DOSDBG, RB_PROG_WORLD_DOSCLIP, RB_PROG_COUNT };   /* _DOSCLIP: the DOS
+   * fill with the paint's 2D clip (the rare polygons glr's draw list flags, and the cockpit's) */
 /* the GPU backends (gblport.cfg gpu=): AUTO = the platform's first (Windows Direct3D 12, then Vulkan); OPENGL: the
  * RB=gl12 build's (its only one) */
 enum { RB_GPU_AUTO, RB_GPU_D3D12, RB_GPU_VULKAN, RB_GPU_METAL, RB_GPU_OPENGL };

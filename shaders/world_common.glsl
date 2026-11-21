@@ -50,6 +50,7 @@ layout(std140, set = UBO_SET, binding = 1) uniform WorldDraw {
     int   u_shadow;    float u_alpha;    int u_blend;  int u_tinton;
     int   u_horizon;   int   u_tilit;   int u_onlayer;   // u_onlayer: drawing from a layer (its vertex buffer bound: dvtx)
     int   u_dlist;     // the layer's DOS draw list is bound (u_dos_rank: glr_dos_list)
+    int   u_clip_pass; // 0 every polygon; 1 the listed ones the 2D clip leaves alone (the lean DOS program); 2 the rest (the clip variant)
 };
 
 #define u_pit_rank(i) u_pit_rank4[(i) >> 2][(i) & 3]
@@ -100,6 +101,10 @@ uint dos_div64(uint n, uint d) {   // floor((n << 32) / d), n < d: long division
 int dos_muldiv(int a, int b, int c) {   // trunc(a b / c), a b a 64-bit product (idiv after imul)
   if (c == 0) return 0;
   uint ua = uint(abs(a)), ub = uint(abs(b)), uc = uint(abs(c));
+  if (ua < 46341u && ub < 46341u) {   // the product fits 32 bits (the usual case): the same truncated quotient, no 64-bit loop
+    uint q0 = (ua * ub) / uc;
+    return ((a < 0) != (b < 0)) != (c < 0) ? -int(q0) : int(q0);
+  }
   uvec2 P = dos_mul64(ua, ub);
   uint q = uint((float(P.x) * 4294967296.0 + float(P.y)) / float(uc));
   for (int it = 0; it < 6; it++) {

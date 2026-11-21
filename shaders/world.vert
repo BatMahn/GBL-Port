@@ -51,8 +51,14 @@ void main() {
 #if DOS_LOOK
   int dli = u_dos != 0 && u_dos_order != 0 && u_dlist != 0 && pit == 0 && a_tic.w < 0.5 ? int(a_tic.x + 0.5) - 1 : -1;
   float dld = dli >= 0 ? u_dos_rank[dli] : 0.0;
+  // + 16: the list flags a polygon whose corners land beyond the paint's +-0x4000 box (glr_dos_list): drawn by the clip
+  // variant (u_clip_pass 2) with everything not listed (the cockpit's own near plane), the rest by the lean program (1)
+  bool dclip = dld > 8.0;
+  if (dclip) dld -= 16.0;
+  bool dskip = (u_clip_pass == 1 && (dli < 0 || dclip)) || (u_clip_pass == 2 && dli >= 0 && !dclip);
 #else
   const int dli = -1;
+  const bool dskip = false;
 #endif
   v_dnib = e / 2048; e -= v_dnib * 2048;
   // a mech location's damage nibble (glr_set_damage_shade)
@@ -361,4 +367,5 @@ void main() {
   // the depth: GL's window z (z / w x 0.5 + 0.5, its viewport transform for the depth range 0..1) times w - SDL_GPU's
   // clip z runs 0..w and its rasterizer divides by w again, giving GL's depth back to within the last bit
   gl_Position.z = (gl_Position.z * (1.0 / gl_Position.w) * 0.5 + 0.5) * gl_Position.w;
+  if (dskip) gl_Position = vec4(2.0, 2.0, 2.0, 1.0);   // (the other pass draws it)
 }

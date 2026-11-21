@@ -224,7 +224,9 @@ static size_t glr_stream(const float *v, size_t floats)
  * provoking corner lies from GL's (red x, green y: 0.5 = equal, +-1/64 per pixel; blue 1 = within 3 px) */
 static void glr_use_variant(glr *r, int dos)
 {
-    r->prog = !dos ? RB_PROG_WORLD : getenv("MW2_DOS_DEBUG") ? RB_PROG_WORLD_DOSDBG : RB_PROG_WORLD_DOS;
+    /* (the DOS look's default is the fill with the paint's 2D clip - exact for every polygon; the world layers' batches
+     * then go twice when the draw list flags the few that need it: the lean RB_PROG_WORLD_DOS for the rest, glr_frame) */
+    r->prog = !dos ? RB_PROG_WORLD : getenv("MW2_DOS_DEBUG") ? RB_PROG_WORLD_DOSDBG : RB_PROG_WORLD_DOSCLIP;
 }
 
 static const texture *asrc[GLR_SLOTS];   /* set_layer's texture average cache (glr_flush_textures and glr_create clear it) */
@@ -1969,7 +1971,7 @@ static int dl_cull(const dl_ctx *X, const int32_t s[4])
     }
     return 0;
 }
-typedef struct { int layer, poly; } dl_ent;
+typedef struct { int layer, poly, clip; } dl_ent;   /* clip: a corner beyond the paint's +-0x4000 box (the 2D clip's case) */
 static const glr *dl_sort_r;
 static int64_t dl_obj_link(const glr *r, int li, const glr_dobj *o)
 {
@@ -2039,7 +2041,10 @@ static void dl_walk(dl_ctx *X, glr_layer *L, int li, const glr_dobj *ob, int **k
             if (X->ne >= DL_CAP_ENTRIES) X->over |= 2;
             if (X->ne < DL_CAP_ENTRIES || !X->caps) {
                 if (cnt > 1) X->multi++;
-                (*key)[X->ne] = (int)kk; (*id)[X->ne] = X->ne; (*ent)[X->ne].layer = li; (*ent)[X->ne].poly = p; X->ne++;
+                int clip = n == 2;   /* (a line, 0x54fa9: its pixel rule is the clip variant's alone) */
+                /* (the shader's test is -16383 .. 16382 on its own projection of the same records - a margin for rounding) */
+                for (i2 = 0; i2 < cnt; i2++) if (cr[i2].sx < -15000 || cr[i2].sx > 15000 || cr[i2].sy < -15000 || cr[i2].sy > 15000) clip = 1;
+                (*key)[X->ne] = (int)kk; (*id)[X->ne] = X->ne; (*ent)[X->ne].layer = li; (*ent)[X->ne].poly = p; (*ent)[X->ne].clip = clip; X->ne++;
             } else X->abort = 1;
         }
     }
@@ -2168,12 +2173,13 @@ static void glr_dos_list(glr *r, const int64_t R[3][3], const int64_t raw[3][3],
                                                                              * order: behind every main-list polygon) */
             if (wd > prev - step) wd = prev - step;
             prev = wd;
-            r->layer[e->layer].drank[e->poly] = (float)(wd * 2.0 - 1.0);
+            r->layer[e->layer].drank[e->poly] = (float)(wd * 2.0 - 1.0) + (e->clip ? 16.0f : 0.0f);   /* (+ 16: world.vert's flag) */
         }
         for (li = 0; li < GLR_LAYERS; li++) {   /* a billboard pair: its one drawn picture where either winding is listed */
             glr_layer *L = &r->layer[li];
             for (k = 0; k < L->dl_pn; k++)
-                if (L->dl_p[k].twin >= 0 && L->drank[k] < 2.5f && L->drank[L->dl_p[k].twin] > 2.5f) L->drank[L->dl_p[k].twin] = L->drank[k];
+                if (L->dl_p[k].twin >= 0 && (L->drank[k] < 2.5f || L->drank[k] > 8.0f) && L->drank[L->dl_p[k].twin] > 2.5f && L->drank[L->dl_p[k].twin] < 8.0f)
+                    L->drank[L->dl_p[k].twin] = L->drank[k];
         }
         r->dl_stat[0] = X.ne; r->dl_stat[1] = X.multi; r->dl_stat[2] = X.over; r->dl_stat[3] = paint;
         {   /* MW2_DOS_LIST_DUMP=n (a diagnostic): the n-th list, in painting order (and the objects walked) */
@@ -2632,16 +2638,32 @@ void glr_draw_rect(glr *r, const glr_view *v, int x0, int y0, int w, int h)
         UV(r->D.u_wire, v->wire ? (li == 0 ? wr : wb) : off, 4);   /* (the wireframe's edges come from the fragment shader) */
     }
     glr_bind_layer(r, li);
-    for (s = 0; s <= GLR_SLOTS; s++) {
-        if (L->batch_count[s] <= 0) continue;
-        if (s < GLR_SLOTS) {
-            glr_bind(r->tex[s], minf, magf);
-            U2(r->D.u_texsize, (float)r->tex_w[s], (float)r->tex_h[s]);
-            r->D.u_textured = 1;   /* Combat Variables textures: per object class (u_notex) */
-        } else {
-            r->D.u_textured = 0;
+    {   /* the DOS fill in two passes when the layer's draw list is up (SDL_GPU): the polygons it lists and finds inside the
+         * paint's +-0x4000 box with the lean program (RB_PROG_WORLD_DOS, no 2D clip compiled in), then the flagged ones and
+         * the unlisted (the cockpit's, near-clipped at its own plane) with the clip variant - the same pixels, the clip's
+         * code no longer weighing on every pixel (1.0.0 - 1.0.5: the fill 2.5x dearer, an M4 Pro at 3600 x 2260 7 fps).
+         * The OpenGL 1.2 build fills on the CPU: one pass */
+        static int split = -1;
+        const int keep = r->prog;
+        int pass, two;
+        if (split < 0) split = getenv("MW2_DOS_SPLIT") ? atoi(getenv("MW2_DOS_SPLIT")) != 0 : 1;   /* (0: testing, one pass) */
+        two = split && keep == RB_PROG_WORLD_DOSCLIP && L->drank_n > 0 && rb_backend() != RB_GPU_OPENGL;
+        for (pass = two ? 1 : 0; pass <= (two ? 2 : 0); pass++) {
+            r->D.u_clip_pass = pass;
+            r->prog = pass == 1 ? RB_PROG_WORLD_DOS : keep;
+            for (s = 0; s <= GLR_SLOTS; s++) {
+                if (L->batch_count[s] <= 0) continue;
+                if (s < GLR_SLOTS) {
+                    glr_bind(r->tex[s], minf, magf);
+                    U2(r->D.u_texsize, (float)r->tex_w[s], (float)r->tex_h[s]);
+                    r->D.u_textured = 1;   /* Combat Variables textures: per object class (u_notex) */
+                } else {
+                    r->D.u_textured = 0;
+                }
+                glr_draw_arrays(r, L->batch_first[s], L->batch_count[s]);
+            }
         }
-        glr_draw_arrays(r, L->batch_first[s], L->batch_count[s]);
+        r->prog = keep; r->D.u_clip_pass = 0;
     }
     for (s = 0; s < GLR_SLOTS; s++) {   /* the Titanium models' textures */
         if (L->batch_count[GLR_TI + s] <= 0) continue;
